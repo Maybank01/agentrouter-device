@@ -296,7 +296,7 @@ fn scenes(app: &AppHandle, run: &mut Run) {
     run.check("long command finishes", r.is_ok(), code_of(&r));
 
     // A deleting command: red dialog, no "allow similar", refused here.
-    let junk = work.join("junk");
+    let junk = std::path::PathBuf::from(&work_text).join("junk");
     let _ = std::fs::create_dir_all(&junk);
     let _ = std::fs::write(junk.join("a.txt"), "keep me");
     let delete = request(

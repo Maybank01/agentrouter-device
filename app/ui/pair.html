@@ -49,7 +49,7 @@
 </head>
 <body>
 <div class="win" id="win">
-  <div class="tb"><i class="mark"></i><span id="tbt">AgentRouter</span><span class="g"></span><span id="wc"></span></div>
+  <div class="tb"><i class="mark"></i><span id="tbt">AgentRouter</span><span class="g"></span><span class="wcs" id="wc"></span></div>
   <div id="view"></div>
 </div>
 <script src="ui.js"></script>
@@ -64,7 +64,7 @@ let shownKey = "";
 
 function lock(step) {
   const on = (n) => (step >= n ? "on" : "");
-  return `<div class="lock"><span class="t on"><i class="mark" style="background:var(--on)"></i></span>
+  return `<div class="lock"><span class="t on"><i class="mark inv"></i></span>
     <span class="w"><i class="${on(1)}"></i><i class="${on(2)}"></i><i class="${on(3)}"></i></span>
     <span class="t ${step >= 3 ? "on" : ""}">${icon("pc", "s18")}</span></div>`;
 }

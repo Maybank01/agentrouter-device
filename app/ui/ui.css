@@ -85,12 +85,14 @@ a:hover, .link:hover { text-decoration: underline; }
 /* Brand mark: pink rounded square with a white diamond. */
 .mark { position: relative; width: 14px; height: 14px; border-radius: 4px; background: var(--acc); flex: none; display: inline-block; }
 .mark::after { content: ""; position: absolute; inset: 4px; border-radius: 1.5px; background: var(--on); transform: rotate(45deg); }
+.mark.inv { background: var(--on); } .mark.inv::after { background: var(--acc); }
 .mark.lg { width: 18px; height: 18px; border-radius: 5px; } .mark.lg::after { inset: 5px; }
 
 /* A floating window: the transparent native window holds a rounded card with the shadow. */
 .win { position: relative; margin: 12px; background: var(--bg); background-image: var(--tint); border-radius: var(--r); box-shadow: var(--sh); overflow: hidden; display: flex; flex-direction: column; }
 .tb { height: 40px; display: flex; align-items: center; gap: 8px; padding: 0 6px 0 16px; color: var(--t2); font-size: 13px; flex: none; }
 .tb .g { flex: 1; align-self: stretch; }
+.tb .wcs { display: flex; gap: 2px; }
 .wc { width: 36px; height: 28px; display: grid; place-items: center; border-radius: 8px; border: 0; background: none; color: var(--t2); cursor: pointer; }
 .wc:hover { background: var(--bg3); color: var(--t1); }
 .wc.x:hover { background: var(--dng); color: var(--on); }
