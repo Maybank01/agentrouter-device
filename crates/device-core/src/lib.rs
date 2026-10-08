@@ -17,5 +17,3 @@ pub mod net;
 pub mod protocol;
 pub mod util;
 
-#[cfg(windows)]
-pub mod tray;

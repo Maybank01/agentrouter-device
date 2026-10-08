@@ -41,6 +41,12 @@ pub fn native() -> Confirm {
     Arc::new(|ask: &Ask, cancel: &AtomicBool| question(TITLE, &ask_text(ask), cancel))
 }
 
+/// Unattended machines: the operator approved commands on this machine when linking it (`link
+/// --unattended`); every request is still checked against the folders and audited.
+pub fn preapproved() -> Confirm {
+    Arc::new(|_: &Ask, _: &AtomicBool| true)
+}
+
 /// Never allow (tests, and command-line mode without a person at the screen).
 pub fn deny_all() -> Confirm {
     Arc::new(|_: &Ask, _: &AtomicBool| false)

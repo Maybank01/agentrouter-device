@@ -8,8 +8,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::util::data_dir;
 
-/// Where devices connect. MVP: the Dev gateway (production enables devices later).
+/// Where devices connect. MVP preview: the Dev gateway (production enables devices later).
 pub const DEFAULT_GATEWAY: &str = "https://agent-gateway-dev.agentrouter.top";
+/// The cloud web app the desktop shell shows. MVP preview: Dev.
+pub const DEFAULT_WEB: &str = "https://edge-d53hmn9blslvhcuff8rjsdvt.agentrouter.top";
 
 /// The access level, chosen on the device and only on the device (the web shows it, never sets it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -95,6 +97,8 @@ impl fmt::Display for Access {
 #[serde(default)]
 pub struct Config {
     pub gateway: String,
+    /// The web app the desktop shell loads (same pages as the browser).
+    pub web: String,
     pub name: String,
     pub access: Access,
     pub folders: Vec<String>,
@@ -102,17 +106,22 @@ pub struct Config {
     pub paused: bool,
     /// Disconnected from the tray: every job was stopped; only the person can connect again.
     pub disconnected: bool,
+    /// Unattended (servers, CI): the machine's operator approved commands up front, at link time, on
+    /// this machine. Nothing is asked at run time; everything is still audited.
+    pub unattended: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             gateway: DEFAULT_GATEWAY.to_string(),
+            web: DEFAULT_WEB.to_string(),
             name: crate::util::host_name(),
             access: Access::default(),
             folders: Vec::new(),
             paused: false,
             disconnected: false,
+            unattended: false,
         }
     }
 }
