@@ -58,7 +58,7 @@ jobs:
             "$exe | $($v.CompanyName) | $($v.ProductName) | $($v.FileVersion) | $($v.FileDescription)"
             if (-not $v.CompanyName -or -not $v.ProductName -or -not $v.FileVersion -or -not $v.FileDescription) { throw "$exe has no complete version resource" }
           }
-      - name: Installer (MSI to Program Files, unsigned; no self-extraction into %TEMP%)
+      - name: Installer (MSI to Program Files, unsigned, not self-extracting)
         working-directory: app/src-tauri
         run: npx --yes @tauri-apps/cli@2.12.1 build --bundles msi --ci
       - name: Collect
