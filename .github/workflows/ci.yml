@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  linux:
+    name: Linux (core + command line)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      # The desktop shell (app/) is built and tested on Windows only for now.
+      - run: cargo clippy --workspace --exclude agentrouter-app --all-targets -- -D warnings
+      - run: cargo test --workspace --exclude agentrouter-app
+
+  windows:
+    name: Windows (everything + unsigned build)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - name: Release build
+        run: cargo build --release -p agentrouter-device-cli -p agentrouter-app
+      - name: Collect
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/agentrouter.exe, target/release/agentrouter-device.exe dist/
+          @"
+          AgentRouter desktop (agentrouter.exe) and the command-line connector (agentrouter-device.exe).
+          Built by GitHub Actions from commit $env:GITHUB_SHA.
+          NOT code-signed: Windows SmartScreen and some antivirus tools may warn. See docs/SIGNING.md.
+          "@ | Set-Content -Encoding utf8 dist/README.txt
+          Get-ChildItem dist | Format-Table Name, Length
+          Get-FileHash dist/*.exe -Algorithm SHA256 | Format-Table Hash, Path
+      - uses: actions/upload-artifact@v7
+        with:
+          name: agentrouter-windows-x64-unsigned
+          path: dist/
+          retention-days: 14

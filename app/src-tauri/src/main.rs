@@ -58,10 +58,15 @@ fn main() {
 
     let result = tauri::Builder::default()
         // A second launch brings the running window forward instead of starting another connector.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_main(app)
+        }))
         .plugin(tauri_plugin_dialog::init())
         .manage(rt.clone())
-        .invoke_handler(tauri::generate_handler![bridge::device_status, bridge::device_link])
+        .invoke_handler(tauri::generate_handler![
+            bridge::device_status,
+            bridge::device_link
+        ])
         .setup(move |app| {
             let url = web
                 .parse()
@@ -71,16 +76,24 @@ fn main() {
                 .inner_size(1200.0, 800.0)
                 .min_inner_size(400.0, 500.0)
                 .build()?;
+            // The bridge commands, for the configured web origin only (never other sites).
+            app.add_capability(
+                tauri::ipc::CapabilityBuilder::new("cloud-web")
+                    .remote(format!("{}/*", web.trim_end_matches('/')))
+                    .window(MAIN)
+                    .permission("allow-device-status")
+                    .permission("allow-device-link"),
+            )?;
             tray::build(app.handle(), app.state::<Arc<Runtime>>().inner().clone())?;
             Ok(())
         })
         .on_window_event(|window, event| {
             // Closing the window keeps the app (and the device connection) in the tray.
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == MAIN {
-                    let _ = window.hide();
-                    api.prevent_close();
-                }
+            if let WindowEvent::CloseRequested { api, .. } = event
+                && window.label() == MAIN
+            {
+                let _ = window.hide();
+                api.prevent_close();
             }
         })
         .build(tauri::generate_context!());

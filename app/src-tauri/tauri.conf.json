@@ -1,1 +1,24 @@
-{"productName":"AgentRouter","identifier":"top.agentrouter.app","build":{"frontendDist":"../ui"},"app":{"windows":[]}}
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "AgentRouter",
+  "identifier": "top.agentrouter.desktop",
+  "build": {
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "windows": [],
+    "withGlobalTauri": false,
+    "security": {
+      "capabilities": []
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "publisher": "AgentRouter",
+    "copyright": "Apache-2.0",
+    "category": "Productivity",
+    "shortDescription": "AgentRouter 桌面版：云端同一套页面，加上本机设备",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/icon.png", "icons/icon.ico"]
+  }
+}

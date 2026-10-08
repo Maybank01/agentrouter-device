@@ -45,7 +45,10 @@ pub fn device_status(rt: State<'_, Arc<Runtime>>) -> Value {
 /// first; then the page gets the code and confirms it with its own session (POST
 /// /api/control/v1/personal/devices/pair), and this app picks up the approval.
 #[tauri::command]
-pub async fn device_link(app: tauri::AppHandle, rt: State<'_, Arc<Runtime>>) -> Result<Value, String> {
+pub async fn device_link(
+    app: tauri::AppHandle,
+    rt: State<'_, Arc<Runtime>>,
+) -> Result<Value, String> {
     if keystore::is_linked() {
         return Err("这台电脑已经链接了。".into());
     }

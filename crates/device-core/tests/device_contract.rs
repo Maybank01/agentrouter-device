@@ -110,11 +110,27 @@ fn full_access_runs_commands_and_files_anywhere_but_the_app_data() {
     let cp = ControlPlane::new();
     let data = temp_dir("full");
     let elsewhere = temp_dir("full-elsewhere");
-    let d = device(&data, Access::Full, &[], deny_all(), &cp);
+    let asked = Arc::new(AtomicUsize::new(0));
+    let d = device(
+        &data,
+        Access::Full,
+        &[],
+        confirm_with(true, asked.clone()),
+        &cp,
+    );
     let v = call(&d, &cp, "exec", json!({"command": echo("你好 device"), "cwd": elsewhere.display().to_string(), "timeout": 30})).unwrap();
     assert_eq!(v["status"], "exited", "{v}");
     assert_eq!(v["exitCode"], 0);
     assert!(v["output"].as_str().unwrap().contains("你好 device"), "{v}");
+    // Full access asks once per conversation, then trusts it.
+    call(
+        &d,
+        &cp,
+        "exec",
+        json!({"command": echo("again"), "timeout": 30}),
+    )
+    .unwrap();
+    assert_eq!(asked.load(Ordering::SeqCst), 1);
     let file = elsewhere.join("note.txt");
     let w = call(&d, &cp, "write_file", json!({"path": file.display().to_string(), "content": "hello", "encoding": "utf8", "append": false})).unwrap();
     assert_eq!(w["size"], 5);
@@ -388,7 +404,13 @@ fn windows_path_tricks_are_refused() {
 #[test]
 fn background_jobs_wait_and_die_as_a_tree() {
     let cp = ControlPlane::new();
-    let d = device(&temp_dir("jobs"), Access::Full, &[], deny_all(), &cp);
+    let d = device(
+        &temp_dir("jobs"),
+        Access::Full,
+        &[],
+        confirm_with(true, Arc::new(AtomicUsize::new(0))),
+        &cp,
+    );
     let started = std::time::Instant::now();
     let v = call(
         &d,
@@ -436,7 +458,13 @@ fn background_jobs_wait_and_die_as_a_tree() {
 #[test]
 fn at_most_four_jobs_run_at_once() {
     let cp = ControlPlane::new();
-    let d = device(&temp_dir("busy"), Access::Full, &[], deny_all(), &cp);
+    let d = device(
+        &temp_dir("busy"),
+        Access::Full,
+        &[],
+        confirm_with(true, Arc::new(AtomicUsize::new(0))),
+        &cp,
+    );
     let sleep = if cfg!(windows) {
         "Start-Sleep 30"
     } else {
@@ -463,7 +491,13 @@ fn at_most_four_jobs_run_at_once() {
 #[test]
 fn output_is_read_back_in_pieces() {
     let cp = ControlPlane::new();
-    let d = device(&temp_dir("output"), Access::Full, &[], deny_all(), &cp);
+    let d = device(
+        &temp_dir("output"),
+        Access::Full,
+        &[],
+        confirm_with(true, Arc::new(AtomicUsize::new(0))),
+        &cp,
+    );
     let cmd = if cfg!(windows) {
         "1..3000 | ForEach-Object { \"line $_ 中文\" }"
     } else {

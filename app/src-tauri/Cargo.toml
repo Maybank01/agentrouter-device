@@ -18,6 +18,11 @@ tauri-build = { version = "2", features = [] }
 agentrouter-device-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
+
+[features]
+# Production behaviour without the tauri CLI (`cargo build --release` works as is).
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
