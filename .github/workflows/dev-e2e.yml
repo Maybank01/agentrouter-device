@@ -47,7 +47,7 @@ jobs:
           }
           if (-not $code) { Get-Content "$out.err" -ErrorAction SilentlyContinue; throw 'no pairing code' }
           $headers = @{ origin = $env:WEB; cookie = "ar_enterprise_session=$env:WEB_SESSION"; 'x-agentrouter-csrf' = '1' }
-          $r = Invoke-WebRequest -Method Post -Uri "$env:WEB/api/control/v1/personal/devices/pair" -Headers $headers -ContentType 'application/json' -Body (@{ code = $code } | ConvertTo-Json) -SkipHttpErrorCheck
+          $r = Invoke-WebRequest -Method Post -Uri "$env:WEB/api/control/personal/devices/pair" -Headers $headers -ContentType 'application/json' -Body (@{ code = $code } | ConvertTo-Json) -SkipHttpErrorCheck
           "pair confirm: HTTP $($r.StatusCode)"
           if ($r.StatusCode -ne 200) { throw 'pairing was not confirmed' }
           $link.WaitForExit(60000) | Out-Null
