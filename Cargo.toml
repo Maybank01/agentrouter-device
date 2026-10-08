@@ -1,0 +1,51 @@
+[package]
+name = "agentrouter-device"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "AgentRouter linked device: lets your cloud conversations run commands and read/write files on this computer, within the access level you choose."
+repository = "https://github.com/Maybank01/agentrouter-device"
+publish = false
+build = "build.rs"
+
+[[bin]]
+name = "agentrouter-device"
+path = "src/main.rs"
+
+[dependencies]
+base64 = "0.23"
+ed25519-dalek = "3"
+getrandom = "0.4"
+native-tls = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+tungstenite = { version = "0.30", default-features = false, features = ["handshake", "native-tls"] }
+ureq = { version = "3", default-features = false, features = ["native-tls", "json"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+rfd = "0.17"
+tray-icon = "0.26"
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Cryptography",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Console",
+  "Win32_System_JobObjects",
+  "Win32_System_Threading",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+[build-dependencies]
+embed-resource = "3"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+opt-level = "s"
