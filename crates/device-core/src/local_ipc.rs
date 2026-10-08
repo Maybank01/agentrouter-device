@@ -148,10 +148,16 @@ fn serve_one(
         .get("client")
         .and_then(|c| serde_json::from_value(c.clone()).ok())
         .unwrap_or_default();
-    writeln!(writer, "{}", json!({"op": "welcome"}))?;
-    writer.flush()?;
+    // Registered before the client hears "welcome", so it is listed as soon as it is connected.
     let peer = Peer { id, client, pid };
     handler.opened(&peer);
+    if writeln!(writer, "{}", json!({"op": "welcome"}))
+        .and_then(|_| writer.flush())
+        .is_err()
+    {
+        handler.closed(&peer);
+        return Ok(());
+    }
     let result = (|| -> io::Result<()> {
         while let Some(line) = read_line_limited(&mut reader)? {
             if line.trim().is_empty() {

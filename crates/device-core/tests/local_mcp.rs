@@ -27,7 +27,10 @@ fn call(client: &mut local_ipc::Client, id: i64, name: &str, args: Value) -> Val
 
 #[test]
 fn a_local_ai_uses_this_computer_through_the_local_ipc() {
-    let home = temp_dir("mcp-home");
+    // A short home: a Unix socket path must stay under ~100 bytes.
+    let home = std::env::temp_dir().join(format!("arm{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
     // SAFETY: this test binary has only this test; nothing else reads the environment concurrently.
     unsafe { std::env::set_var("AGENTROUTER_DEVICE_HOME", &home) };
     let folder = temp_dir("mcp-folder");
