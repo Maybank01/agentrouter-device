@@ -36,6 +36,8 @@ fn main() {
         access: cfg.access,
         folders: cfg.folders.clone(),
         confirm: consent::native(),
+        // The "being controlled" bar arrives with the desktop UI; until then the window is the indicator.
+        indicator: Arc::new(agentrouter_device::presence::Terminal),
         home: home_dir(),
         shell: Shell::default_for_os(),
     }));

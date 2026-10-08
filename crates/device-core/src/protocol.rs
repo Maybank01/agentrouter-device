@@ -13,6 +13,8 @@ use sha2::{Digest, Sha256};
 use crate::util::{b64url, b64url_decode, hex};
 
 pub const PROTOCOL_VERSION: i64 = 1;
+/// Request signature v2 (DEVICE-PROTOCOL.md §13.1): adds the share and the AI client to the signed string.
+pub const PROTOCOL_VERSION_2: i64 = 2;
 /// A signed request lives 60 s; a device refuses one claiming to live longer (plus 5 s of clock skew).
 pub const REQUEST_MAX_AHEAD_MS: i64 = 60_000 + 5_000;
 
@@ -34,6 +36,31 @@ pub fn request_string(
 ) -> String {
     format!(
         "agentrouter-device-request/v1\n{device}\n{session}\n{action}\n{digest}\n{exp}\n{nonce}"
+    )
+}
+
+/// Request signature v2 (§13.1); `share` and `client` are empty strings when absent.
+#[allow(clippy::too_many_arguments)]
+pub fn request_string_v2(
+    device: &str,
+    session: &str,
+    share: &str,
+    client: &str,
+    action: &str,
+    digest: &str,
+    exp: i64,
+    nonce: &str,
+) -> String {
+    format!(
+        "agentrouter-device-request/v2
+{device}
+{session}
+{share}
+{client}
+{action}
+{digest}
+{exp}
+{nonce}"
     )
 }
 
@@ -253,6 +280,10 @@ impl ReplayCache {
 pub struct Verified {
     pub session: String,
     pub action: String,
+    /// The share (`shr_…`) of a v2 request; empty for the account-bound way.
+    pub share: String,
+    /// The AI client's self-reported name of a v2 request; empty when absent.
+    pub client: String,
 }
 
 /// The protocol checks, in the order DEVICE-PROTOCOL.md §5.1 gives them. Only after these does the
@@ -266,7 +297,8 @@ pub fn check_request(
     replay: &mut ReplayCache,
 ) -> Result<Verified, DeviceError> {
     let field = |name: &str| request.get(name).and_then(Value::as_str).unwrap_or("");
-    if request.get("v").and_then(Value::as_i64) != Some(PROTOCOL_VERSION) {
+    let version = request.get("v").and_then(Value::as_i64);
+    if version != Some(PROTOCOL_VERSION) && version != Some(PROTOCOL_VERSION_2) {
         return Err(DeviceError::invalid_signature(
             "unsupported request version",
         ));
@@ -286,7 +318,16 @@ pub fn check_request(
     let Some(exp) = exp else {
         return Err(DeviceError::invalid_signature("bad expiry"));
     };
-    let text = request_string(device, session, action, digest, exp, nonce);
+    let (share, client) = if version == Some(PROTOCOL_VERSION_2) {
+        (field("share"), field("client"))
+    } else {
+        ("", "")
+    };
+    let text = if version == Some(PROTOCOL_VERSION_2) {
+        request_string_v2(device, session, share, client, action, digest, exp, nonce)
+    } else {
+        request_string(device, session, action, digest, exp, nonce)
+    };
     if !verify(&pinned.public_key, &text, field("sig")) {
         return Err(DeviceError::invalid_signature("bad signature"));
     }
@@ -323,6 +364,8 @@ pub fn check_request(
     Ok(Verified {
         session: session.to_string(),
         action: action.to_string(),
+        share: share.to_string(),
+        client: client.to_string(),
     })
 }
 
