@@ -26,6 +26,16 @@ AgentRouter 的客户端是一层很小的皮：窗口里就是云端网页（�
 agentrouter-device link --access folders --folder D:\work   # 链接（显示配对码，在网页上确认）
 agentrouter-device run                                       # 连上网关，等云端对话的请求
 agentrouter-device status | access <级别> | unlink | audit verify
+agentrouter-device mcp                                       # 本机 MCP（stdio）：让 Claude Code、Codex、Cursor 用这台电脑
+agentrouter-device mcp setup                                 # 打印给本机 AI 的提示词和各客户端的配置
+```
+
+`mcp` 只是一层转发：它通过只有当前用户能连的本机通道（Windows 命名管道 / Unix 套接字，不开端口）把调用交给正在运行的 AgentRouter，后者照样过本机访问级别、确认框、“正在被使用”控制条和审计。AgentRouter 没开时，工具回答“先打开 AgentRouter”。
+
+```text
+claude mcp add --scope user agentrouter -- "<安装目录>gentrouter-device.exe" mcp
+codex mcp add agentrouter -- "<安装目录>gentrouter-device.exe" mcp
+# Cursor：~/.cursor/mcp.json → {"mcpServers": {"agentrouter": {"command": "<exe>", "args": ["mcp"]}}}
 ```
 
 `link --unattended` 用于服务器和 CI：本机管理员在链接时预先同意命令，运行时不再逐条确认（只读级别不生效）。

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use agentrouter_device::config::Access;
-use agentrouter_device::consent::{Ask, Confirm};
+use agentrouter_device::consent::{Ask, Confirm, Decision};
 use agentrouter_device::device::{Device, Options};
 use agentrouter_device::jobs::Shell;
 use agentrouter_device::keystore::Identity;
@@ -75,7 +75,11 @@ pub fn temp_dir(tag: &str) -> PathBuf {
 pub fn confirm_with(answer: bool, asked: Arc<AtomicUsize>) -> Confirm {
     Arc::new(move |_: &Ask, _: &AtomicBool| {
         asked.fetch_add(1, Ordering::SeqCst);
-        answer
+        if answer {
+            Decision::Once
+        } else {
+            Decision::Deny
+        }
     })
 }
 
@@ -91,6 +95,7 @@ pub fn device(
         access,
         folders: folders.iter().map(|f| f.display().to_string()).collect(),
         confirm,
+        indicator: Arc::new(agentrouter_device::presence::Terminal),
         home: data.to_path_buf(),
         shell: Shell::default_for_os(),
     });

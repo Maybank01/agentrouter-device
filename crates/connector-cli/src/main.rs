@@ -10,7 +10,7 @@ use agentrouter_device::device::{Device, Options};
 use agentrouter_device::jobs::Shell;
 use agentrouter_device::net::{self, Runtime};
 use agentrouter_device::util::{data_dir, home_dir, log};
-use agentrouter_device::{audit, consent, gate, keystore, link};
+use agentrouter_device::{audit, consent, gate, keystore, link, local_ipc, mcp};
 
 const USAGE: &str = "AgentRouter 设备 (agentrouter-device)
 
@@ -26,6 +26,9 @@ const USAGE: &str = "AgentRouter 设备 (agentrouter-device)
   agentrouter-device status                  查看链接、访问级别和审计日志
   agentrouter-device unlink                  在本机删除这台设备的身份
   agentrouter-device audit verify            检查审计日志有没有被改过
+  agentrouter-device mcp                     本机 MCP（stdio）：让这台电脑上的 AI（Claude Code、Codex、Cursor…）
+                                             经正在运行的 AgentRouter 桌面版使用电脑（只限当前用户，不开网络端口）
+  agentrouter-device mcp setup               显示给本机 AI 的提示词和各客户端的配置写法
 ";
 
 #[derive(Default)]
@@ -114,6 +117,14 @@ fn main() {
                 1
             }
         },
+        "mcp" => match flags.positional.first().map(String::as_str) {
+            Some("setup") => mcp_setup(),
+            None => mcp_stdio(),
+            Some(other) => {
+                eprintln!("不认识的 mcp 子命令：{other}");
+                2
+            }
+        },
         "version" | "--version" | "-V" => {
             println!("agentrouter-device {}", env!("CARGO_PKG_VERSION"));
             0
@@ -180,6 +191,7 @@ fn run(flags: Flags) -> i32 {
         } else {
             consent::deny_all()
         },
+        indicator: Arc::new(agentrouter_device::presence::Terminal),
         home: home_dir(),
         shell: Shell::default_for_os(),
     }));
@@ -347,6 +359,130 @@ fn status() -> i32 {
     match audit::verify(&log) {
         Ok(n) => println!("审计日志：{}（{n} 条，完好）", log.display()),
         Err((line, why)) => println!("审计日志：{}（第 {line} 行有问题：{why}）", log.display()),
+    }
+    0
+}
+
+/// Forwards `tools/call` to the running AgentRouter app over the local IPC (connects lazily, once more
+/// after a dropped connection); answers in a structured "not running" when nobody listens.
+struct Forward {
+    client: std::cell::RefCell<Option<local_ipc::Client>>,
+    info: std::cell::RefCell<local_ipc::ClientInfo>,
+}
+
+impl Forward {
+    fn connect(&self) -> bool {
+        if self.client.borrow().is_some() {
+            return true;
+        }
+        match local_ipc::Client::connect(&self.info.borrow()) {
+            Ok(c) => {
+                *self.client.borrow_mut() = Some(c);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+}
+
+impl mcp::Tools for Forward {
+    fn call(&self, name: &str, args: &serde_json::Value, _: &AtomicBool) -> serde_json::Value {
+        let message = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": args}});
+        for _ in 0..2 {
+            if !self.connect() {
+                break;
+            }
+            let answer = self
+                .client
+                .borrow_mut()
+                .as_mut()
+                .map(|c| c.request(&message));
+            match answer {
+                Some(Ok(reply)) => {
+                    return match reply.get("result") {
+                        Some(result) => result.clone(),
+                        None => mcp::error_result(
+                            "FAILED",
+                            reply["error"]["message"]
+                                .as_str()
+                                .unwrap_or("AgentRouter 没能完成这个调用。"),
+                        ),
+                    };
+                }
+                _ => {
+                    self.client.borrow_mut().take();
+                }
+            }
+        }
+        mcp::error_result("NOT_RUNNING", mcp::NOT_RUNNING)
+    }
+}
+
+/// `agentrouter-device mcp`: the local MCP over stdio (one JSON-RPC message per line; logs only on
+/// stderr). It holds nothing itself: the running desktop app carries out every call.
+fn mcp_stdio() -> i32 {
+    use std::io::{BufRead, Write};
+    let forward = Forward {
+        client: std::cell::RefCell::new(None),
+        info: std::cell::RefCell::new(local_ipc::ClientInfo {
+            name: "unknown".into(),
+            version: String::new(),
+        }),
+    };
+    let stdin = std::io::stdin();
+    let mut stdout = std::io::stdout().lock();
+    let no = AtomicBool::new(false);
+    for line in stdin.lock().lines() {
+        let Ok(line) = line else { break };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let reply = match serde_json::from_str::<serde_json::Value>(&line) {
+            Ok(message) => {
+                if message.get("method").and_then(|m| m.as_str()) == Some("initialize")
+                    && let Some(client) = mcp::client_of(&message)
+                {
+                    *forward.info.borrow_mut() = client;
+                }
+                let reply = mcp::handle(&message, &forward, &no);
+                if message.get("method").and_then(|m| m.as_str())
+                    == Some("notifications/initialized")
+                {
+                    // Say hello early, so the app can show which local AIs are connected.
+                    forward.connect();
+                }
+                reply
+            }
+            Err(_) => Some(
+                serde_json::json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": "Parse error"}}),
+            ),
+        };
+        if let Some(reply) = reply
+            && writeln!(stdout, "{reply}")
+                .and_then(|_| stdout.flush())
+                .is_err()
+        {
+            break;
+        }
+    }
+    0
+}
+
+/// `agentrouter-device mcp setup`: the text for local AIs and each client's manual setup.
+fn mcp_setup() -> i32 {
+    let exe = mcp::connector_path();
+    println!("复制给本机 AI 的话：\n\n{}\n", mcp::setup_prompt(&exe));
+    println!("或者手动加：");
+    for snippet in mcp::setup_snippets(&exe) {
+        let place = snippet["file"]
+            .as_str()
+            .map(|f| format!("（{f}）"))
+            .unwrap_or_default();
+        println!(
+            "\n{}{place}：\n{}",
+            snippet["client"].as_str().unwrap_or(""),
+            snippet["text"].as_str().unwrap_or("")
+        );
     }
     0
 }

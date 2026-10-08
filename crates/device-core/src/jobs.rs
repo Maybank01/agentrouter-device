@@ -272,9 +272,18 @@ impl Jobs {
     }
 
     pub fn kill_all(&self) {
+        self.kill_where(|_| true);
+    }
+
+    /// End the running jobs one session started (the person disconnected it on the bar).
+    pub fn kill_session(&self, session: &str) {
+        self.kill_where(|job| job.session == session);
+    }
+
+    fn kill_where(&self, matches: impl Fn(&Job) -> bool) {
         let jobs: Vec<Arc<Job>> = self.jobs.lock().unwrap().values().cloned().collect();
         for job in jobs {
-            if job.status() == Status::Running {
+            if job.status() == Status::Running && matches(&job) {
                 (self.events)("kill", &job.session, Some(&job.id), "stopped on the device");
                 job.kill();
             }

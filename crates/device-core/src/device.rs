@@ -1,6 +1,10 @@
 //! The device's side of each request: protocol checks, then the local gate (access level, folders,
 //! confirmation), then the action, with every step in the audit log and on the console stream.
+//!
+//! Every request also passes the presence gate (`presence.rs`): it is refused while the person has
+//! paused AI use, and nothing is done unless the "being controlled" indicator is on screen.
 
+use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -13,10 +17,11 @@ use serde_json::{Value, json};
 
 use crate::audit::Audit;
 use crate::config::Access;
-use crate::consent::{Ask, Confirm};
+use crate::consent::{Ask, Confirm, Decision, destructive, family};
 use crate::gate::{Scope, display, resolve_folders};
 use crate::jobs::{EventSink, Jobs, MAX_JOBS, Shell};
 use crate::keystore::Identity;
+use crate::presence::{Indicator, Presence, Who};
 use crate::protocol::{DeviceError, ReplayCache, check_request};
 use crate::util::{b64, b64_decode, clip, now_ms};
 
@@ -38,7 +43,11 @@ pub struct Device {
     console: Console,
     last_use: Mutex<Option<(String, i64)>>,
     /// Conversations the person let run commands freely (full access), until restart or a level change.
-    trusted: Mutex<std::collections::HashSet<String>>,
+    trusted: Mutex<HashSet<String>>,
+    /// (session, kind of command) the person allowed "from now on" in that conversation.
+    similar: Mutex<HashSet<(String, String)>>,
+    /// Who uses this computer now, pause, and the "being controlled" indicator gate.
+    pub presence: Presence,
     home: PathBuf,
     shell: Shell,
 }
@@ -48,6 +57,8 @@ pub struct Options {
     pub access: Access,
     pub folders: Vec<String>,
     pub confirm: Confirm,
+    /// The "being controlled" indicator; requests are refused while it is not on screen.
+    pub indicator: Arc<dyn Indicator>,
     pub home: PathBuf,
     pub shell: Shell,
 }
@@ -59,6 +70,22 @@ fn emit_to(console: &Console, kind: &str, session: &str, job: Option<&str>, text
             event["job"] = json!(job);
         }
         let _ = tx.send(json!({"id": stream, "event": event}).to_string());
+    }
+}
+
+/// What the device is about to do, written by the device itself for the bar's activity line.
+fn activity(action: &str, args: &Value) -> String {
+    let s = |k: &str| args.get(k).and_then(Value::as_str).unwrap_or("");
+    match action {
+        "exec" => format!("运行：{}", s("command")),
+        "read_file" => format!("读取：{}", s("path")),
+        "write_file" => format!("写入：{}", s("path")),
+        "job" => match s("action") {
+            "input" => "给正在跑的命令输入".to_string(),
+            "kill" => "停下一个任务".to_string(),
+            _ => "看任务的输出".to_string(),
+        },
+        _ => String::new(),
     }
 }
 
@@ -86,7 +113,9 @@ impl Device {
             confirm: options.confirm,
             console,
             last_use: Mutex::new(None),
-            trusted: Mutex::new(std::collections::HashSet::new()),
+            trusted: Mutex::new(HashSet::new()),
+            similar: Mutex::new(HashSet::new()),
+            presence: Presence::new(options.indicator),
             home: options.home,
             shell: options.shell,
         }
@@ -109,10 +138,15 @@ impl Device {
         scope.access = access;
         scope.folders = resolve_folders(folders);
         self.trusted.lock().unwrap().clear();
+        self.similar.lock().unwrap().clear();
     }
 
     pub fn access(&self) -> Access {
         self.scope.read().unwrap().access
+    }
+
+    pub fn shell_name(&self) -> &'static str {
+        self.shell.name()
     }
 
     pub fn set_console(&self, stream: Option<(Sender<String>, i64)>) {
@@ -162,7 +196,27 @@ impl Device {
     pub fn stop_all(&self, why: &str) {
         self.jobs.kill_all();
         self.trusted.lock().unwrap().clear();
+        self.similar.lock().unwrap().clear();
+        self.presence.clear();
         self.record(json!({"event": "stop_all", "reason": why}));
+    }
+
+    /// The person ended one session on the bar: its jobs die and it is refused from now on.
+    pub fn end_session(&self, session: &str, why: &str) {
+        self.jobs.kill_session(session);
+        self.trusted.lock().unwrap().remove(session);
+        self.similar.lock().unwrap().retain(|(s, _)| s != session);
+        self.presence.end(session);
+        self.record(
+            json!({"event": "session_end", "session": session, "by": "device", "reason": why}),
+        );
+    }
+
+    /// Pause or resume AI use from the bar: new requests are refused, running commands keep running
+    /// (suspending processes is an antivirus red flag, docs/AV-HYGIENE.md); to stop them, disconnect.
+    pub fn set_paused(&self, paused: bool) {
+        self.presence.set_paused(paused);
+        self.record(json!({"event": if paused { "paused" } else { "resumed" }}));
     }
 
     /// One signed request from the gateway.
@@ -204,25 +258,78 @@ impl Device {
                 return Err(e);
             }
         };
+        if !verified.share.is_empty() {
+            // Share sessions (DEVICE-PROTOCOL.md §11–§13) need the local share table, which this
+            // build does not have yet: nothing shared from here is valid.
+            let e = DeviceError::new("SHARE_INVALID", "this computer is not shared");
+            self.record(json!({"session": verified.session, "action": verified.action, "outcome": e.code, "share": verified.share}));
+            return Err(e);
+        }
         *self.last_use.lock().unwrap() = Some((verified.session.clone(), now_ms()));
-        let session = verified.session.as_str();
-        let result = self.act(&verified.action, session, args, cancel);
-        let summary = summary(&verified.action, args);
+        let mut who = Who::conversation(&verified.session);
+        if !verified.client.is_empty() {
+            who.client = Some(verified.client.clone());
+        }
+        self.carry_out(&verified.session, &who, &verified.action, args, cancel)
+    }
+
+    /// One call from an AI on this computer through the local MCP (`mcp.rs`): no cloud signature (the
+    /// caller is a program of this user, who could run commands anyway), but the same local gate,
+    /// confirmations, presence and audit as a cloud request. A local AI only sees its own jobs.
+    pub fn serve_local(
+        &self,
+        session: &str,
+        who: &Who,
+        action: &str,
+        args: &Value,
+        cancel: &AtomicBool,
+    ) -> Result<Value, DeviceError> {
+        if action == "job"
+            && let Some(job) = self
+                .jobs
+                .get(args.get("job").and_then(Value::as_str).unwrap_or(""))
+            && job.session != session
+        {
+            return Err(DeviceError::new("JOB_NOT_FOUND", "no such job"));
+        }
+        self.carry_out(session, who, action, args, cancel)
+    }
+
+    fn carry_out(
+        &self,
+        session: &str,
+        who: &Who,
+        action: &str,
+        args: &Value,
+        cancel: &AtomicBool,
+    ) -> Result<Value, DeviceError> {
+        let summary = summary(action, args);
+        let base = json!({"session": session, "action": action, "text": summary, "via": who.via, "client": who.client});
+        let entry = |extra: Value| {
+            let mut e = base.clone();
+            if let (Some(e), Some(extra)) = (e.as_object_mut(), extra.as_object()) {
+                e.extend(extra.clone());
+            }
+            e
+        };
+        let result = match self.presence.begin(session, who) {
+            Err(e) => Err(e),
+            Ok(fresh) => {
+                if fresh {
+                    self.record(self.presence.audit_entry("session_start", session, who));
+                }
+                self.act(action, session, who, args, cancel)
+            }
+        };
         match &result {
-            Ok(value) => self.record(json!({
-                "session": session, "action": verified.action, "text": summary, "outcome": "ok",
-                "job": value.get("job"), "status": value.get("status"),
-            })),
+            Ok(value) => self.record(entry(json!({
+                "outcome": "ok", "job": value.get("job"), "status": value.get("status"),
+            }))),
             Err(e) => {
                 if e.code == "DENIED" {
-                    self.emit(
-                        "denied",
-                        session,
-                        None,
-                        &format!("{}: {}", verified.action, e.message),
-                    );
+                    self.emit("denied", session, None, &format!("{action}: {}", e.message));
                 }
-                self.record(json!({"session": session, "action": verified.action, "text": summary, "outcome": e.code, "detail": e.message}));
+                self.record(entry(json!({"outcome": e.code, "detail": e.message})));
             }
         }
         result
@@ -232,34 +339,31 @@ impl Device {
         &self,
         action: &str,
         session: &str,
+        who: &Who,
         args: &Value,
         cancel: &AtomicBool,
     ) -> Result<Value, DeviceError> {
         let scope = self.scope.read().unwrap().clone();
+        if action == "info" {
+            return Ok(json!({"device": self.info(), "jobs": self.jobs.list(session)}));
+        }
+        // Nothing happens on this computer unless the "being controlled" indicator is on screen.
+        self.presence.ensure_shown()?;
+        self.presence.note(session, &activity(action, args));
         match action {
-            "info" => Ok(json!({"device": self.info(), "jobs": self.jobs.list(session)})),
-            "exec" => self.exec(&scope, session, args, cancel),
-            "job" => self.job(&scope, session, args, cancel),
+            "exec" => self.exec(&scope, session, who, args, cancel),
+            "job" => self.job(&scope, session, who, args, cancel),
             "read_file" => self.read_file(&scope, session, args),
-            "write_file" => self.write_file(&scope, session, args, cancel),
+            "write_file" => self.write_file(&scope, session, who, args, cancel),
             _ => Err(DeviceError::new("UNKNOWN_ACTION", "unknown action")),
         }
     }
 
-    fn ask(
-        &self,
-        session: &str,
-        action: &'static str,
-        text: String,
-        cancel: &AtomicBool,
-    ) -> Result<(), DeviceError> {
-        let ask = Ask {
-            session: session.to_string(),
-            action,
-            text,
-        };
-        if (self.confirm)(&ask, cancel) {
-            Ok(())
+    fn ask(&self, ask: Ask, cancel: &AtomicBool) -> Result<Decision, DeviceError> {
+        let _waiting = self.presence.waiting(&ask.session);
+        let decision = (self.confirm)(&ask, cancel);
+        if decision.allowed() {
+            Ok(decision)
         } else {
             Err(DeviceError::denied("用户在设备上拒绝了"))
         }
@@ -269,6 +373,7 @@ impl Device {
         &self,
         scope: &Scope,
         session: &str,
+        who: &Who,
         args: &Value,
         cancel: &AtomicBool,
     ) -> Result<Value, DeviceError> {
@@ -301,23 +406,44 @@ impl Device {
                 .ok_or_else(|| DeviceError::denied("这台设备没有允许的文件夹"))?,
         };
         let started = Instant::now();
+        let deletes = destructive(command);
+        let kind = family(command);
+        let ask = |action: &'static str| Ask {
+            session: session.to_string(),
+            action,
+            text: command.to_string(),
+            place: Some(display(&cwd)),
+            destructive: deletes,
+            family: if action == "exec" { kind.clone() } else { None },
+            who: who.clone(),
+        };
         if scope.access != Access::Full {
-            self.ask(
-                session,
-                "exec",
-                format!("{command}\n\n位置：{}", display(&cwd)),
-                cancel,
-            )?;
+            let allowed_before = kind.as_ref().is_some_and(|k| {
+                self.similar
+                    .lock()
+                    .unwrap()
+                    .contains(&(session.to_string(), k.clone()))
+            });
+            if !allowed_before {
+                let decision = self.ask(ask("exec"), cancel)?;
+                if decision == Decision::Similar
+                    && let Some(k) = &kind
+                {
+                    self.similar
+                        .lock()
+                        .unwrap()
+                        .insert((session.to_string(), k.clone()));
+                    self.record(json!({"event": "allow_similar", "session": session, "kind": k}));
+                }
+            }
         } else if !self.trusted.lock().unwrap().contains(session) {
             // Full access: no shell starts before the person says yes here, once per conversation.
-            self.ask(
-                session,
-                "exec_full",
-                format!("{command}\n\n位置：{}", display(&cwd)),
-                cancel,
-            )?;
+            self.ask(ask("exec_full"), cancel)?;
             self.trusted.lock().unwrap().insert(session.to_string());
         }
+        // Asking may have taken a while: the indicator must still be up when the shell starts.
+        self.presence.ensure_shown()?;
+        let _busy = self.presence.busy(session, &format!("运行：{command}"));
         let job = self.jobs.start(command, &cwd, session, self.shell)?;
         job.wait(timeout - started.elapsed().as_secs_f64(), cancel);
         Ok(job.view(0))
@@ -327,6 +453,7 @@ impl Device {
         &self,
         scope: &Scope,
         session: &str,
+        who: &Who,
         args: &Value,
         cancel: &AtomicBool,
     ) -> Result<Value, DeviceError> {
@@ -360,12 +487,20 @@ impl Device {
                 }
                 if scope.access == Access::Confirm {
                     self.ask(
-                        session,
-                        "input",
-                        format!("{input}\n\n任务：{}", job.command),
+                        Ask {
+                            session: session.to_string(),
+                            action: "input",
+                            text: input.to_string(),
+                            place: Some(job.command.clone()),
+                            destructive: false,
+                            family: None,
+                            who: who.clone(),
+                        },
                         cancel,
                     )?;
+                    self.presence.ensure_shown()?;
                 }
+                let _busy = self.presence.busy(session, "给正在跑的命令输入");
                 job.write_input(input)?;
                 self.emit("input", session, Some(&job.id), input);
                 Ok(job.view(offset))
@@ -415,6 +550,7 @@ impl Device {
         &self,
         scope: &Scope,
         session: &str,
+        who: &Who,
         args: &Value,
         cancel: &AtomicBool,
     ) -> Result<Value, DeviceError> {
@@ -437,19 +573,27 @@ impl Device {
         let shown = display(&path);
         if scope.access == Access::Confirm {
             self.ask(
-                session,
-                "write",
-                format!(
-                    "{shown}（{} 字节{}）",
-                    bytes.len(),
-                    if append { "，追加" } else { "" }
-                ),
+                Ask {
+                    session: session.to_string(),
+                    action: "write",
+                    text: format!(
+                        "{shown}（{} 字节{}）",
+                        bytes.len(),
+                        if append { "，追加" } else { "" }
+                    ),
+                    place: path.parent().map(display),
+                    destructive: false,
+                    family: None,
+                    who: who.clone(),
+                },
                 cancel,
             )?;
+            self.presence.ensure_shown()?;
         }
         if path.is_dir() {
             return Err(DeviceError::new("FAILED", "这是一个文件夹，不是文件"));
         }
+        let _busy = self.presence.busy(session, &format!("写入：{shown}"));
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
                 DeviceError::new("FAILED", format!("could not create the folder: {e}"))
