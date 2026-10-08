@@ -184,6 +184,9 @@ fn similar_commands_only_for_simple_safe_ones() {
     assert_eq!(run(delete), "ok");
     let all = asks.lock().unwrap();
     assert_eq!(all.len(), 4);
+    // Nothing is going on any more: no activity line is left behind.
+    let views = device.presence.snapshot(&[]);
+    assert!(views.iter().all(|v| v.activity.is_empty()), "{views:?}");
     assert!(all[2].destructive && all[3].destructive);
     assert!(all[2].family.is_none());
 }

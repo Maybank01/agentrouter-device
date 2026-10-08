@@ -231,6 +231,18 @@ impl Presence {
         }
     }
 
+    /// A request finished: nothing is going on for the session any more unless something still is
+    /// (a refused or failed request must not leave its activity line behind).
+    pub fn settle(&self, session: &str) {
+        let mut s = self.state.lock().unwrap();
+        if let Some(e) = s.sessions.get_mut(session)
+            && e.busy == 0
+            && e.waiting == 0
+        {
+            e.activity.clear();
+        }
+    }
+
     /// The session waits for the person to answer on this computer.
     pub fn waiting(&self, session: &str) -> Waiting<'_> {
         let mut s = self.state.lock().unwrap();

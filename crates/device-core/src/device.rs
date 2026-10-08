@@ -332,6 +332,7 @@ impl Device {
                 self.record(entry(json!({"outcome": e.code, "detail": e.message})));
             }
         }
+        self.presence.settle(session);
         result
     }
 
