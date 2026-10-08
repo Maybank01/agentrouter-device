@@ -58,11 +58,15 @@ jobs:
             "$exe | $($v.CompanyName) | $($v.ProductName) | $($v.FileVersion) | $($v.FileDescription)"
             if (-not $v.CompanyName -or -not $v.ProductName -or -not $v.FileVersion -or -not $v.FileDescription) { throw "$exe has no complete version resource" }
           }
+      - name: Installer (NSIS, per-user, unsigned)
+        working-directory: app/src-tauri
+        run: npx --yes @tauri-apps/cli@2.12.1 build --bundles nsis --ci
       - name: Collect
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target/release/agentrouter.exe, target/release/agentrouter-device.exe dist/
+          Copy-Item target/release/bundle/nsis/*.exe dist/
           @"
           AgentRouter desktop (agentrouter.exe) and the command-line connector (agentrouter-device.exe).
           Built by GitHub Actions from commit $env:GITHUB_SHA.
