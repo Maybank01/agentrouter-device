@@ -39,7 +39,7 @@ jobs:
           Set-Content -Encoding utf8 (Join-Path $scratch 'notes.md') "# notes`n- hello from CI"
           $exe = Resolve-Path target/release/agentrouter-device.exe
           $out = Join-Path $root 'link.out'
-          $link = Start-Process -FilePath $exe -ArgumentList @('link', '--access', 'folders', '--folder', $scratch, '--name', 'CI 测试机', '--unattended', '--yes') -RedirectStandardOutput $out -RedirectStandardError "$out.err" -NoNewWindow -PassThru
+          $link = Start-Process -FilePath $exe -ArgumentList @('link', '--access', 'folders', '--folder', $scratch, '--name', 'CI-e2e', '--unattended', '--yes') -RedirectStandardOutput $out -RedirectStandardError "$out.err" -NoNewWindow -PassThru
           $code = $null
           for ($i = 0; $i -lt 60 -and -not $code; $i++) {
             Start-Sleep -Seconds 1
