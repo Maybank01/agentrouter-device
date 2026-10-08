@@ -15,7 +15,7 @@
   "bundle": {
     "active": true,
     "targets": [
-      "nsis"
+      "msi"
     ],
     "publisher": "AgentRouter",
     "copyright": "Apache-2.0",
@@ -28,8 +28,8 @@
       "icons/icon.ico"
     ],
     "windows": {
-      "nsis": {
-        "installMode": "currentUser"
+      "webviewInstallMode": {
+        "type": "skip"
       }
     }
   }
