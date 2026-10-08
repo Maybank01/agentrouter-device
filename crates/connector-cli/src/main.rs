@@ -104,10 +104,6 @@ fn main() {
             println!("已在本机删除这台设备的身份。网页「我的设备」里的记录请在那里移除。");
             0
         }
-        "autostart" => {
-            println!("开机自动启动会在签名版本里提供（未签名的程序不写系统启动项）。");
-            1
-        }
         "audit" => match audit::verify(&data_dir().join("audit.log")) {
             Ok(n) => {
                 println!("审计日志完好，共 {n} 条。");

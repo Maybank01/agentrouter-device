@@ -498,13 +498,11 @@ impl Drop for ProcessTree {
 #[cfg(windows)]
 fn spawn_tree(mut cmd: Command) -> std::io::Result<(Child, ProcessTree)> {
     use std::os::windows::io::AsRawHandle;
-    use std::os::windows::process::CommandExt;
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
         SetInformationJobObject,
     };
-    use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
     // SAFETY: plain Win32 calls on handles we own; the job handle is kept in ProcessTree.
     unsafe {
@@ -521,7 +519,8 @@ fn spawn_tree(mut cmd: Command) -> std::io::Result<(Child, ProcessTree)> {
             &limits as *const _ as *const _,
             std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
         );
-        cmd.creation_flags(CREATE_NO_WINDOW);
+        // No hidden window (docs/AV-HYGIENE.md): from the desktop app the shell gets its own,
+        // visible console; from the command line it shares the terminal.
         let mut child = cmd.spawn()?;
         if AssignProcessToJobObject(job, child.as_raw_handle() as _) == 0 {
             let err = std::io::Error::last_os_error();

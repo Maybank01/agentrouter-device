@@ -53,7 +53,36 @@ fn agent() -> ureq::Agent {
         .new_agent()
 }
 
+/// Gateways the device talks to: a domain name over TLS (no raw IP addresses), or this computer for
+/// local testing (docs/AV-HYGIENE.md).
+pub fn gateway_allowed(gateway: &str) -> Result<(), String> {
+    let lower = gateway.trim().to_ascii_lowercase();
+    for local in ["http://127.0.0.1", "http://localhost"] {
+        if let Some(rest) = lower.strip_prefix(local)
+            && (rest.is_empty() || rest.starts_with(':') || rest.starts_with('/'))
+        {
+            return Ok(());
+        }
+    }
+    let Some(rest) = lower.strip_prefix("https://") else {
+        return Err(format!("网关必须是 https 网址：{gateway}"));
+    };
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
+    let name = host.split(':').next().unwrap_or("");
+    let ip_like = host.starts_with('[') || name.chars().all(|c| c.is_ascii_digit() || c == '.');
+    if name.is_empty() || ip_like || !name.contains('.') || host.contains('@') {
+        return Err(format!("网关必须是域名（不能是 IP 地址）：{gateway}"));
+    }
+    Ok(())
+}
+
 pub fn post(gateway: &str, path: &str, body: &Value) -> Result<Value, HttpError> {
+    gateway_allowed(gateway).map_err(|message| HttpError {
+        status: 0,
+        code: "GATEWAY_NOT_ALLOWED".into(),
+        message,
+    })?;
     let url = format!("{}{path}", gateway.trim_end_matches('/'));
     let mut response = agent().post(&url).send_json(body).map_err(|e| HttpError {
         status: 0,
@@ -366,6 +395,7 @@ pub fn run(rt: Arc<Runtime>) {
 type Ws = WebSocket<MaybeTlsStream<TcpStream>>;
 
 fn connect(gateway: &str) -> Result<Ws, String> {
+    gateway_allowed(gateway)?;
     let base = gateway.trim_end_matches('/');
     let url = if let Some(rest) = base.strip_prefix("https://") {
         format!("wss://{rest}/device/v1/connect")
@@ -543,5 +573,24 @@ pub fn watch_config(rt: Arc<Runtime>) {
         if level_changed || gateway_changed {
             rt.reconnect.store(true, Ordering::SeqCst);
         }
+    }
+}
+
+#[cfg(test)]
+mod gateway_tests {
+    use super::gateway_allowed;
+
+    #[test]
+    fn only_domains_over_tls_or_this_computer() {
+        assert!(gateway_allowed("https://agent-gateway-dev.agentrouter.top").is_ok());
+        assert!(gateway_allowed("https://agent-gateway-dev.agentrouter.top:443/").is_ok());
+        assert!(gateway_allowed("http://127.0.0.1:8081").is_ok());
+        assert!(gateway_allowed("http://localhost:8081").is_ok());
+        assert!(gateway_allowed("http://agent-gateway-dev.agentrouter.top").is_err());
+        assert!(gateway_allowed("https://203.0.113.7").is_err());
+        assert!(gateway_allowed("https://[2001:db8::1]:443").is_err());
+        assert!(gateway_allowed("https://user@203.0.113.7").is_err());
+        assert!(gateway_allowed("http://127.0.0.1.evil.example").is_err());
+        assert!(gateway_allowed("https://intranet").is_err());
     }
 }

@@ -29,6 +29,8 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
+      - name: AV hygiene (docs/AV-HYGIENE.md)
+        run: bash scripts/av-hygiene.sh
       # The desktop shell (app/) is built and tested on Windows only for now.
       - run: cargo clippy --workspace --exclude agentrouter-app --all-targets -- -D warnings
       - run: cargo test --workspace --exclude agentrouter-app
@@ -47,7 +49,15 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
       - name: Release build
-        run: cargo build --release -p agentrouter-device-cli -p agentrouter-app
+        run: cargo build --release --locked -p agentrouter-device-cli -p agentrouter-app
+      - name: Version resource present (docs/AV-HYGIENE.md)
+        shell: pwsh
+        run: |
+          foreach ($exe in 'target/release/agentrouter.exe', 'target/release/agentrouter-device.exe') {
+            $v = (Get-Item $exe).VersionInfo
+            "$exe | $($v.CompanyName) | $($v.ProductName) | $($v.FileVersion) | $($v.FileDescription)"
+            if (-not $v.CompanyName -or -not $v.ProductName -or -not $v.FileVersion -or -not $v.FileDescription) { throw "$exe has no complete version resource" }
+          }
       - name: Collect
         shell: pwsh
         run: |

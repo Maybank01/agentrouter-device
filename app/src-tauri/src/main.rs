@@ -29,6 +29,7 @@ pub fn show_main(app: &tauri::AppHandle) {
 }
 
 fn main() {
+    agentrouter_device::util::set_app_kind("desktop");
     let cfg = Config::load();
     let device = Arc::new(Device::new(Options {
         data_dir: data_dir(),

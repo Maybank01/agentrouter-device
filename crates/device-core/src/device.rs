@@ -152,6 +152,7 @@ impl Device {
             "home": display(&self.home),
             "access": scope.access.as_str(),
             "folders": scope.folders.iter().map(|f| display(f)).collect::<Vec<_>>(),
+            "app": crate::util::app_kind(),
             "version": env!("CARGO_PKG_VERSION"),
             "maxJobs": MAX_JOBS,
         })

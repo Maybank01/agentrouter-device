@@ -2,8 +2,12 @@
 //! impersonated or broken into could fake a web "yes".
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::sync::atomic::AtomicBool;
+#[cfg(windows)]
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+#[cfg(windows)]
+use std::time::Instant;
 
 /// What a request wants the person to approve.
 #[derive(Debug, Clone)]

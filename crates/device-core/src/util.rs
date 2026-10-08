@@ -178,6 +178,17 @@ pub fn clip(text: &str, max: usize) -> String {
     format!("{head}…（共 {count} 字）")
 }
 
+static APP_KIND: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+
+/// Which client this is ("desktop" or "cli"), reported in `hello` beside the version. Set once at start.
+pub fn set_app_kind(kind: &'static str) {
+    let _ = APP_KIND.set(kind);
+}
+
+pub fn app_kind() -> &'static str {
+    APP_KIND.get().copied().unwrap_or("cli")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

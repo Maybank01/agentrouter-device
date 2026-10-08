@@ -13,7 +13,7 @@ AgentRouter 的客户端是一层很小的皮：窗口里就是云端网页（�
 
 ## 访问级别（只在本机选，网页只显示不能改）
 
-- **只读**（默认）：只能看设备信息，不能读写文件、不能运行命令。
+- **只读**（默认）：只能读你选的文件夹里的文件；不能写文件，不能运行命令。
 - **只限这些文件夹**：文件只能在你选的文件夹里读写；每条命令都先问你。
 - **每条都确认**：文件和命令都先问你。
 - **完全访问**：每个对话第一次运行命令时问一次，之后不再逐条问。
@@ -32,7 +32,7 @@ agentrouter-device status | access <级别> | unlink | audit verify
 
 ## 开发
 
-本机只做 `cargo build` / `cargo check` / `cargo clippy`；测试只在 GitHub 托管的 runner 上跑（见 `.github/workflows/ci.yml`）。CI 产物没有代码签名，见 [docs/SIGNING.md](docs/SIGNING.md)。安全说明见 [SECURITY.md](SECURITY.md)。
+本机只做 `cargo build` / `cargo check` / `cargo clippy`；测试只在 GitHub 托管的 runner 上跑（见 `.github/workflows/ci.yml`）。CI 产物没有代码签名，见 [docs/SIGNING.md](docs/SIGNING.md)；降低杀软误报的构建要求见 [docs/AV-HYGIENE.md](docs/AV-HYGIENE.md)。安全说明见 [SECURITY.md](SECURITY.md)。
 
 ---
 

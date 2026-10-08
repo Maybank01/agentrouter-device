@@ -17,7 +17,8 @@ Please report vulnerabilities privately through GitHub's "Report a vulnerability
 - **密钥**：设备私钥用 Windows DPAPI 加密保存（其他系统是仅本人可读的文件）；解除链接时覆盖删除。
 - **审计**：每个请求（包括被拒绝的）写入带哈希链的 JSONL 日志，`agentrouter-device audit verify` 可以校验。
 - **桌面壳和网页之间**：网页只能调用两个命令：读设备状态（不含任何密钥或令牌）、发起链接（仍要本机确认）。这两个命令只开放给配置的 AgentRouter 网址。
-- **不签名**：现阶段发布的 exe 没有代码签名，也不写开机启动项，见 [docs/SIGNING.md](docs/SIGNING.md)。
+- **不签名**：现阶段发布的 exe 没有代码签名，也不写开机启动项，见 [docs/SIGNING.md](docs/SIGNING.md)；降低误报的构建要求见 [docs/AV-HYGIENE.md](docs/AV-HYGIENE.md)（CI 检查）。
+- **只连网关域名**：只接受 https 域名（不接受裸 IP）；127.0.0.1/localhost 只用于本地测试。
 
 ## Design summary
 
