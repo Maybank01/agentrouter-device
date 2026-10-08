@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>正在使用这台电脑</title>
+<style>
+  /* The screen-edge glow while commands run: click-through, nothing but light on the edges. */
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; pointer-events: none; }
+  .glow { position: fixed; inset: 0; border-radius: 0;
+          box-shadow: inset 0 0 0 3px oklch(0.68 0.19 3 / 0.85), inset 0 0 28px 6px oklch(0.68 0.19 3 / 0.45);
+          animation: breathe 2.4s ease-in-out infinite; }
+  @keyframes breathe { 50% { box-shadow: inset 0 0 0 3px oklch(0.68 0.19 3 / 0.6), inset 0 0 40px 10px oklch(0.68 0.19 3 / 0.3); } }
+  @media (prefers-reduced-motion: reduce) { .glow { animation: none; } }
+</style>
+</head>
+<body><div class="glow"></div></body>
+</html>

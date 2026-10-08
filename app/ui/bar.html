@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>正在使用这台电脑</title>
+<link rel="stylesheet" href="ui.css">
+<style>
+  body { display: inline-block; }
+  .pill { margin: 12px; display: inline-flex; align-items: center; gap: 10px; height: 52px; padding: 0 8px 0 4px; border-radius: 999px; background: var(--bg);
+          box-shadow: 0 0 0 1.5px oklch(0.68 0.17 3 / 0.55), 0 6px 22px -6px oklch(0.45 0.09 350 / 0.45); white-space: nowrap; }
+  .grip { width: 22px; height: 40px; display: grid; place-items: center; color: var(--t3); cursor: ew-resize; touch-action: none; }
+  .grip svg { width: 18px; height: 18px; }
+  .av { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; background: var(--t1); color: var(--bg); box-shadow: 0 0 0 2px var(--bg), 0 0 0 3.5px var(--acc); flex: none; }
+  .av.conv { background: var(--accs); color: var(--acct); }
+  .av svg { width: 17px; height: 17px; }
+  .tx { display: flex; flex-direction: column; line-height: 1.3; max-width: 330px; min-width: 0; }
+  .tx b { font-size: 14px; overflow: hidden; text-overflow: ellipsis; }
+  .tx b em { font-style: normal; font-weight: 500; color: var(--t2); }
+  .tx span { font-size: 12.5px; color: var(--acct); overflow: hidden; text-overflow: ellipsis; }
+  .tx span.idle { color: var(--t2); }
+  .tm { font-family: var(--mono); font-size: 14px; color: var(--t2); padding: 0 4px; }
+  .sep { width: 1px; height: 26px; background: var(--line); }
+  .btn { height: 34px; padding: 0 16px; }
+  .compact .tx { max-width: 120px; }
+  .off { width: 32px; height: 32px; border-radius: 50%; border: 0; display: grid; place-items: center; background: none; color: var(--acc); cursor: pointer; }
+  .off:hover { background: var(--accs); }
+</style>
+</head>
+<body>
+<div class="pill" id="pill"></div>
+<script src="ui.js"></script>
+<script>
+const { call, act, esc, icon, poll, timer, clock, fit } = AR;
+const pill = document.getElementById("pill");
+let shown = "";
+let offset = 0; // app clock minus page clock
+
+function who(s) {
+  const w = s.who || {};
+  return { title: w.title || w.name || "", via: w.via, client: w.client };
+}
+
+function render(st) {
+  offset = st.now - Date.now();
+  const sessions = st.sessions || [];
+  if (!sessions.length) { pill.innerHTML = ""; shown = ""; return; }
+  const first = sessions.find((s) => s.activity) || sessions[0];
+  const w = who(first);
+  const many = sessions.length > 1;
+  const working = sessions.some((s) => s.activity || s.runningJobs > 0);
+  const waiting = sessions.some((s) => s.waiting);
+  const started = Math.min(...sessions.map((s) => s.startedAt || st.now));
+  const kind = w.via === "local" ? "直接操作" : w.via === "conversation" ? "云端对话" : "远程";
+  const title = many ? `${sessions.length} 个连接正在用这台电脑` : `${esc(w.title)} <em>· ${kind}</em>`;
+  let line;
+  if (st.paused) line = `<span class="idle">已暂停 · 新的请求都会被拒绝</span>`;
+  else if (waiting) line = `<span>等你确认</span>`;
+  else if (working) line = `<span>${esc(first.activity || "正在运行命令")}</span>`;
+  else line = `<span class="idle">${clock(started)} 连上 · 现在没在做事</span>`;
+  const avatar = `<span class="av ${w.via === "conversation" ? "conv" : ""}">${icon(w.via === "conversation" ? "chat" : "term")}</span>`;
+  const grip = `<span class="grip" id="grip" title="沿屏幕顶端拖动">${icon("grip")}</span>`;
+  const compact = st.bar && st.bar.compact;
+  const key = JSON.stringify([title, line, compact, st.paused, working || waiting]);
+  if (key !== shown) {
+    shown = key;
+    pill.classList.toggle("compact", !!compact);
+    if (compact) {
+      pill.innerHTML = `${grip}${avatar}<span class="tx"><b>${many ? sessions.length + " 个连接" : esc(w.title)}</b></span>
+        <span class="tm" id="tm"></span><button class="off" id="end" title="断开">${icon("power", "s18")}</button>`;
+    } else {
+      const pause = working || waiting || st.paused
+        ? `<button class="btn sec" id="pause">${icon(st.paused ? "chev" : "pause", "s14")}${st.paused ? "继续" : "暂停"}</button>` : "";
+      pill.innerHTML = `${grip}${avatar}<span class="tx"><b>${title}</b>${line}</span>
+        <span class="tm" id="tm"></span><span class="sep"></span>${pause}<button class="btn pri" id="end">断开</button>`;
+    }
+    const p = document.getElementById("pause");
+    if (p) p.onclick = () => act("pause", !st.paused);
+    document.getElementById("end").onclick = () => (many ? act("end_all") : act("end_session", first.session));
+    wireDrag();
+    requestAnimationFrame(() => fit(pill));
+  }
+  const tm = document.getElementById("tm");
+  if (tm) tm.textContent = timer(Date.now() + offset - started);
+}
+
+function wireDrag() {
+  const grip = document.getElementById("grip");
+  if (!grip) return;
+  let startX = null;
+  grip.onpointerdown = (e) => {
+    startX = e.screenX;
+    grip.setPointerCapture(e.pointerId);
+    call("bar_drag_start").catch(() => {});
+  };
+  grip.onpointermove = (e) => {
+    if (startX === null) return;
+    call("bar_drag", { dx: e.screenX - startX }).catch(() => {});
+  };
+  grip.onpointerup = grip.onpointercancel = () => { startX = null; };
+}
+
+poll(render, 400);
+</script>
+</body>
+</html>

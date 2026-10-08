@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-pair-submit"
+description = "Enables the pair_submit command without any pre-configured scope."
+commands.allow = ["pair_submit"]
+
+[[permission]]
+identifier = "deny-pair-submit"
+description = "Denies the pair_submit command without any pre-configured scope."
+commands.deny = ["pair_submit"]

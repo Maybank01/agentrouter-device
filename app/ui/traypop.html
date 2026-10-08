@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentRouter</title>
+<link rel="stylesheet" href="ui.css">
+<style>
+  .win { width: 264px; padding: 6px; border-radius: 10px; background-image: none; }
+  .hd { padding: 8px 10px 8px; }
+  .hd b { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+  .hd .st { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--t2); margin: 2px 0 0 22px; }
+  .who { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 4px 10px 4px 22px; min-width: 0; }
+  .who .a { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; background: var(--t1); color: var(--bg); flex: none; }
+  .who .a.conv { background: var(--accs); color: var(--acct); }
+  .who .a svg { width: 11px; height: 11px; }
+  .who span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sep { height: 1px; background: var(--line); margin: 4px 8px; }
+  .it { height: 32px; display: flex; align-items: center; gap: 10px; padding: 0 10px; border-radius: 6px; border: 0; background: none; width: 100%; text-align: left; cursor: pointer; font-size: 13.5px; color: var(--t1); }
+  .it:hover { background: var(--bg3); }
+  .it svg { color: var(--t2); }
+  .it .r { margin-left: auto; color: var(--t3); font-size: 12px; display: flex; align-items: center; gap: 2px; }
+  .it .r svg { width: 12px; height: 12px; color: var(--t3); }
+  .big { margin: 4px 4px 6px; width: calc(100% - 8px); border-radius: 8px; height: 38px; }
+</style>
+</head>
+<body>
+<div class="win" id="win"></div>
+<script src="ui.js"></script>
+<script>
+const { call, act, esc, icon, poll, fit } = AR;
+const win = document.getElementById("win");
+let shown = "";
+
+const STATUS = {
+  idle: ["idle", "在线 · 空闲"],
+  working: ["working", ""],
+  reconnecting: ["reconnecting", "连不上，正在重连"],
+  disconnected: ["", "已断开"],
+  unlinked: ["hollow", "还没链接"],
+};
+
+function item(action, ic, text, right) {
+  return `<button class="it" data-act="${action}">${icon(ic)}<span>${text}</span>${right ? `<span class="r">${esc(right)}${icon("chev")}</span>` : ""}</button>`;
+}
+
+function render(st) {
+  const look = st.look || "unlinked";
+  const sessions = st.sessions || [];
+  const [dot, text0] = STATUS[look] || STATUS.unlinked;
+  const text = look === "working" ? `正在干活 · ${sessions.length} 个连接` : text0;
+  const key = JSON.stringify([look, text, st.name, st.accessLabel, sessions.map((s) => [s.who && s.who.title, s.activity])]);
+  if (key === shown) return;
+  shown = key;
+  const head = `<div class="hd"><b><i class="mark"></i>${esc(st.name || "这台电脑")}</b><div class="st"><i class="dot ${dot}"></i>${text}</div></div>`;
+  const who = look === "working" ? sessions.map((s) => {
+    const w = s.who || {};
+    return `<div class="who"><span class="a ${w.via === "conversation" ? "conv" : ""}">${icon(w.via === "conversation" ? "chat" : "term")}</span><span>${esc(w.title || w.name)} · ${esc(s.activity || "连着")}</span></div>`;
+  }).join("") : "";
+  let body;
+  if (look === "disconnected" || look === "unlinked") {
+    const label = look === "unlinked" ? "链接这台电脑" : "重新链接";
+    body = `<button class="btn pri big" data-act="${look === "unlinked" ? "open_pair" : "reconnect"}">${icon(look === "unlinked" ? "link" : "power")}${label}</button>
+      <div class="sep"></div>${item("open_main", "pc", "打开 AgentRouter")}${item("quit", "x", "退出")}`;
+  } else {
+    body = `<div class="sep"></div>${item("open_main", "pc", "打开 AgentRouter")}${item("audit", "activity", "看记录")}
+      ${look === "working" ? item("stop_all", "stop", "停下所有任务") : ""}
+      <div class="sep"></div>${item("open_share", "share", "分享这台电脑")}${item("open_connect", "link", "连接别人的电脑")}
+      ${item("open_level", "folder", "访问级别", st.accessLabel)}${item("disconnect", "power", "断开")}
+      <div class="sep"></div>${item("quit", "x", "退出")}`;
+  }
+  win.innerHTML = head + who + body;
+  win.querySelectorAll("[data-act]").forEach((b) => (b.onclick = () => {
+    call("win_close").catch(() => {});
+    act(b.dataset.act);
+  }));
+  requestAnimationFrame(() => fit());
+}
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") call("win_close"); });
+poll(render, 500);
+</script>
+</body>
+</html>

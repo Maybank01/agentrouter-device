@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>链接这台电脑</title>
+<link rel="stylesheet" href="ui.css">
+<style>
+  .win { width: 516px; }
+  .hd { display: flex; align-items: flex-start; gap: 16px; padding: 4px 28px 0; }
+  .hd h1 { font-size: 21px; margin: 0; font-weight: 700; line-height: 1.3; }
+  .hd .sub { color: var(--t2); font-size: 13px; margin-top: 2px; }
+  .hd .g { flex: 1; }
+  .lock { display: flex; align-items: center; gap: 6px; padding-top: 6px; }
+  .lock .t { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; background: var(--bg2); color: var(--t2); }
+  .lock .t.on { background: var(--acc); color: var(--on); }
+  .lock .w { display: flex; gap: 4px; }
+  .lock .w i { width: 5px; height: 5px; border-radius: 50%; background: var(--line); }
+  .lock .w i.on { background: var(--acc); }
+  .body { padding: 18px 28px 4px; display: flex; flex-direction: column; gap: 6px; }
+  .label { font-size: 13px; color: var(--t2); margin: 10px 0 4px; font-weight: 600; }
+  .label:first-child { margin-top: 0; }
+  .folders { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 14px 10px 58px; align-items: center; }
+  .foot { display: flex; align-items: center; gap: 10px; padding: 18px 28px 22px; }
+  .foot .left { flex: 1; font-size: 12px; color: var(--t3); }
+  .err { color: var(--dng); font-size: 13px; min-height: 0; }
+  .bar { height: 4px; border-radius: 4px; background: var(--bg3); overflow: hidden; margin: 6px 0 10px; }
+  .bar i { display: block; height: 100%; background: var(--acc); border-radius: 4px; transition: width .4s; }
+  .steps { display: flex; flex-direction: column; gap: 12px; padding: 6px 0; }
+  .step { display: flex; align-items: center; gap: 10px; color: var(--t3); }
+  .step .ck { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; box-shadow: inset 0 0 0 1.5px var(--line); }
+  .step.done { color: var(--t1); }
+  .step.done .ck { background: var(--acc); color: var(--on); box-shadow: none; }
+  .step.done .ck svg { width: 12px; height: 12px; stroke-width: 2.6; }
+  .step.now { color: var(--t1); }
+  .step.now .ck { box-shadow: none; }
+  .code { display: flex; align-items: center; gap: 12px; background: var(--bg2); border-radius: 12px; padding: 12px 14px; margin-top: 6px; }
+  .code b { font-family: var(--mono); font-size: 22px; letter-spacing: .08em; color: var(--acct); }
+  .code small { color: var(--t2); font-size: 13px; }
+  .done { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px; padding: 6px 28px 0; }
+  .done img { width: 120px; height: 120px; object-fit: contain; }
+  .done h1 { font-size: 22px; margin: 4px 0 0; }
+  .done p, .errp p { margin: 0; color: var(--t2); }
+  .errp { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 10px; padding: 12px 36px 0; }
+  .errp .ic { width: 52px; height: 52px; border-radius: 50%; display: grid; place-items: center; background: var(--dngs); color: var(--dng); }
+  .errp h1 { font-size: 21px; margin: 0; }
+  .center { justify-content: center; }
+</style>
+</head>
+<body>
+<div class="win" id="win">
+  <div class="tb"><i class="mark"></i><span id="tbt">AgentRouter</span><span class="g"></span><span id="wc"></span></div>
+  <div id="view"></div>
+</div>
+<script src="ui.js"></script>
+<script>
+const { call, act, esc, icon, fit, LEVELS, WC_MIN, WC_X, wireTitlebar } = AR;
+document.getElementById("wc").innerHTML = WC_MIN + WC_X;
+wireTitlebar(document.getElementById("win"));
+const view = document.getElementById("view");
+let draft = null;   // what the person is choosing (name, level, folders)
+let touched = false; // once the person changes something, polling no longer resets the choice
+let shownKey = "";
+
+function lock(step) {
+  const on = (n) => (step >= n ? "on" : "");
+  return `<div class="lock"><span class="t on"><i class="mark" style="background:var(--on)"></i></span>
+    <span class="w"><i class="${on(1)}"></i><i class="${on(2)}"></i><i class="${on(3)}"></i></span>
+    <span class="t ${step >= 3 ? "on" : ""}">${icon("pc", "s18")}</span></div>`;
+}
+
+function choose(s) {
+  const level = s.mode === "level";
+  document.getElementById("tbt").textContent = level ? "AgentRouter · 访问级别" : "AgentRouter · 链接这台电脑";
+  const opts = ["readonly", "folders", "confirm", "full"].map((id) => {
+    const L = LEVELS[id], sel = draft.access === id;
+    const folders = id === "folders" || id === "readonly" || id === "confirm";
+    const chips = sel && folders
+      ? `<div class="folders">${draft.folders.map((f, i) => `<span class="chip">${icon("folder", "s14")}<span title="${esc(f)}">${esc(f)}</span><button class="x" data-rm="${i}" title="去掉">${icon("x", "s14")}</button></span>`).join("")}
+         <button class="link" id="add">＋ 加一个文件夹</button></div>`
+      : "";
+    return `<button class="opt ${sel ? "sel" : ""}" data-level="${id}"><span class="ic">${icon(L.icon)}</span>
+      <span class="tx"><b>${L.label}${L.tag ? `<span class="tag">${L.tag}</span>` : ""}</b><small>${L.text}</small></span>
+      <span class="rd">${icon("check")}</span></button>${chips}`;
+  }).join("");
+  view.innerHTML = `
+    <div class="hd"><div><h1>${level ? "AI 在这台电脑上能做什么" : "链接这台电脑"}</h1>
+      <div class="sub">${level ? "改完马上生效，正在跑的任务不受影响。" : "链接以后，你在 AgentRouter 的对话就能用这台电脑。"}</div></div>
+      <span class="g"></span>${level ? "" : lock(0)}</div>
+    <div class="body">
+      ${level ? "" : `<div class="label">设备名</div><input class="field" id="name" maxlength="40" value="${esc(draft.name)}" placeholder="比如：台式机">`}
+      <div class="label">AI 在这台电脑上能做什么</div>
+      ${opts}
+      <div class="err" id="err"></div>
+    </div>
+    <div class="foot"><span class="left">以后在托盘里随时能改。</span>
+      <button class="btn sec" id="cancel">取消</button>
+      <button class="btn pri" id="ok">${level ? "保存" : "链接这台电脑"}</button></div>`;
+  const name = document.getElementById("name");
+  if (name) name.oninput = () => { touched = true; draft.name = name.value; };
+  view.querySelectorAll("[data-level]").forEach((b) => (b.onclick = () => { touched = true; draft.access = b.dataset.level; render(s, true); }));
+  view.querySelectorAll("[data-rm]").forEach((b) => (b.onclick = (e) => { e.stopPropagation(); touched = true; draft.folders.splice(+b.dataset.rm, 1); render(s, true); }));
+  const add = document.getElementById("add");
+  if (add) add.onclick = async (e) => {
+    e.stopPropagation();
+    const f = await call("pair_pick_folder");
+    touched = true;
+    if (f && !draft.folders.includes(f)) draft.folders.push(f);
+    render(s, true);
+  };
+  document.getElementById("cancel").onclick = () => act("pair_cancel");
+  document.getElementById("ok").onclick = async () => {
+    const err = document.getElementById("err");
+    try { await call("pair_submit", { name: draft.name, access: draft.access, folders: draft.folders }); }
+    catch (e) { err.textContent = String(e); }
+  };
+}
+
+function linking(s) {
+  const L = LEVELS[s.access] || {};
+  const steps = ["账号确认好了", "和云端连上", "托盘准备好"].map((t, i) => {
+    const cls = s.step > i ? "done" : s.step === i ? "now" : "";
+    const mark = s.step > i ? icon("check") : s.step === i ? '<span class="spin"></span>' : "";
+    return `<div class="step ${cls}"><span class="ck">${mark}</span>${t}</div>`;
+  }).join("");
+  const code = s.code && !s.fromWeb
+    ? `<div class="code"><div><small>配对码</small><br><b>${esc(s.code)}</b></div><small style="flex:1">在打开的网页上确认这个码。</small></div>`
+    : "";
+  view.innerHTML = `
+    <div class="hd"><div><h1>正在连上…</h1><div class="sub">${esc(s.name)} · ${esc(L.label || "")}</div></div><span class="g"></span>${lock(s.step + 1)}</div>
+    <div class="body"><div class="bar"><i style="width:${Math.max(12, (s.step / 3) * 100)}%"></i></div>${code}<div class="steps">${steps}</div></div>
+    <div class="foot"><span class="left"></span><button class="btn sec" id="cancel">取消</button></div>`;
+  document.getElementById("cancel").onclick = () => act("pair_cancel");
+}
+
+function done(s) {
+  const L = LEVELS[s.access] || {};
+  const n = (s.folders || []).length;
+  view.innerHTML = `
+    <div class="done"><img src="img/cheer.webp" alt=""><h1>${esc(s.name)}已连上</h1>
+      <p>对话第一次用它时，会先问你。</p>
+      <span class="chip" style="margin-top:6px">${icon(L.icon || "folder", "s14")}<span>${esc(L.label || "")}${n ? ` · ${n} 个文件夹` : ""}</span></span></div>
+    <div class="foot"><span class="left"><button class="link" id="devices">看我的设备</button></span>
+      <button class="btn pri" id="chat">回到对话</button></div>`;
+  document.getElementById("devices").onclick = () => act("pair_devices");
+  document.getElementById("chat").onclick = () => act("pair_chat");
+}
+
+function failed(s) {
+  const expired = s.error === "expired";
+  view.innerHTML = `
+    <div class="errp"><span class="ic">${icon(expired ? "refresh" : "warn", "s20")}</span>
+      <h1>${expired ? "这个码过期了" : "没连上"}</h1><p>${esc(s.message || "")}</p></div>
+    <div class="foot center"><button class="btn sec" id="cancel">取消</button>
+      <button class="btn pri" id="retry">${expired ? "换一个码" : "再试一次"}</button></div>`;
+  document.getElementById("cancel").onclick = () => act("pair_cancel");
+  document.getElementById("retry").onclick = () => act("pair_retry");
+}
+
+function render(s, force) {
+  const key = JSON.stringify([s.stage, s.step, s.code, s.error, s.message, s.mode, touched ? "" : [s.name, s.access, s.folders]]);
+  if (!draft || !touched || s.stage !== "choose") draft = { name: s.name, access: s.access, folders: [...(s.folders || [])] };
+  if (!force && key === shownKey) return;
+  shownKey = key;
+  ({ choose, linking, done, error: failed }[s.stage] || choose)(s);
+  requestAnimationFrame(() => fit());
+}
+
+async function tick() {
+  try { render(await call("pair_get")); } catch (e) { /* closing */ }
+}
+tick();
+setInterval(tick, 400);
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") act("pair_cancel"); });
+</script>
+</body>
+</html>

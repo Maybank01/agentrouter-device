@@ -16,7 +16,7 @@ Please report vulnerabilities privately through GitHub's "Report a vulnerability
 - **进程管理**：命令放进 Job Object（Windows）或进程组（Linux/macOS），断开、暂停或退出时整棵进程树一起结束。命令行是普通的 `powershell -NoProfile -NonInteractive -Command`，不用 `-EncodedCommand`，不改执行策略。
 - **密钥**：设备私钥用 Windows DPAPI 加密保存（其他系统是仅本人可读的文件）；解除链接时覆盖删除。
 - **审计**：每个请求（包括被拒绝的）写入带哈希链的 JSONL 日志，`agentrouter-device audit verify` 可以校验。
-- **桌面壳和网页之间**：网页只能调用两个命令：读设备状态（不含任何密钥或令牌）、发起链接（仍要本机确认）。这两个命令只开放给配置的 AgentRouter 网址。
+- **桌面壳和网页之间**：网页只能调用两个命令：读设备状态（不含任何密钥或令牌）、发起链接（仍要在本机的链接窗口里选级别、点链接）。这两个命令只开放给配置的 AgentRouter 网址，而且只给装网页的那个 webview。其余命令（确认、访问级别、控制条）只开放给应用自带的本地页面；网页不能跳转到本地页面。确认窗口只能回答它自己的那个问题。
 - **不签名**：现阶段发布的 exe 没有代码签名，也不写开机启动项，见 [docs/SIGNING.md](docs/SIGNING.md)；降低误报的构建要求见 [docs/AV-HYGIENE.md](docs/AV-HYGIENE.md)（CI 检查）。
 - **“正在被使用”控制条**：除 `info` 外，任何动作执行前都要求控制条在屏幕上；显示不出来就回 `INDICATOR_UNAVAILABLE`，不问、不启动进程。控制条上可以暂停（新请求回 `PAUSED`）或断开（结束这个会话的全部进程）。删除类命令每次都单独确认，不能“同类以后直接允许”。
 - **本机 MCP**：`agentrouter-device mcp` 只连本机通道：Windows 命名管道只允许当前用户的 SID、拒绝远程客户端，并核对服务端进程号；Unix 套接字在 0700 目录里、权限 0600，并核对对方 uid。连上还要出示令牌文件里的随机令牌（文件只有当前用户可读）。不开任何网络端口。

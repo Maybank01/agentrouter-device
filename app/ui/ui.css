@@ -1,0 +1,170 @@
+/* AgentRouter client windows, visual direction 03 樱粉 (owner's pick, 2026-10-08).
+   One accent (pink) on primary buttons, the selected row and focus; sky-blue text links; neutral
+   surfaces with a hint of pink; red only for deleting. Light and dark follow the system. */
+:root {
+  color-scheme: light dark;
+  --wall: linear-gradient(155deg, oklch(0.94 0.032 350), oklch(0.91 0.04 225));
+  --bg: oklch(1 0 0);
+  --bg2: oklch(0.968 0.005 340);
+  --bg3: oklch(0.948 0.007 340);
+  --line: oklch(0.925 0.006 340);
+  --t1: oklch(0.235 0.01 330);
+  --t2: oklch(0.5 0.012 310);
+  --t3: oklch(0.64 0.01 310);
+  --acc: oklch(0.635 0.19 3);
+  --acch: oklch(0.6 0.19 3);
+  --accp: oklch(0.56 0.18 3);
+  --accs: oklch(0.68 0.17 3 / 0.1);
+  --acct: oklch(0.56 0.18 3);
+  --on: oklch(1 0 0);
+  --dng: oklch(0.56 0.2 27);
+  --dngs: oklch(0.56 0.2 27 / 0.08);
+  --ring: oklch(0.68 0.17 3 / 0.4);
+  --ok: oklch(0.68 0.16 150);
+  --warn: oklch(0.75 0.15 70);
+  --off: oklch(0.7 0.01 310);
+  --link: oklch(0.66 0.14 235);
+  --sh: 0 0 0 1px oklch(0.4 0.04 340 / 0.07), 0 2px 6px oklch(0.4 0.05 340 / 0.06), 0 18px 40px -12px oklch(0.45 0.09 350 / 0.28);
+  --sh-sm: 0 0 0 1px oklch(0.4 0.04 340 / 0.08), 0 4px 14px -4px oklch(0.45 0.09 350 / 0.25);
+  --tint: linear-gradient(180deg, oklch(0.68 0.17 3 / 0.07), transparent 120px);
+  --r: 14px;
+  --font: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
+  --mono: "Cascadia Mono", "Cascadia Code", Consolas, "Microsoft YaHei UI", monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --wall: linear-gradient(155deg, oklch(0.25 0.03 345), oklch(0.18 0.025 240));
+    --bg: oklch(0.23 0.007 330);
+    --bg2: oklch(0.195 0.006 330);
+    --bg3: oklch(0.275 0.009 330);
+    --line: oklch(0.305 0.01 330);
+    --t1: oklch(0.96 0.005 340);
+    --t2: oklch(0.76 0.012 320);
+    --t3: oklch(0.6 0.012 320);
+    --acc: oklch(0.66 0.17 3);
+    --acch: oklch(0.7 0.16 3);
+    --accp: oklch(0.62 0.17 3);
+    --accs: oklch(0.7 0.16 3 / 0.16);
+    --acct: oklch(0.8 0.11 3);
+    --dng: oklch(0.66 0.18 27);
+    --dngs: oklch(0.66 0.18 27 / 0.15);
+    --ring: oklch(0.72 0.15 3 / 0.5);
+    --off: oklch(0.55 0.01 310);
+    --link: oklch(0.76 0.12 230);
+    --sh: 0 0 0 1px oklch(1 0 0 / 0.07), 0 2px 6px oklch(0 0 0 / 0.3), 0 20px 44px -12px oklch(0 0 0 / 0.6);
+    --sh-sm: 0 0 0 1px oklch(1 0 0 / 0.08), 0 6px 16px -4px oklch(0 0 0 / 0.5);
+    --tint: linear-gradient(180deg, oklch(0.7 0.16 3 / 0.08), transparent 120px);
+  }
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font: 14px/1.5 var(--font);
+  color: var(--t1);
+  background: transparent;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  cursor: default;
+  overflow: hidden;
+}
+body.solid { background: var(--bg); }
+button, input { font: inherit; color: inherit; }
+svg.i { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+svg.i.s14 { width: 14px; height: 14px; }
+svg.i.s18 { width: 18px; height: 18px; }
+svg.i.s20 { width: 20px; height: 20px; }
+.muted { color: var(--t2); }
+.faint { color: var(--t3); }
+.mono { font-family: var(--mono); }
+a, .link { color: var(--link); text-decoration: none; cursor: pointer; background: none; border: 0; padding: 0; }
+a:hover, .link:hover { text-decoration: underline; }
+:focus { outline: none; }
+:focus-visible, .focus-ring { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--ring) !important; }
+
+/* Brand mark: pink rounded square with a white diamond. */
+.mark { position: relative; width: 14px; height: 14px; border-radius: 4px; background: var(--acc); flex: none; display: inline-block; }
+.mark::after { content: ""; position: absolute; inset: 4px; border-radius: 1.5px; background: var(--on); transform: rotate(45deg); }
+.mark.lg { width: 18px; height: 18px; border-radius: 5px; } .mark.lg::after { inset: 5px; }
+
+/* A floating window: the transparent native window holds a rounded card with the shadow. */
+.win { position: relative; margin: 12px; background: var(--bg); background-image: var(--tint); border-radius: var(--r); box-shadow: var(--sh); overflow: hidden; display: flex; flex-direction: column; }
+.tb { height: 40px; display: flex; align-items: center; gap: 8px; padding: 0 6px 0 16px; color: var(--t2); font-size: 13px; flex: none; }
+.tb .g { flex: 1; align-self: stretch; }
+.wc { width: 36px; height: 28px; display: grid; place-items: center; border-radius: 8px; border: 0; background: none; color: var(--t2); cursor: pointer; }
+.wc:hover { background: var(--bg3); color: var(--t1); }
+.wc.x:hover { background: var(--dng); color: var(--on); }
+.wc svg { width: 10px; height: 10px; stroke: currentColor; stroke-width: 1.2; fill: none; }
+
+/* Buttons: pills. */
+.btn { height: 36px; padding: 0 18px; border-radius: 999px; border: 0; display: inline-flex; align-items: center; justify-content: center; gap: 6px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: transform .08s, background .12s; }
+.btn:active { transform: scale(.97); }
+.btn.pri { background: var(--acc); color: var(--on); }
+.btn.pri:hover { background: var(--acch); }
+.btn.sec { background: var(--bg3); color: var(--t1); }
+.btn.sec:hover { background: var(--line); }
+.btn.soft { background: var(--accs); color: var(--acct); }
+.btn.soft:hover { background: oklch(0.68 0.17 3 / 0.16); }
+.btn.dng { background: var(--dng); color: var(--on); }
+.btn.wide { width: 100%; }
+.btn.sm { height: 30px; padding: 0 12px; font-size: 13px; }
+.btn[disabled] { opacity: .5; cursor: default; }
+.iconbtn { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; border: 0; background: none; color: var(--t2); cursor: pointer; }
+.iconbtn:hover { background: var(--bg3); color: var(--t1); }
+
+/* Inputs: soft fields with a pink underline on focus. */
+.field { height: 38px; border-radius: 10px; border: 0; background: var(--bg2); padding: 0 12px; width: 100%; box-shadow: inset 0 -2px 0 transparent; user-select: text; }
+.field::placeholder { color: var(--t3); letter-spacing: .1em; }
+.field:focus { box-shadow: inset 0 -2px 0 var(--acc); background: var(--bg3); }
+
+/* Status dots. */
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--off); display: inline-block; flex: none; }
+.dot.idle, .dot.on { background: var(--ok); }
+.dot.working { background: var(--acc); box-shadow: 0 0 0 3px var(--accs); animation: pulse 1.6s ease-in-out infinite; }
+.dot.reconnecting { background: var(--warn); }
+.dot.hollow { background: none; box-shadow: inset 0 0 0 1.5px var(--off); }
+@keyframes pulse { 50% { box-shadow: 0 0 0 5px transparent; } }
+
+/* Toggle. */
+.toggle { width: 44px; height: 26px; border-radius: 999px; background: var(--line); border: 0; position: relative; cursor: pointer; flex: none; transition: background .15s; }
+.toggle::after { content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: var(--on); box-shadow: 0 1px 3px oklch(0 0 0 / .25); transition: left .15s; }
+.toggle.on { background: var(--acc); }
+.toggle.on::after { left: 21px; }
+
+/* Radio rows (levels): pink check and pink soft background when selected. */
+.opt { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border-radius: 12px; cursor: pointer; border: 0; background: none; width: 100%; text-align: left; }
+.opt:hover { background: var(--bg2); }
+.opt .ic { width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; background: var(--bg3); color: var(--t2); flex: none; }
+.opt .tx { flex: 1; min-width: 0; }
+.opt .tx b { display: block; font-weight: 600; }
+.opt .tx small { display: block; color: var(--t2); font-size: 13px; }
+.opt .tag { font-size: 11px; color: var(--acct); background: var(--accs); border-radius: 999px; padding: 1px 8px; margin-left: 6px; font-weight: 600; vertical-align: 1px; }
+.opt .rd { width: 20px; height: 20px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--line); flex: none; margin-top: 6px; display: grid; place-items: center; color: var(--on); }
+.opt.sel { background: var(--accs); }
+.opt.sel .ic { background: var(--acc); color: var(--on); }
+.opt.sel .rd { background: var(--acc); box-shadow: none; }
+.opt .rd svg { width: 12px; height: 12px; stroke-width: 2.6; opacity: 0; }
+.opt.sel .rd svg { opacity: 1; }
+
+.chip { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 999px; background: var(--bg); box-shadow: inset 0 0 0 1px var(--line); font-size: 13px; color: var(--t1); max-width: 100%; }
+.chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip .x { border: 0; background: none; color: var(--t3); cursor: pointer; padding: 0; display: grid; }
+.chip .x:hover { color: var(--dng); }
+
+.avatar { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; background: var(--t1); color: var(--bg); flex: none; box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--acc); }
+.avatar.conv { background: var(--accs); color: var(--acct); }
+.avatar svg { width: 18px; height: 18px; }
+
+.note { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--t2); }
+.note svg { color: var(--acc); }
+.warnbox { border-left: 3px solid var(--dng); background: var(--dngs); border-radius: 4px 10px 10px 4px; padding: 10px 14px; font-weight: 600; color: var(--t1); }
+.codebox { background: var(--bg2); border-radius: 10px; padding: 10px 12px; font-family: var(--mono); font-size: 13px; line-height: 1.55; white-space: pre-wrap; word-break: break-all; max-height: 132px; overflow: auto; user-select: text; }
+
+.check { display: flex; gap: 10px; align-items: center; cursor: pointer; font-size: 13px; color: var(--t1); }
+.check input { appearance: none; width: 18px; height: 18px; border-radius: 5px; box-shadow: inset 0 0 0 1.5px var(--line); margin: 0; display: grid; place-items: center; cursor: pointer; flex: none; }
+.check input:checked { background: var(--acc); box-shadow: none; }
+.check input:checked::after { content: ""; width: 9px; height: 5px; border: solid var(--on); border-width: 0 0 2px 2px; transform: translate(0, -1px) rotate(-45deg); }
+
+.spin { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--accs); border-top-color: var(--acc); animation: rot .8s linear infinite; flex: none; }
+@keyframes rot { to { transform: rotate(360deg); } }
+.hidden { display: none !important; }

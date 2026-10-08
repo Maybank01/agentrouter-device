@@ -60,7 +60,8 @@ jobs:
           }
       - name: Installer (MSI to Program Files, unsigned, not self-extracting)
         working-directory: app/src-tauri
-        run: npx --yes @tauri-apps/cli@2.12.1 build --bundles msi --ci
+        # The command-line connector goes next to agentrouter.exe (local MCP: `agentrouter-device mcp`).
+        run: npx --yes @tauri-apps/cli@2.12.1 build --bundles msi --ci --config tauri.msi.conf.json
       - name: Collect
         shell: pwsh
         run: |
@@ -78,4 +79,81 @@ jobs:
         with:
           name: agentrouter-windows-x64-unsigned
           path: dist/
+          retention-days: 14
+
+  gui-smoke:
+    name: Windows GUI smoke (screenshots)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: gui-smoke
+      - name: Build (smoke feature, never shipped)
+        run: cargo build --release --locked -p agentrouter-device-cli -p agentrouter-app --features agentrouter-app/smoke
+      - name: Larger screen
+        shell: pwsh
+        continue-on-error: true
+        run: Set-DisplayResolution -Width 1920 -Height 1080 -Force
+      - name: Run the app through its scenes and take screenshots
+        shell: pwsh
+        run: |
+          $root = (Get-Location).Path
+          $env:AGENTROUTER_DEVICE_HOME = Join-Path $root 'smoke-home'
+          $env:AGENTROUTER_SMOKE_DIR = Join-Path $root 'smoke-out'
+          New-Item -ItemType Directory -Force smoke-home, smoke-out, shots | Out-Null
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          function Shoot([string]$path) {
+            $b = [System.Windows.Forms.SystemInformation]::VirtualScreen
+            $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+            $g = [System.Drawing.Graphics]::FromImage($bmp)
+            $g.CopyFromScreen($b.Left, $b.Top, 0, 0, $bmp.Size)
+            $bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
+            $g.Dispose(); $bmp.Dispose()
+          }
+          function Check-Mcp {
+            # A local AI's view: the real `agentrouter-device mcp` front end talking to the running app.
+            $lines = @(
+              '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci-smoke","version":"1"}}}',
+              '{"jsonrpc":"2.0","method":"notifications/initialized"}',
+              '{"jsonrpc":"2.0","id":2,"method":"tools/list"}',
+              '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_devices","arguments":{}}}'
+            )
+            $out = $lines | & (Join-Path $root 'target/release/agentrouter-device.exe') mcp
+            $out | Set-Content -Encoding utf8 smoke-out/mcp.txt
+            if (-not (($out -join "`n") -match '"device":"this"')) { throw "local MCP did not list this computer" }
+            & (Join-Path $root 'target/release/agentrouter-device.exe') mcp setup | Set-Content -Encoding utf8 smoke-out/mcp-setup.txt
+          }
+          $app = Start-Process -FilePath (Join-Path $root 'target/release/agentrouter.exe') -PassThru
+          $seen = @{}
+          $mcpChecked = $false
+          $deadline = (Get-Date).AddMinutes(15)
+          while ((Get-Date) -lt $deadline -and -not $app.HasExited) {
+            $scene = Get-Content smoke-out/scene.txt -ErrorAction SilentlyContinue
+            if ($scene -and $scene -ne 'done' -and -not $seen.ContainsKey($scene)) {
+              $seen[$scene] = $true
+              Shoot (Join-Path $root "shots/$scene.png")
+              Set-Content "smoke-out/$scene.shot" 'ok'
+              "shot $scene"
+              if (-not $mcpChecked) { Check-Mcp; $mcpChecked = $true }
+            }
+            Start-Sleep -Milliseconds 300
+          }
+          if (-not $app.HasExited) { Shoot (Join-Path $root 'shots/zz-timeout.png'); Stop-Process -Id $app.Id; throw 'the smoke run did not finish' }
+          Get-Content smoke-out/results.json
+          $results = Get-Content smoke-out/results.json -Raw | ConvertFrom-Json
+          if (-not $results.ok -or $app.ExitCode -ne 0) { throw 'smoke checks failed' }
+      - name: Logs
+        if: always()
+        shell: pwsh
+        run: Get-ChildItem smoke-home -Recurse -Filter *.log | ForEach-Object { Copy-Item $_.FullName smoke-out/ }
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: gui-smoke-screenshots
+          path: |
+            shots/
+            smoke-out/
           retention-days: 14

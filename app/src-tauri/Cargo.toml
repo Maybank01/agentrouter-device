@@ -18,11 +18,17 @@ tauri-build = { version = "2", features = [] }
 agentrouter-device-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tauri = { version = "2", features = ["tray-icon"] }
+# `unstable`: one window holding the cloud page and the native 电脑 panel side by side (multiwebview).
+tauri = { version = "2", features = ["tray-icon", "unstable"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Graphics_Dwm"] }
 
 [features]
 # Production behaviour without the tauri CLI (`cargo build --release` works as is).
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+# GUI smoke test for CI only (scenes + screenshots, see .github/workflows/ci.yml); never in releases.
+smoke = []
