@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>电脑</title>
+<link rel="stylesheet" href="ui.css">
+<style>
+  html, body { height: 100%; }
+  body { background: var(--bg); box-shadow: inset 1px 0 0 var(--line); overflow-y: auto; overflow-x: hidden; }
+  .wrap { padding: 14px 16px 24px; display: flex; flex-direction: column; gap: 10px; }
+  .top { display: flex; align-items: center; justify-content: space-between; padding: 2px 4px 4px; }
+  .top h2 { font-size: 17px; margin: 0; font-weight: 700; }
+  .card { background: var(--bg2); border-radius: 16px; padding: 14px; display: flex; flex-direction: column; gap: 10px; transition: box-shadow .3s; }
+  .card.flash { box-shadow: 0 0 0 2px var(--ring); }
+  .card h3 { font-size: 13px; color: var(--t2); margin: 0; font-weight: 600; }
+  .dev { display: flex; gap: 12px; align-items: center; }
+  .dev .ic { width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; background: var(--bg); color: var(--t1); box-shadow: var(--sh-sm); flex: none; }
+  .dev .ic.on { background: var(--acc); color: var(--on); box-shadow: none; }
+  .dev .tx { min-width: 0; flex: 1; }
+  .dev .tx b { display: block; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dev .tx small { display: flex; align-items: center; gap: 6px; color: var(--t2); font-size: 12.5px; flex-wrap: wrap; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .codes { background: var(--bg); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+  .codes .k { font-size: 12px; color: var(--t2); }
+  .codes .v { font-family: var(--mono); font-size: 20px; letter-spacing: .06em; font-weight: 600; user-select: text; }
+  .codes .line { display: flex; align-items: flex-end; justify-content: space-between; }
+  .msg { font-size: 12.5px; color: var(--t2); background: var(--bg); border-radius: 10px; padding: 8px 10px; }
+  .sess { display: flex; gap: 10px; align-items: center; }
+  .sess .ic { width: 38px; height: 38px; border-radius: 11px; display: grid; place-items: center; background: var(--acc); color: var(--on); flex: none; }
+  .sess .ic.conv { background: var(--accs); color: var(--acct); }
+  .sess .tx { flex: 1; min-width: 0; }
+  .sess .tx b { display: block; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sess .tx small { color: var(--t2); font-size: 12.5px; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .off { width: 32px; height: 32px; border-radius: 50%; border: 0; display: grid; place-items: center; background: none; color: var(--acc); cursor: pointer; flex: none; }
+  .off:hover { background: var(--accs); }
+  .connect { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; }
+  .connect .field { background: var(--bg); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .snips { display: flex; flex-direction: column; gap: 8px; }
+  .snip .h { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: var(--t2); margin-bottom: 4px; }
+  .snip .codebox { background: var(--bg); font-size: 12px; max-height: 120px; }
+  /* Anti-fraud question over the panel. */
+  .modal { position: fixed; inset: 0; background: oklch(0.2 0.02 330 / 0.35); display: flex; align-items: center; justify-content: center; padding: 14px; z-index: 5; }
+  .modal .win { margin: 0; width: 100%; padding: 22px 20px 18px; gap: 14px; }
+  .modal h1 { font-size: 19px; margin: 0; }
+  .modal p { margin: 0; color: var(--t1); }
+  .shield { width: 52px; height: 52px; border-radius: 50%; display: grid; place-items: center; background: var(--t1); color: var(--bg); }
+  .modal .btns { display: flex; flex-direction: column; gap: 8px; }
+  /* Folded to a rail. */
+  .rail { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 14px 0; }
+  .rail .pc { position: relative; color: var(--t2); }
+  .rail .pc .dot { position: absolute; right: -3px; bottom: -2px; box-shadow: 0 0 0 2px var(--bg); }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="ui.js"></script>
+<script>
+const { call, act, esc, icon, poll, timer, copy, LEVELS } = AR;
+const root = document.getElementById("root");
+const keys = {};
+let mode = "";
+let snipsOpen = false;
+let copied = 0;
+
+function statusLine(st) {
+  if (!st.linked) return `<i class="dot hollow"></i>还没链接`;
+  const level = LEVELS[st.access] ? LEVELS[st.access].label : st.accessLabel;
+  const map = { idle: ["idle", "在线"], working: ["working", "在线"], reconnecting: ["reconnecting", "连不上，正在重连"], disconnected: ["", "已断开"] };
+  const [dot, text] = map[st.look] || ["", ""];
+  const ai = st.look === "disconnected" ? "AI 用不了" : st.paused ? "已暂停" : "AI 能用";
+  return `<i class="dot ${dot}"></i>${text} · ${ai} · <button class="link" data-act="open_level">${esc(level)}</button>`;
+}
+
+function thisCard(st) {
+  let main;
+  if (!st.linked) {
+    main = `<div class="dev"><span class="ic">${icon("pc", "s20")}</span><span class="tx"><b>${esc(st.name)}</b><small>${statusLine(st)}</small></span></div>
+      <div class="msg">链接以后，你在 AgentRouter 的对话就能用这台电脑：看文件、跑命令，每一步都在这里问你。</div>
+      <button class="btn pri wide" data-act="open_pair">${icon("link")}链接这台电脑</button>`;
+    return `<div class="card" id="c-this"><h3>这台电脑</h3>${main}</div>`;
+  }
+  main = `<div class="dev"><span class="ic ${st.look === "working" ? "on" : ""}">${icon("pc", "s20")}</span><span class="tx"><b>${esc(st.name)}</b><small>${statusLine(st)}</small></span></div>`;
+  if (st.look === "disconnected") main += `<button class="btn pri wide" data-act="reconnect">${icon("power")}重新链接</button>`;
+  const sh = st.share || {};
+  const share = `<div class="row"><span>允许别人连这台电脑</span><button class="toggle ${sh.on ? "on" : ""}" id="share-toggle" aria-label="允许别人连这台电脑"></button></div>
+    ${sh.on ? `<div class="codes">
+        <div class="line"><div><div class="k">设备码</div><div class="v">${esc(sh.code)}</div></div><button class="iconbtn" data-copy="${esc((sh.code || "").replace(/\s/g, ""))}" title="复制">${icon("copy")}</button></div>
+        <div class="line"><div><div class="k">口令</div><div class="v">${esc(sh.password)}</div></div><button class="iconbtn" data-act="share_rotate" title="换一个口令">${icon("refresh")}</button></div>
+      </div>` : ""}
+    ${sh.message ? `<div class="msg">${esc(sh.message)}</div>` : ""}
+    <div class="note">${icon("shield", "s14")}只把码给你认识的人。</div>`;
+  return `<div class="card" id="c-this"><h3>这台电脑</h3>${main}${share}</div>`;
+}
+
+function sessionsCard(st) {
+  const list = (st.sessions || []).map((s) => {
+    const w = s.who || {};
+    const conv = w.via === "conversation";
+    const what = st.paused ? "已暂停" : s.waiting ? "等你确认" : s.activity || "连着，现在没在做事";
+    return `<div class="sess"><span class="ic ${conv ? "conv" : ""}">${icon(conv ? "chat" : "term")}</span>
+      <span class="tx"><b>${esc(w.title || w.name)}</b><small>${esc(what)} · <span data-since="${s.startedAt}">${timer(st.now - s.startedAt)}</span></small></span>
+      <button class="off" data-end="${esc(s.session)}" title="断开">${icon("power", "s18")}</button></div>`;
+  }).join("");
+  return `<div class="card"><h3>正在连着</h3>${list || `<div class="faint" style="font-size:13px">现在没有人在用这台电脑。</div>`}</div>`;
+}
+
+function connectCard() {
+  return `<div class="card" id="c-connect"><h3>连接别人的电脑</h3>
+    <div class="connect"><input class="field" id="code" placeholder="设备码" inputmode="numeric" maxlength="13">
+      <input class="field" id="pw" placeholder="口令" maxlength="10"><button class="btn pri" id="go">连接</button></div>
+    <div class="msg hidden" id="cmsg"></div></div>`;
+}
+
+function aiCard(st) {
+  const names = (st.local || []).map((c) => c.name);
+  const chip = (n) => `<span class="chip"><i class="dot ${names.includes(n) ? "on" : "hollow"}"></i><span>${n}</span></span>`;
+  const others = names.filter((n) => !["Claude Code", "Codex", "Cursor"].includes(n));
+  const snips = snipsOpen ? `<div class="snips">${(st.snippets || []).map((s, i) => `<div class="snip"><div class="h"><span>${esc(s.client)}${s.file ? " · " + esc(s.file) : " · 命令"}</span>
+      <button class="iconbtn" data-snip="${i}" title="复制">${icon("copy", "s14")}</button></div><div class="codebox">${esc(s.text)}</div></div>`).join("")}</div>` : "";
+  return `<div class="card" id="c-ai"><h3>让本地 AI 用</h3>
+    <button class="btn soft wide" id="prompt">${icon(copied > Date.now() ? "check" : "copy")}${copied > Date.now() ? "已复制，贴给你的 AI" : "复制提示词"}</button>
+    <div class="chips">${chip("Claude Code")}${chip("Codex")}${chip("Cursor")}${others.map(chip).join("")}</div>
+    <button class="link" id="snips" style="align-self:flex-start;font-size:13px">${snipsOpen ? "收起手动配置" : "手动配置"}</button>${snips}</div>`;
+}
+
+function fraud() {
+  return `<div class="modal" id="fraud"><div class="win">
+    <span class="shield">${icon("shield", "s20")}</span>
+    <h1>只把码给你认识的人</h1>
+    <div class="warnbox">自称客服、警察、银行让你分享的，都是诈骗。</div>
+    <p>对方连上后，能看到并操作这台电脑。拿不准就先别开。</p>
+    <div class="btns"><button class="btn sec wide" id="nope">先不开</button><button class="btn pri wide" id="yes">我认识对方，开启分享</button></div>
+  </div></div>`;
+}
+
+function section(id, html) {
+  if (keys[id] === html) return;
+  keys[id] = html;
+  document.getElementById(id).innerHTML = html;
+}
+
+let lastState = null;
+function render(st) {
+  lastState = st;
+  const want = st.panelOpen ? "open" : "rail";
+  if (want !== mode) {
+    mode = want;
+    for (const k in keys) delete keys[k];
+    root.innerHTML = want === "open"
+      ? `<div class="wrap"><div class="top"><h2>电脑</h2><button class="iconbtn" data-act-arg="panel:false" title="收起">${icon("chev")}</button></div>
+          <div id="s-this"></div><div id="s-sess"></div>${connectCard()}<div id="s-ai"></div></div><div id="s-modal"></div>`
+      : `<div class="rail"><button class="iconbtn" data-act-arg="panel:true" title="展开">${icon("chevl")}</button>
+          <span class="pc" id="rail-pc"></span></div>`;
+    wireConnect();
+  }
+  if (mode === "rail") {
+    const dot = { idle: "idle", working: "working", reconnecting: "reconnecting" }[st.look] || "";
+    document.getElementById("rail-pc").innerHTML = `${icon("pc", "s20")}<i class="dot ${dot}"></i>`;
+    return;
+  }
+  section("s-this", thisCard(st));
+  section("s-sess", sessionsCard(st));
+  section("s-ai", aiCard(st));
+  section("s-modal", st.share && st.share.fraud ? fraud() : "");
+  const cmsg = document.getElementById("cmsg");
+  const m = st.connect && st.connect.message;
+  cmsg.textContent = m || "";
+  cmsg.classList.toggle("hidden", !m);
+  document.getElementById("go").disabled = !!(st.connect && st.connect.busy);
+  document.querySelectorAll("[data-since]").forEach((el) => (el.textContent = timer(st.now - +el.dataset.since)));
+  if (st.share && st.share.fraud) {
+    const nope = document.getElementById("nope");
+    if (nope && document.activeElement !== nope && !nope.dataset.f) { nope.dataset.f = 1; nope.focus(); nope.classList.add("focus-ring"); }
+  }
+  if (st.focus) {
+    const el = document.getElementById(st.focus === "share" ? "c-this" : "c-connect");
+    if (el) { el.scrollIntoView({ block: "nearest" }); el.classList.add("flash"); setTimeout(() => el.classList.remove("flash"), 1600); }
+    if (st.focus === "connect") document.getElementById("code").focus();
+  }
+}
+
+function wireConnect() {
+  const go = document.getElementById("go");
+  if (!go) return;
+  go.onclick = () => act("connect", { code: document.getElementById("code").value, password: document.getElementById("pw").value });
+}
+
+document.addEventListener("click", async (e) => {
+  const t = e.target.closest("button");
+  if (!t) return;
+  if (t.dataset.act) return act(t.dataset.act);
+  if (t.dataset.actArg) { const [a, v] = t.dataset.actArg.split(":"); return act(a, v === "true"); }
+  if (t.dataset.end) return act("end_session", t.dataset.end);
+  if (t.dataset.copy) return copy(t.dataset.copy);
+  if (t.dataset.snip && lastState) return copy(lastState.snippets[+t.dataset.snip].text);
+  if (t.id === "share-toggle") return act(lastState && lastState.share.on ? "share_off" : "share_on");
+  if (t.id === "nope") return act("share_cancel");
+  if (t.id === "yes") return act("share_confirm");
+  if (t.id === "prompt" && lastState) { if (await copy(lastState.prompt)) { copied = Date.now() + 2500; delete keys["s-ai"]; render(lastState); } return; }
+  if (t.id === "snips") { snipsOpen = !snipsOpen; delete keys["s-ai"]; render(lastState); }
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && lastState && lastState.share && lastState.share.fraud) act("share_cancel");
+  if (e.key === "Enter" && (e.target.id === "code" || e.target.id === "pw")) document.getElementById("go").click();
+});
+poll(render, 600);
+</script>
+</body>
+</html>

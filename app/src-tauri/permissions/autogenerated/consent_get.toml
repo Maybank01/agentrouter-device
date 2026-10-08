@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-consent-get"
+description = "Enables the consent_get command without any pre-configured scope."
+commands.allow = ["consent_get"]
+
+[[permission]]
+identifier = "deny-consent-get"
+description = "Denies the consent_get command without any pre-configured scope."
+commands.deny = ["consent_get"]

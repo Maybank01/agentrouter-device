@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>需要你确认</title>
+<link rel="stylesheet" href="ui.css">
+<style>
+  .win { width: 460px; }
+  .body { padding: 6px 24px 0; display: flex; flex-direction: column; gap: 14px; }
+  .head { display: flex; gap: 14px; align-items: center; }
+  .head h1 { font-size: 19px; line-height: 1.3; margin: 0; font-weight: 700; }
+  .head .sub { font-size: 13px; color: var(--t2); margin-top: 2px; }
+  .sentence { margin: 0; color: var(--t1); }
+  .place { font-size: 12px; color: var(--t2); margin-top: 6px; font-family: var(--mono); word-break: break-all; }
+  .foot { display: flex; align-items: center; gap: 10px; padding: 18px 24px 20px; }
+  .foot .dev { flex: 1; display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--t3); min-width: 0; }
+  .foot .dev span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .danger .head h1 { color: var(--dng); }
+  .left { font-size: 12px; color: var(--t3); }
+</style>
+</head>
+<body>
+<div class="win" id="win">
+  <div class="tb"><i class="mark"></i><span>AgentRouter · 需要你确认</span><span class="g"></span><span class="wcs" id="wcx"></span></div>
+  <div class="body" id="body"></div>
+  <div class="foot">
+    <div class="dev" id="dev"></div>
+    <button class="btn sec" id="deny">拒绝</button>
+    <button class="btn pri" id="allow">允许一次</button>
+  </div>
+</div>
+<script src="ui.js"></script>
+<script>
+const { call, esc, icon, fit, WC_X, wireTitlebar } = AR;
+document.getElementById("wcx").innerHTML = WC_X;
+wireTitlebar(document.getElementById("win"));
+let answered = false;
+function answer(decision) {
+  if (answered) return;
+  answered = true;
+  call("consent_answer", { decision }).catch(() => {});
+}
+document.getElementById("deny").onclick = () => answer("deny");
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") answer("deny"); });
+
+async function load() {
+  const v = await call("consent_get");
+  if (!v) return;
+  const win = document.getElementById("win");
+  win.classList.toggle("danger", !!v.destructive);
+  const who = v.who || {};
+  const sub = [who.via === "local" ? "本机 AI" : who.via === "remote" ? who.name : "你的对话", who.detail && who.via !== "local" ? who.detail : "", v.client && v.client !== who.name ? v.client : (who.via === "local" ? v.client : "")]
+    .filter(Boolean).join(" · ");
+  const avatar = who.via === "conversation" ? `<div class="avatar conv">${icon("chat")}</div>` : `<div class="avatar">${icon("term")}</div>`;
+  const destructiveNote = v.destructive ? `<div class="warnbox">删掉的文件不进回收站，找不回来。</div>` : "";
+  const similar = v.similar && !v.destructive
+    ? `<label class="check"><input type="checkbox" id="similar"><span>${esc(v.similar.label)}<span class="faint">（${esc(v.similar.family)}）</span></span></label>`
+    : "";
+  document.getElementById("body").innerHTML = `
+    <div class="head">${avatar}<div><h1>${esc(v.title)}</h1><div class="sub">${esc(sub)}</div></div></div>
+    <p class="sentence">${esc(v.sentence)}</p>
+    <div><div class="codebox">${esc(v.text)}</div>${v.place ? `<div class="place">在 ${esc(v.place)} 里</div>` : ""}</div>
+    ${destructiveNote}${similar}`;
+  document.getElementById("dev").innerHTML = `${icon("pc", "s14")}<span>${esc(v.device)} · <span id="left"></span></span>`;
+  const allow = document.getElementById("allow");
+  if (v.destructive) { allow.className = "btn dng"; allow.textContent = "允许删除"; }
+  allow.onclick = () => {
+    const s = document.getElementById("similar");
+    answer(s && s.checked ? "similar" : "once");
+  };
+  // "拒绝" has the default focus: Enter or Space without looking never allows anything.
+  const deny = document.getElementById("deny");
+  deny.focus();
+  deny.classList.add("focus-ring");
+  deny.addEventListener("blur", () => deny.classList.remove("focus-ring"));
+  const ends = Date.now() + (v.timeoutMs || 120000);
+  const tick = () => {
+    const s = Math.max(0, Math.round((ends - Date.now()) / 1000));
+    const el = document.getElementById("left");
+    if (el) el.textContent = `${s} 秒内不点就当拒绝`;
+  };
+  tick(); setInterval(tick, 1000);
+  requestAnimationFrame(() => fit());
+}
+load();
+</script>
+</body>
+</html>

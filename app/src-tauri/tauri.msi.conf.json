@@ -1,0 +1,7 @@
+{
+  "bundle": {
+    "resources": {
+      "../../target/release/agentrouter-device.exe": "agentrouter-device.exe"
+    }
+  }
+}

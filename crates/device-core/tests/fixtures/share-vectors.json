@@ -1,0 +1,155 @@
+{
+ "device": {
+  "seedHex": "0909090909090909090909090909090909090909090909090909090909090909",
+  "publicKey": "_RckOFqgx1tk-3jNYC-h2ZH96_drE8WO1wLqyDXp9hg",
+  "id": "lnd_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+ },
+ "control": {
+  "seedHex": "0707070707070707070707070707070707070707070707070707070707070707",
+  "publicKey": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
+  "kid": "fe812c12f3ab4ce6"
+ },
+ "passwords": [
+  {
+   "input": "abcd-efgh",
+   "normalised": "ABCDEFGH"
+  },
+  {
+   "input": " ABCD EFGH ",
+   "normalised": "ABCDEFGH"
+  },
+  {
+   "input": "mnpq2345",
+   "normalised": "MNPQ2345"
+  },
+  {
+   "input": "ABCD-EFG1",
+   "normalised": null
+  },
+  {
+   "input": "ABCDEFGHJ",
+   "normalised": null
+  },
+  {
+   "input": "ABCD-EFGI",
+   "normalised": null
+  },
+  {
+   "input": "ABC",
+   "normalised": null
+  }
+ ],
+ "share": {
+  "body": {
+   "share": "shr_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   "access": "confirm",
+   "folders": [
+    "D:\\mods",
+    "C:\\Users\\张三\\Desktop"
+   ],
+   "expiresAt": 1760003600000,
+   "approval": "every_session",
+   "modes": [
+    "remote",
+    "delegate"
+   ],
+   "delegateCapPoints": 100,
+   "password": "ABCDEFGH",
+   "at": 1760000000000
+  },
+  "text": "agentrouter-device-share/v1\nlnd_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nshr_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nconfirm\ne6132483402e1aa20ea7780b6b765b9aab67045a2dd1a1d46f40e48f5f02d165\n1760003600000\nevery_session\ndelegate,remote\n100\n9ac2197d9258257b1ae8463e4214e4cd0a578bc1517f2415928b91be4283fc48\n1760000000000",
+  "signature": "d5WaMUh0-oyXwZIhHKvikEFc9j4cVgvAyamfxEXCFiPM2Z5XO-DDXfdkQcv0VrmLp8rc1m8Ha7xHughd3D3tAg"
+ },
+ "password": {
+  "body": {
+   "password": "MNPQ2345",
+   "at": 1760000000001
+  },
+  "text": "agentrouter-device-share-password/v1\nlnd_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nshr_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n61ef6fd5e1501107bfeda140956fb696792c18c5af2965367311aeabd8073613\n1760000000001",
+  "signature": "bmYlrya2VKj9Ckhh9_wLTAYGB3QKLg-S1iLCmyxFZlY1jhXNIhpY_0WeI3SgTKbvcEnenuoZ2670e-JL28D4DQ"
+ },
+ "stop": {
+  "body": {
+   "reason": "person",
+   "at": 1760000000002
+  },
+  "text": "agentrouter-device-share-stop/v1\nlnd_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nshr_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nperson\n1760000000002",
+  "signature": "7DRpTEL2TrmRB1werJmkYWsAcTSCxowJchWfc1tvBju_Dx46rQli4ncHvCO-DkNfpDYP9QkuzwMKlRe47YS_DQ"
+ },
+ "cap": {
+  "body": {
+   "addPoints": 100,
+   "at": 1760000000003
+  },
+  "text": "agentrouter-device-share-cap/v1\nlnd_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nshr_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n100\n1760000000003",
+  "signature": "vnLS1H9Mjrc0Q4U2twkG5hO9ev1j0-3Uj8joDCtuZ6VQrsF_Hd6kfjQdfTOjX6ldUaR2yC016ReShuG3wI8pCQ"
+ },
+ "requestV2": {
+  "text": "agentrouter-device-request/v2\nlnd_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nrms_cccccccccccccccccccccccccccccccc\nshr_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nClaude Code\nexec\n05c76b92c68f856ca06c107b16ff2b5604efb9498faf072cdb8de6e0e3343a4c\n1760000060000\n0123456789abcdef0123456789abcdef",
+  "request": {
+   "v": 2,
+   "kid": "fe812c12f3ab4ce6",
+   "device": "lnd_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "session": "rms_cccccccccccccccccccccccccccccccc",
+   "share": "shr_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   "client": "Claude Code",
+   "action": "exec",
+   "digest": "05c76b92c68f856ca06c107b16ff2b5604efb9498faf072cdb8de6e0e3343a4c",
+   "exp": 1760000060000,
+   "nonce": "0123456789abcdef0123456789abcdef",
+   "sig": "43wKO8rOHlFiroPDmtPVowLLp72sOepmHqYCnTZGq4YalfOZ0waZcMNuy76ZxqQ4wZ_W2IypoQlFwdmP5f09Dg"
+  },
+  "args": {
+   "command": "dotnet build",
+   "cwd": "D:\\mods\\MyMod",
+   "timeout": 30
+  }
+ },
+ "sessionOpen": {
+  "text": "agentrouter-device-request/v2\nlnd_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nrms_cccccccccccccccccccccccccccccccc\nshr_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n\nsession_open\n499056ccfbc3d5fbcb02286ab16c873005d1bffc70dda0eb1e90fcb94a6897e7\n1760000060000\nfedcba9876543210fedcba9876543210",
+  "request": {
+   "v": 2,
+   "kid": "fe812c12f3ab4ce6",
+   "device": "lnd_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "session": "rms_cccccccccccccccccccccccccccccccc",
+   "share": "shr_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   "client": "",
+   "action": "session_open",
+   "digest": "499056ccfbc3d5fbcb02286ab16c873005d1bffc70dda0eb1e90fcb94a6897e7",
+   "exp": 1760000060000,
+   "nonce": "fedcba9876543210fedcba9876543210",
+   "sig": "2xSSxd5d9rmlduCf65oj_a1EnIge-FEQmLmd1LTLOP3KaqTIWeJf6avQwH_FgBjlpUD2PRzE3mQx2yQO2HBXCQ"
+  },
+  "args": {
+   "session": "rms_cccccccccccccccccccccccccccccccc",
+   "share": "shr_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   "mode": "remote",
+   "who": {
+    "account": "prn_22222222222222222222222222222222",
+    "name": "林小满",
+    "email": "li***@qq.com",
+    "registeredDays": 2,
+    "newAccount": true,
+    "reported": false
+   },
+   "via": {
+    "kind": "client",
+    "device": "lnd_dddddddddddddddddddddddddddddddd",
+    "deviceName": "林小满的笔记本",
+    "client": "AgentRouter"
+   },
+   "owner": {
+    "account": "prn_22222222222222222222222222222222",
+    "name": "林小满"
+   },
+   "instructors": [
+    "prn_22222222222222222222222222222222"
+   ],
+   "limits": {
+    "access": "confirm",
+    "maxMinutes": 30
+   },
+   "expiresAt": 1760001800000
+  }
+ }
+}
