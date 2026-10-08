@@ -8,7 +8,7 @@
 | 不隐藏 shell 窗口 | 不用 `CREATE_NO_WINDOW` / `WindowStyle Hidden`：桌面版里每个命令有自己可见的控制台窗口，命令行版共用当前终端 | 是 |
 | 不挂起、不注入 | 普通 CreateProcess 后放进 Job Object；不用 `CREATE_SUSPENDED`、`ResumeThread`、跨进程写内存 | 是 |
 | 先同意再执行 | 本机确认框在任何 shell 启动之前；只读级别从不启动 shell | 单元测试（`crates/device-core/tests`） |
-| 安装位置稳定 | 安装包按用户装到固定目录（Tauri NSIS `currentUser`），或按机器装到 Program Files；绝不从 %TEMP% 运行，不自解压到临时目录，不在临时目录里自更新 | 源码里不出现 `temp_dir` / `%TEMP%`（测试除外） |
+| 安装位置稳定 | 安装包是 MSI（Windows Installer，按机器装到 Program Files，不是自解压程序）；不自带 WebView2 引导下载（Windows 10/11 已自带）；绝不从 %TEMP% 运行，不在临时目录里自更新 | 源码里不出现 `temp_dir` / `%TEMP%`（测试除外） |
 | 文件信息齐全 | 版本资源（公司、产品名、版本、版权、说明）、图标、清单（`asInvoker`，不要求管理员权限） | 清单是 `asInvoker`；CI 读取 exe 的版本信息，缺了就失败 |
 | 不加壳、不混淆 | 不用 UPX 等加壳；release 只做普通的符号剥离（`strip = true`） | 是 |
 | 二进制对得上源码 | 只在公开的 GitHub 托管 runner 上构建发布产物（`--locked`），日志里打印 SHA-256 | 工作流本身 |

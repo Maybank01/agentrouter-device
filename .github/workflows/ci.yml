@@ -58,18 +58,22 @@ jobs:
             "$exe | $($v.CompanyName) | $($v.ProductName) | $($v.FileVersion) | $($v.FileDescription)"
             if (-not $v.CompanyName -or -not $v.ProductName -or -not $v.FileVersion -or -not $v.FileDescription) { throw "$exe has no complete version resource" }
           }
+      - name: Installer (MSI to Program Files, unsigned, not self-extracting)
+        working-directory: app/src-tauri
+        run: npx --yes @tauri-apps/cli@2.12.1 build --bundles msi --ci
       - name: Collect
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target/release/agentrouter.exe, target/release/agentrouter-device.exe dist/
+          Copy-Item target/release/bundle/msi/*.msi dist/
           @"
           AgentRouter desktop (agentrouter.exe) and the command-line connector (agentrouter-device.exe).
           Built by GitHub Actions from commit $env:GITHUB_SHA.
           NOT code-signed: Windows SmartScreen and some antivirus tools may warn. See docs/SIGNING.md.
           "@ | Set-Content -Encoding utf8 dist/README.txt
           Get-ChildItem dist | Format-Table Name, Length
-          Get-FileHash dist/*.exe -Algorithm SHA256 | Format-Table Hash, Path
+          Get-FileHash dist/*.exe, dist/*.msi -Algorithm SHA256 | Format-Table Hash, Path
       - uses: actions/upload-artifact@v7
         with:
           name: agentrouter-windows-x64-unsigned
