@@ -308,6 +308,15 @@ impl Device {
                 format!("{command}\n\n位置：{}", display(&cwd)),
                 cancel,
             )?;
+        } else if !self.trusted.lock().unwrap().contains(session) {
+            // Full access: no shell starts before the person says yes here, once per conversation.
+            self.ask(
+                session,
+                "exec_full",
+                format!("{command}\n\n位置：{}", display(&cwd)),
+                cancel,
+            )?;
+            self.trusted.lock().unwrap().insert(session.to_string());
         }
         let job = self.jobs.start(command, &cwd, session, self.shell)?;
         job.wait(timeout - started.elapsed().as_secs_f64(), cancel);
