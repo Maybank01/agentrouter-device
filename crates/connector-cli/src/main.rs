@@ -172,7 +172,10 @@ fn run(flags: Flags) -> i32 {
         data_dir: data_dir(),
         access: cfg.access,
         folders: cfg.folders.clone(),
-        confirm: if cfg!(windows) {
+        // Unattended: the operator approved commands when linking this machine (`link --unattended`).
+        confirm: if cfg.unattended && cfg.access != Access::Readonly {
+            consent::preapproved()
+        } else if cfg!(windows) {
             consent::native()
         } else {
             consent::deny_all()
