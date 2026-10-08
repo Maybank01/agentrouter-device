@@ -1,0 +1,23 @@
+[package]
+name = "agentrouter-device-cli"
+description = "AgentRouter linked device, command line (servers and headless use)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+[[bin]]
+name = "agentrouter-device"
+path = "src/main.rs"
+
+[dependencies]
+agentrouter-device-core.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[build-dependencies]
+embed-resource = "3"

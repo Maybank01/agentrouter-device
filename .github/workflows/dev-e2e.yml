@@ -1,0 +1,75 @@
+name: Dev end-to-end
+
+# Links a throwaway GitHub-hosted Windows machine to a Dev test account (cap-test-*), stays online
+# while a Dev conversation uses it, and ends when the device is removed on the web (or after 25 min).
+# Needs the secret DEV_E2E_WEB_SESSION: a short-lived Dev web session of the test account, set just
+# before the run and revoked after it. Started by pushing to an e2e/* branch.
+on:
+  push:
+    branches: ["e2e/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  WEB: https://edge-d53hmn9blslvhcuff8rjsdvt.agentrouter.top
+
+jobs:
+  device:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked -p agentrouter-device-cli
+      - name: Link to the Dev test account (folders, one scratch folder, unattended)
+        shell: pwsh
+        env:
+          WEB_SESSION: ${{ secrets.DEV_E2E_WEB_SESSION }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:GITHUB_WORKSPACE 'target\e2e'
+          $scratch = Join-Path $root 'scratch'
+          $env:AGENTROUTER_DEVICE_HOME = Join-Path $root 'home'
+          "AGENTROUTER_DEVICE_HOME=$env:AGENTROUTER_DEVICE_HOME" >> $env:GITHUB_ENV
+          New-Item -ItemType Directory -Force $scratch, $env:AGENTROUTER_DEVICE_HOME | Out-Null
+          Set-Content -Encoding utf8 (Join-Path $scratch 'readme.txt') '这是 AgentRouter 设备端到端测试用的文件夹。'
+          Set-Content -Encoding utf8 (Join-Path $scratch 'notes.md') "# notes`n- hello from CI"
+          $exe = Resolve-Path target/release/agentrouter-device.exe
+          $out = Join-Path $root 'link.out'
+          $link = Start-Process -FilePath $exe -ArgumentList @('link', '--access', 'folders', '--folder', $scratch, '--name', 'CI 测试机', '--unattended', '--yes') -RedirectStandardOutput $out -RedirectStandardError "$out.err" -NoNewWindow -PassThru
+          $code = $null
+          for ($i = 0; $i -lt 60 -and -not $code; $i++) {
+            Start-Sleep -Seconds 1
+            if (Test-Path $out) { $m = [regex]::Match((Get-Content -Raw -Encoding utf8 $out), '[A-Z2-9]{4}-[A-Z2-9]{4}'); if ($m.Success) { $code = $m.Value } }
+          }
+          if (-not $code) { Get-Content "$out.err" -ErrorAction SilentlyContinue; throw 'no pairing code' }
+          $headers = @{ origin = $env:WEB; cookie = "ar_enterprise_session=$env:WEB_SESSION"; 'x-agentrouter-csrf' = '1' }
+          $r = Invoke-WebRequest -Method Post -Uri "$env:WEB/api/control/personal/devices/pair" -Headers $headers -ContentType 'application/json' -Body (@{ code = $code } | ConvertTo-Json) -SkipHttpErrorCheck
+          "pair confirm: HTTP $($r.StatusCode)"
+          if ($r.StatusCode -ne 200) { throw 'pairing was not confirmed' }
+          $link.WaitForExit(60000) | Out-Null
+          & $exe status
+      - name: Online until the device is removed on the web
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path target/release/agentrouter-device.exe
+          $run = Start-Process -FilePath $exe -ArgumentList @('run') -NoNewWindow -PassThru
+          $deadline = (Get-Date).AddMinutes(25)
+          while ((Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 10
+            $s = (& $exe status | Out-String)
+            if ($s -match '未链接') { 'the device was removed on the web'; break }
+          }
+          Stop-Process -Id $run.Id -ErrorAction SilentlyContinue
+          & $exe status
+      - name: Audit log
+        if: always()
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path target/release/agentrouter-device.exe
+          & $exe audit verify
+          $log = Join-Path $env:AGENTROUTER_DEVICE_HOME 'audit.log'
+          if (Test-Path $log) { Get-Content -Encoding utf8 $log | ForEach-Object { ($_ | ConvertFrom-Json) | Select-Object at, event, session, action, text, outcome | ConvertTo-Json -Compress } }
