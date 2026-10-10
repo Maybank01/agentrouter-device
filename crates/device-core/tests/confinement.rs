@@ -58,6 +58,8 @@ fn writes_outside_the_folders_fail_every_time_whatever_the_text_says() {
     std::fs::write(outside.join("keep.txt"), "keep").unwrap();
     let asked = Arc::new(AtomicUsize::new(0));
     let data = temp_dir("confine-data");
+    // A runner's work folder may already be Low (inherited): then the app labels nothing and takes nothing back.
+    let low_before = confine::labelled(&folder);
     let d = device(
         &data,
         Access::Folders,
@@ -250,6 +252,16 @@ fn writes_outside_the_folders_fail_every_time_whatever_the_text_says() {
 
     // Unlinking takes the label back.
     confine::release(&data, &[]);
-    assert!(!confine::labelled(&folder));
+    let acl = std::process::Command::new("icacls")
+        .arg(&folder)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    let record = std::fs::read_to_string(data.join("confined.json")).unwrap_or_default();
+    assert_eq!(
+        confine::labelled(&folder),
+        low_before,
+        "label after release; icacls: {acl}; record: {record}"
+    );
     let _ = std::fs::remove_dir(&junction);
 }
