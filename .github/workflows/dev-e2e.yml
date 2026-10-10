@@ -8,7 +8,7 @@ name: Dev end-to-end
 # that a checkpoint was taken, and that nothing asked for approval.
 # The runner only runs the device. The web side (confirming the pairing code, the conversation,
 # removing the device) runs on the ops host under the shared test-account session lock
-# (agentrouter-ops e2e/README.md): the pairing code is published as the artifact `pairing-code`, and
+# (agentrouter-ops e2e/README.md): the pairing code is published as the commit status `device-e2e/pairing-code`, and
 # `PAIR_CODE=<code> session-lock.sh dev node device-m1-driver.mjs` takes it from there. No session
 # ever reaches GitHub. Started by pushing to an e2e/* branch.
 on:
@@ -22,6 +22,7 @@ on:
 
 permissions:
   contents: read
+  statuses: write
 
 env:
   WEB: https://edge-d53hmn9blslvhcuff8rjsdvt.agentrouter.top
@@ -36,8 +37,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --locked -p agentrouter-device-cli
-      - name: Start linking (folders, one sample repository, unattended)
+      - name: Link (folders, one sample repository, unattended; the ops host confirms the code)
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
           $root = Join-Path $env:GITHUB_WORKSPACE 'target\e2e'
@@ -65,21 +68,12 @@ jobs:
           }
           if (-not $code) { Get-Content "$out.err" -ErrorAction SilentlyContinue; throw 'no pairing code' }
           "pairing code: $code"
-          New-Item -ItemType Directory -Force (Join-Path $root 'pairing') | Out-Null
-          Set-Content -Encoding ascii -NoNewline (Join-Path $root 'pairing\code.txt') $code
-          "LINK_PID=$($link.Id)" >> $env:GITHUB_ENV
-      - uses: actions/upload-artifact@v7
-        with:
-          name: pairing-code
-          path: target/e2e/pairing/code.txt
-          retention-days: 1
-      - name: Wait for the pairing to be confirmed (ops host)
-        shell: pwsh
-        run: |
-          $link = Get-Process -Id $env:LINK_PID -ErrorAction SilentlyContinue
-          if ($link) { $link.WaitForExit(900000) | Out-Null }
-          Get-Content -Encoding utf8 (Join-Path $env:GITHUB_WORKSPACE 'target\e2e\link.out') -ErrorAction SilentlyContinue | Select-Object -Last 3
-          $exe = Resolve-Path target/release/agentrouter.exe
+          # Hand the code to the ops host (a commit status; the code is in this public log anyway and
+          # lives 10 minutes), then wait here: a step's processes end with the step.
+          $status = @{ state = 'pending'; context = 'device-e2e/pairing-code'; description = $code } | ConvertTo-Json
+          Invoke-RestMethod -Method Post -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/statuses/$env:GITHUB_SHA" -Headers @{ authorization = "Bearer $env:GH_TOKEN"; accept = 'application/vnd.github+json' } -ContentType 'application/json' -Body $status | Out-Null
+          $link.WaitForExit(660000) | Out-Null
+          Get-Content -Encoding utf8 $out -ErrorAction SilentlyContinue | Select-Object -Last 2
           $s = (& $exe status | Out-String)
           $s
           if ($s -match '未链接') { throw 'the pairing was not confirmed' }
