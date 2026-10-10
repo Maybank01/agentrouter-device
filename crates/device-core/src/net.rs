@@ -199,6 +199,9 @@ pub fn wait_for_approval(
         }
         std::thread::sleep(Duration::from_secs(2));
     }
+    if stop.load(Ordering::SeqCst) {
+        return Err("已取消链接。".into());
+    }
     Err("配对码已过期，请重新链接。".into())
 }
 
