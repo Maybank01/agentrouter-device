@@ -68,7 +68,7 @@ jobs:
           npm pack ./npm/out/cli-win32-x64 ./npm/out/agentrouter --pack-destination $t
           Push-Location $t
           npm init -y | Out-Null
-          npm install --no-audit --no-fund ./agentrouter-top-cli-win32-x64-0.0.0.tgz ./agentrouter-0.0.0.tgz
+          npm install --no-audit --no-fund ./agentrouter-top-cli-win32-x64-0.0.0.tgz ./agentrouter-top-cli-0.0.0.tgz
           $v = npx --no-install agentrouter version
           Pop-Location
           "npx agentrouter version -> $v"
