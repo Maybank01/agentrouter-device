@@ -13,7 +13,9 @@
     "agentrouter": "bin/agentrouter.js"
   },
   "files": [
-    "bin/agentrouter.js"
+    "bin/agentrouter.js",
+    "README.md",
+    "LICENSE"
   ],
   "engines": {
     "node": ">=18"
