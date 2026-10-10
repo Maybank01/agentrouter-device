@@ -460,6 +460,8 @@ fn unlink(flags: Flags) -> i32 {
         eprintln!("设置没有保存：{e}");
         return 1;
     }
+    // The unlinked folder gets its write-boundary label back.
+    agentrouter_device::confine::release(&data_dir(), &gate::resolve_folders(&cfg.folders));
     audit::Audit::open(&data_dir().join("audit.log")).record(serde_json::json!({
         "event": "folders", "removed": [target], "folders": cfg.folders,
     }));

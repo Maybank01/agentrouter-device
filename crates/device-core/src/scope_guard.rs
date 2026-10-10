@@ -2,7 +2,9 @@
 //! 2026-10-10): inside the linked folders commands run without asking, so a command that clearly acts
 //! outside them or harms the system is refused up front (`OUT_OF_SCOPE`), never asked about. It is a
 //! heuristic against obvious overreach, not a sandbox: it reads the command text, it cannot see what a
-//! script does once it runs.
+//! script does once it runs, so it only gives the model a clear answer early. The boundary itself is
+//! the operating system's on Windows (confine.rs: the command runs at low integrity and can write only
+//! in the linked folders); on macOS and Linux this check is all there is for now.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -329,13 +331,20 @@ fn lexical(path: &Path) -> PathBuf {
     out
 }
 
-/// Temporary folders count as fair game for builds and tests.
+/// Temporary folders count as fair game for builds and tests. On Windows that is only the confined
+/// commands' own scratch folder (confine.rs), which is what TEMP means inside them: the system's
+/// temporary folder is outside the boundary (a linked folder under it made `..\x` look allowed, Dev
+/// check 2026-10-11).
 fn temp_dirs() -> Vec<PathBuf> {
-    let mut dirs: Vec<PathBuf> = ["TMPDIR", "TEMP", "TMP"]
-        .iter()
-        .filter_map(std::env::var_os)
-        .map(PathBuf::from)
-        .collect();
+    let mut dirs: Vec<PathBuf> = if cfg!(windows) {
+        crate::confine::scratch_root().into_iter().collect()
+    } else {
+        ["TMPDIR", "TEMP", "TMP"]
+            .iter()
+            .filter_map(std::env::var_os)
+            .map(PathBuf::from)
+            .collect()
+    };
     if !cfg!(windows) {
         dirs.push(PathBuf::from("/tmp"));
         dirs.push(PathBuf::from("/var/tmp"));
@@ -727,6 +736,39 @@ mod tests {
         }
         let sub = repo.join("src");
         assert!(check("rm -rf ../dist", &sub, &scope, &home).is_ok());
+    }
+
+    /// Dev check 2026-10-11: with the linked folder under the system's temporary folder, `..\x` landed
+    /// in that temporary folder, which counted as fair game, so the same write passed once and was
+    /// refused once (with another path). On Windows only the confined scratch folder is fair game.
+    #[cfg(windows)]
+    #[test]
+    fn the_system_temp_folder_is_not_fair_game_on_windows() {
+        let Some(temp) = std::env::var_os("TEMP").map(PathBuf::from) else {
+            return;
+        };
+        let repo = temp.join("ar-scope-guard-test").join("linked");
+        std::fs::create_dir_all(&repo).unwrap();
+        let repo = std::fs::canonicalize(repo).unwrap();
+        let scope = Scope {
+            access: Access::Folders,
+            folders: vec![repo.clone()],
+            deny: Vec::new(),
+        };
+        let home = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        for c in [
+            "[IO.File]::WriteAllText((Join-Path (Get-Location) '..\\probe.txt'), 'probe')",
+            "Set-Content -Path ..\\probe.txt -Value x",
+        ] {
+            assert!(check(c, &repo, &scope, &home).is_err(), "{c}");
+        }
+        let scratch = crate::confine::scratch_tmp().unwrap();
+        let inside_scratch = format!(
+            "Set-Content -Path '{}' -Value x",
+            scratch.join("a.txt").display()
+        );
+        assert!(check(&inside_scratch, &repo, &scope, &home).is_ok());
+        let _ = std::fs::remove_dir_all(temp.join("ar-scope-guard-test"));
     }
 
     #[test]
