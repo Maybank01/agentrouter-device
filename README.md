@@ -9,7 +9,7 @@ AgentRouter 的客户端是一层很小的皮：窗口里就是云端网页（�
 | `app/` | 桌面版（Tauri 2）：加载云端网页，托盘显示设备状态，本机确认对话框 |
 | `crates/device-core` | 设备核心：协议校验（Ed25519 签名、过期、防重放）、本地访问级别、命令与文件、审计日志、密钥保存 |
 | `crates/connector-cli` | 命令行 `agentrouter`（旧名 `agentrouter-device` 也能用）：在项目文件夹里 `agentrouter link` |
-| `npm/` | npm 分发（`npx agentrouter link`）：主包 `agentrouter` + 各平台二进制包 `@agentrouter-top/cli-<os>-<arch>`；M2 发布 |
+| `npm/` | npm 分发：`npx @agentrouter-top/cli link`（或 `npm i -g @agentrouter-top/cli` 后 `agentrouter link`）；主包 `@agentrouter-top/cli` + 各平台二进制包 `@agentrouter-top/cli-<os>-<arch>`。测试版在 `next`（连 Dev），正式版 M2 |
 | `docs/` | 签名计划等文档 |
 
 ## 访问级别（只在本机选，网页只显示不能改）

@@ -51,14 +51,14 @@ for (const [key, file] of Object.entries(binaries)) {
     path.join(dir, "README.md"),
     `# ${SCOPE}/cli-${key}
 
-The ${key} binary of [agentrouter](https://www.npmjs.com/package/agentrouter). Install \`agentrouter\` instead: \`npx agentrouter link\`.
+The ${key} binary of [@agentrouter-top/cli](https://www.npmjs.com/package/@agentrouter-top/cli). Install that instead: \`npx @agentrouter-top/cli link\`.
 `,
   );
   if (os !== "win32") chmodSync(path.join(dir, "bin", exe), 0o755);
   const pkg = {
     name: `${SCOPE}/cli-${key}`,
     version,
-    description: `The ${key} binary of the agentrouter command line (installed by the agentrouter package).`,
+    description: `The ${key} binary of the agentrouter command line (installed by @agentrouter-top/cli).`,
     ...common,
     repository: { ...common.repository, directory: "npm" },
     os: [os],

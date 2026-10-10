@@ -1,6 +1,6 @@
 name: npm packages
 
-# Builds the npm packages (`agentrouter` + `@agentrouter-top/cli-<os>-<arch>`) from a release build
+# Builds the npm packages (`@agentrouter-top/cli` + `@agentrouter-top/cli-<os>-<arch>`) from a release build
 # and uploads the tarballs; they are published from a maintainer machine with
 # `npm publish <tgz> --access public --tag <tag>` (platform package first). No npm token in CI.
 on:
@@ -52,7 +52,7 @@ jobs:
           $dist = Resolve-Path dist
           Push-Location $t
           npm init -y | Out-Null
-          npm install --no-audit --no-fund "$dist/agentrouter-top-cli-win32-x64-$env:VERSION.tgz" "$dist/agentrouter-$env:VERSION.tgz"
+          npm install --no-audit --no-fund "$dist/agentrouter-top-cli-win32-x64-$env:VERSION.tgz" "$dist/agentrouter-top-cli-$env:VERSION.tgz"
           $v = npx --no-install agentrouter version
           Pop-Location
           "npx agentrouter version -> $v"

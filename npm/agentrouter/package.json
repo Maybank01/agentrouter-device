@@ -1,7 +1,7 @@
 {
-  "name": "agentrouter",
+  "name": "@agentrouter-top/cli",
   "version": "0.1.0",
-  "description": "AgentRouter 小助手：让云端对话里的 AI 在你链接的文件夹里干活（npx agentrouter link）",
+  "description": "AgentRouter 小助手：让云端对话里的 AI 在你链接的文件夹里干活（npx @agentrouter-top/cli link）",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
