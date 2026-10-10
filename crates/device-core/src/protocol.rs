@@ -42,14 +42,29 @@ pub fn request_string(
 pub struct DeviceError {
     pub code: &'static str,
     pub message: String,
+    /// What the AI should do next (DEVICE-PROTOCOL.md §5.3), when there is something better than retrying.
+    pub next: Option<String>,
 }
+
+/// `next` for a read-only device (DEVICE-PROTOCOL.md §5.3).
+pub const NEXT_READONLY: &str = "这台设备只读：可以读文件、搜索。要改文件或运行命令，请用户在电脑上运行 agentrouter access folders。";
+/// `next` for a path outside the linked folders.
+pub const NEXT_OUTSIDE: &str = "只能用链接的文件夹里的路径（info 里的 folders）。需要别的文件夹时，请用户在那个文件夹里运行 agentrouter link。";
+/// `next` when no folder is linked.
+pub const NEXT_NO_FOLDER: &str =
+    "这台设备还没有链接文件夹。请用户在项目文件夹里运行 agentrouter link。";
 
 impl DeviceError {
     pub fn new(code: &'static str, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),
+            next: None,
         }
+    }
+    pub fn next(mut self, next: impl Into<String>) -> Self {
+        self.next = Some(next.into());
+        self
     }
     pub fn denied(message: impl Into<String>) -> Self {
         Self::new("DENIED", message)

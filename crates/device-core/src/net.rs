@@ -535,7 +535,12 @@ fn on_frame(
                 let answer = match device.serve(&request, &args, &flag) {
                     Ok(value) => json!({"id": id, "value": value}),
                     Err(e) => {
-                        json!({"id": id, "error": {"code": e.code, "message": crate::util::clip(&e.message, 300)}})
+                        let mut error =
+                            json!({"code": e.code, "message": crate::util::clip(&e.message, 300)});
+                        if let Some(next) = &e.next {
+                            error["next"] = json!(crate::util::clip(next, 300));
+                        }
+                        json!({"id": id, "error": error})
                     }
                 };
                 cancels.lock().unwrap().remove(&id);
@@ -565,6 +570,7 @@ pub fn watch_config(rt: Arc<Runtime>) {
         let mut cfg = rt.config.lock().unwrap();
         let level_changed = fresh.access != cfg.access || fresh.folders != cfg.folders;
         let gateway_changed = fresh.gateway != cfg.gateway;
+        rt.device.set_readonly_commands(fresh.readonly_commands);
         *cfg = fresh;
         if level_changed {
             rt.device.set_access(cfg.access, &cfg.folders);

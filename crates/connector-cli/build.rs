@@ -37,12 +37,12 @@ BEGIN
     BLOCK "080404b0"
     BEGIN
       VALUE "CompanyName", "AgentRouter"
-      VALUE "FileDescription", "AgentRouter 设备（已链接的设备）"
+      VALUE "FileDescription", "AgentRouter 小助手（已链接的设备）"
       VALUE "FileVersion", "{version}"
-      VALUE "InternalName", "agentrouter-device"
+      VALUE "InternalName", "agentrouter"
       VALUE "LegalCopyright", "Copyright 2026 AgentRouter contributors. Apache-2.0."
-      VALUE "OriginalFilename", "agentrouter-device.exe"
-      VALUE "ProductName", "AgentRouter 设备"
+      VALUE "OriginalFilename", "agentrouter.exe"
+      VALUE "ProductName", "AgentRouter 小助手"
       VALUE "ProductVersion", "{version}"
       VALUE "Comments", "Open source: https://github.com/Maybank01/agentrouter-device"
     END

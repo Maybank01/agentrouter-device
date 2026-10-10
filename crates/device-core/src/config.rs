@@ -20,7 +20,8 @@ pub enum Access {
     /// Read files in the chosen folders; no commands, no writes.
     #[default]
     Readonly,
-    /// Read and write files in the chosen folders; each command is confirmed on this device.
+    /// Read, write and run commands in the chosen folders without asking (the coding default, owner
+    /// decision 2026-10-10); commands that clearly act outside them are refused, checkpoints allow undo.
     Folders,
     /// Like `folders`, and every file write is confirmed too.
     Confirm,
@@ -71,7 +72,7 @@ impl Access {
                 "AI 可以：读取你选的文件夹里的文件。\nAI 不能：运行命令、修改或删除文件、碰这些文件夹以外的任何东西。"
             }
             Access::Folders => {
-                "AI 可以：读写你选的文件夹里的文件；运行命令，但每条命令都先在这台电脑上弹窗问你。\nAI 不能：不经你同意运行命令、读写这些文件夹以外的文件。"
+                "AI 可以：在你链接的文件夹里读写文件、运行命令，不用每次问你；每轮改动之前自动打检查点，可以用 agentrouter undo 撤销。\nAI 不能：读写这些文件夹以外的文件；明显越界的命令（改系统、碰密码和密钥、提权、全局安装）会被直接拦下，确实需要时单独问你一次。"
             }
             Access::Confirm => {
                 "AI 可以：读取你选的文件夹里的文件；每条命令、每次写文件都先在这台电脑上弹窗问你。\nAI 不能：不经你同意做任何改动、碰这些文件夹以外的文件。"
@@ -109,6 +110,9 @@ pub struct Config {
     /// Unattended (servers, CI): the machine's operator approved commands up front, at link time, on
     /// this machine. Nothing is asked at run time; everything is still audited.
     pub unattended: bool,
+    /// At 「每条都确认」, read-only commands (`git status`, `ls`, `rg`, `cat` …) run without asking
+    /// (DEVICE-PROTOCOL.md §5.6). On unless the person turns it off.
+    pub readonly_commands: bool,
 }
 
 impl Default for Config {
@@ -122,6 +126,7 @@ impl Default for Config {
             paused: false,
             disconnected: false,
             unattended: false,
+            readonly_commands: true,
         }
     }
 }

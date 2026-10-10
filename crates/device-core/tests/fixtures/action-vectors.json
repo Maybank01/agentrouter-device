@@ -1,0 +1,144 @@
+{
+  "about": "DEVICE-PROTOCOL.md §5.4 test vectors for edit_file and apply_patch. Each case starts from `files` (paths relative to a fresh linked folder), sends `args` (where `{root}` is the folder's absolute path and `/` the separator), and expects either `result` (files afterwards; null = must not exist) or `error` (code; files unchanged). The reference device in agentrouter-cloud should pass the same vectors.",
+  "cases": [
+    {
+      "name": "edit: one replacement",
+      "action": "edit_file",
+      "files": {"a.txt": "alpha\nbeta\ngamma\n"},
+      "args": {"path": "{root}/a.txt", "edits": [{"old": "beta", "new": "BETA"}]},
+      "result": {"a.txt": "alpha\nBETA\ngamma\n"},
+      "replacements": 1
+    },
+    {
+      "name": "edit: several in order",
+      "action": "edit_file",
+      "files": {"a.txt": "one two three\n"},
+      "args": {"path": "{root}/a.txt", "edits": [{"old": "one", "new": "1"}, {"old": "1 two", "new": "1 2"}]},
+      "result": {"a.txt": "1 2 three\n"},
+      "replacements": 2
+    },
+    {
+      "name": "edit: replace all",
+      "action": "edit_file",
+      "files": {"a.txt": "x y x y x\n"},
+      "args": {"path": "{root}/a.txt", "edits": [{"old": "x", "new": "z", "all": true}]},
+      "result": {"a.txt": "z y z y z\n"},
+      "replacements": 3
+    },
+    {
+      "name": "edit: ambiguous",
+      "action": "edit_file",
+      "files": {"a.txt": "x y x\n"},
+      "args": {"path": "{root}/a.txt", "edits": [{"old": "x", "new": "z"}]},
+      "error": "EDIT_AMBIGUOUS"
+    },
+    {
+      "name": "edit: not found (and nothing written when a later edit fails)",
+      "action": "edit_file",
+      "files": {"a.txt": "alpha\n"},
+      "args": {"path": "{root}/a.txt", "edits": [{"old": "alpha", "new": "ALPHA"}, {"old": "nope", "new": "x"}]},
+      "error": "EDIT_NOT_FOUND"
+    },
+    {
+      "name": "edit: CRLF file, LF old/new",
+      "action": "edit_file",
+      "files": {"w.txt": "line one\r\nline two\r\n"},
+      "args": {"path": "{root}/w.txt", "edits": [{"old": "line one\nline two", "new": "first\nsecond"}]},
+      "result": {"w.txt": "first\r\nsecond\r\n"},
+      "replacements": 1
+    },
+    {
+      "name": "edit: base hash matches",
+      "action": "edit_file",
+      "files": {"a.txt": "hello\n"},
+      "args": {"path": "{root}/a.txt", "baseHash": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03", "edits": [{"old": "hello", "new": "bye"}]},
+      "result": {"a.txt": "bye\n"},
+      "replacements": 1
+    },
+    {
+      "name": "edit: base hash is stale",
+      "action": "edit_file",
+      "files": {"a.txt": "hello\n"},
+      "args": {"path": "{root}/a.txt", "baseHash": "0000000000000000000000000000000000000000000000000000000000000000", "edits": [{"old": "hello", "new": "bye"}]},
+      "error": "CONFLICT"
+    },
+    {
+      "name": "edit: create with empty old",
+      "action": "edit_file",
+      "files": {},
+      "args": {"path": "{root}/new/b.txt", "edits": [{"old": "", "new": "fresh\n"}]},
+      "result": {"new/b.txt": "fresh\n"},
+      "replacements": 0
+    },
+    {
+      "name": "edit: missing file",
+      "action": "edit_file",
+      "files": {},
+      "args": {"path": "{root}/none.txt", "edits": [{"old": "a", "new": "b"}]},
+      "error": "NOT_FOUND"
+    },
+    {
+      "name": "patch: update, add, delete",
+      "action": "apply_patch",
+      "files": {"src/app.py": "def main():\n    print('hi')\n    return 0\n", "old.txt": "bye\n"},
+      "args": {"cwd": "{root}", "patch": "*** Begin Patch\n*** Update File: src/app.py\n@@ def main():\n-    print('hi')\n+    print('hello')\n     return 0\n*** Add File: docs/readme.md\n+# Title\n+\n+body\n*** Delete File: old.txt\n*** End Patch\n"},
+      "result": {"src/app.py": "def main():\n    print('hello')\n    return 0\n", "docs/readme.md": "# Title\n\nbody\n", "old.txt": null}
+    },
+    {
+      "name": "patch: move with change",
+      "action": "apply_patch",
+      "files": {"a.txt": "one\ntwo\n"},
+      "args": {"cwd": "{root}", "patch": "*** Begin Patch\n*** Update File: a.txt\n*** Move to: b/a.txt\n@@\n one\n-two\n+2\n*** End Patch"},
+      "result": {"a.txt": null, "b/a.txt": "one\n2\n"}
+    },
+    {
+      "name": "patch: trailing whitespace tolerated, end of file",
+      "action": "apply_patch",
+      "files": {"c.txt": "a  \nb\nc\n"},
+      "args": {"cwd": "{root}", "patch": "*** Begin Patch\n*** Update File: c.txt\n@@\n a\n b\n-c\n+C\n*** End of File\n*** End Patch\n"},
+      "result": {"c.txt": "a\nb\nC\n"}
+    },
+    {
+      "name": "patch: CRLF file keeps CRLF",
+      "action": "apply_patch",
+      "files": {"w.txt": "x\r\ny\r\n"},
+      "args": {"cwd": "{root}", "patch": "*** Begin Patch\n*** Update File: w.txt\n@@\n-x\n+X\n y\n*** End Patch\n"},
+      "result": {"w.txt": "X\r\ny\r\n"}
+    },
+    {
+      "name": "patch: context does not match, nothing changes",
+      "action": "apply_patch",
+      "files": {"a.txt": "one\n", "b.txt": "two\n"},
+      "args": {"cwd": "{root}", "patch": "*** Begin Patch\n*** Update File: a.txt\n@@\n-one\n+ONE\n*** Update File: b.txt\n@@\n-three\n+3\n*** End Patch\n"},
+      "error": "PATCH_NOT_APPLIED"
+    },
+    {
+      "name": "patch: add over an existing file",
+      "action": "apply_patch",
+      "files": {"a.txt": "one\n"},
+      "args": {"cwd": "{root}", "patch": "*** Begin Patch\n*** Add File: a.txt\n+two\n*** End Patch\n"},
+      "error": "CONFLICT"
+    },
+    {
+      "name": "patch: not a patch",
+      "action": "apply_patch",
+      "files": {},
+      "args": {"cwd": "{root}", "patch": "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n"},
+      "error": "PATCH_INVALID"
+    },
+    {
+      "name": "patch: path outside the folder",
+      "action": "apply_patch",
+      "files": {},
+      "args": {"cwd": "{root}", "patch": "*** Begin Patch\n*** Add File: ../escape.txt\n+x\n*** End Patch\n"},
+      "error": "DENIED"
+    },
+    {
+      "name": "patch: into .git",
+      "action": "apply_patch",
+      "files": {".git/config": "[core]\n"},
+      "args": {"cwd": "{root}", "patch": "*** Begin Patch\n*** Update File: .git/config\n@@\n [core]\n+\tfsmonitor = evil\n*** End Patch\n"},
+      "error": "DENIED"
+    }
+  ]
+}

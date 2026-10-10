@@ -1,0 +1,29 @@
+{
+  "name": "agentrouter",
+  "version": "0.1.0",
+  "description": "AgentRouter 小助手：让云端对话里的 AI 在你链接的文件夹里干活（npx agentrouter link）",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Maybank01/agentrouter-device.git",
+    "directory": "npm/agentrouter"
+  },
+  "homepage": "https://agentrouter.top",
+  "bin": {
+    "agentrouter": "bin/agentrouter.js"
+  },
+  "files": [
+    "bin/agentrouter.js"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "optionalDependencies": {
+    "@agentrouter-top/cli-win32-x64": "0.1.0",
+    "@agentrouter-top/cli-win32-arm64": "0.1.0",
+    "@agentrouter-top/cli-linux-x64": "0.1.0",
+    "@agentrouter-top/cli-linux-arm64": "0.1.0",
+    "@agentrouter-top/cli-darwin-x64": "0.1.0",
+    "@agentrouter-top/cli-darwin-arm64": "0.1.0"
+  }
+}

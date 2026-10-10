@@ -9,11 +9,17 @@ publish.workspace = true
 build = "build.rs"
 
 [[bin]]
-name = "agentrouter-device"
+name = "agentrouter"
 path = "src/main.rs"
+
+# The earlier name, same program.
+[[bin]]
+name = "agentrouter-device"
+path = "src/alias.rs"
 
 [dependencies]
 agentrouter-device-core.workspace = true
+ctrlc = "3"
 serde_json.workspace = true
 
 [target.'cfg(unix)'.dependencies]
