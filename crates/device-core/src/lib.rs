@@ -10,6 +10,7 @@ pub mod approvals;
 pub mod audit;
 pub mod checkpoint;
 pub mod config;
+pub mod confine;
 pub mod consent;
 pub mod device;
 pub mod edit;
