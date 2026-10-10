@@ -22,11 +22,11 @@ try {
 }
 
 const child = spawn(binary, process.argv.slice(2), { stdio: "inherit", windowsHide: false });
-// Ctrl+C reaches the helper directly (same console / process group); it stops its jobs and
-// disconnects. The wrapper only waits for it, so the prompt comes back after it has finished.
-for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+// Ctrl+C / Ctrl+Break reach the helper directly (same console / process group); it stops its jobs
+// and disconnects. The wrapper only waits for it, so the prompt comes back after it has finished.
+for (const signal of ["SIGINT", "SIGBREAK", "SIGTERM", "SIGHUP"]) {
   process.on(signal, () => {
-    if (signal !== "SIGINT") child.kill(signal);
+    if (signal === "SIGTERM" || signal === "SIGHUP") child.kill(signal);
   });
 }
 child.on("error", (err) => {

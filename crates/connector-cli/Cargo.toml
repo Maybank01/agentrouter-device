@@ -19,11 +19,15 @@ path = "src/alias.rs"
 
 [dependencies]
 agentrouter-device-core.workspace = true
-ctrlc = "3"
+# termination: Ctrl+Break and closing the console window also stop jobs and disconnect.
+ctrlc = { version = "3", features = ["termination"] }
 serde_json.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_System_Console", "Win32_Foundation"] }
 
 [build-dependencies]
 embed-resource = "3"

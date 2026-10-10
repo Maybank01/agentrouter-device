@@ -131,6 +131,12 @@ fn confirm_in_terminal(text: &str) -> bool {
 }
 
 pub fn main() {
+    // A process started by a tool that ignores Ctrl+C inherits that, and its handler is then never
+    // called: turn normal Ctrl+C processing back on before registering ours.
+    #[cfg(windows)]
+    unsafe {
+        windows_sys::Win32::System::Console::SetConsoleCtrlHandler(None, 0);
+    }
     let _ = ctrlc::set_handler(|| INTERRUPTED.store(true, Ordering::SeqCst));
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (command, rest) = match args.first() {
@@ -569,7 +575,9 @@ fn undo(flags: Flags) -> i32 {
     let all = checkpoint::list(&data);
     let here = std::env::current_dir()
         .ok()
-        .and_then(|d| std::fs::canonicalize(d).ok());
+        .and_then(|d| std::fs::canonicalize(d).ok())
+        // canonicalize gives `\?\F:\…` on Windows; checkpoints store the plain form.
+        .map(|p| std::path::PathBuf::from(gate::display(&p)));
     let mine = |m: &&checkpoint::Meta| {
         here.as_deref().is_some_and(|h| {
             gate::inside(h, Path::new(&m.folder)) || gate::inside(Path::new(&m.folder), h)
