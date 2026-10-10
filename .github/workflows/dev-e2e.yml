@@ -1,7 +1,7 @@
 name: Dev end-to-end
 
 # Links a throwaway GitHub-hosted Windows machine to a Dev test account (cap-test-*), stays online
-# while a Dev conversation uses it, and ends when the device is removed on the web (or after 25 min).
+# while a Dev conversation uses it, and ends when the device is removed on the web (or after 60 min).
 # Scenario m1 (the default): the linked folder is a small git repository with a failing test
 # (calc.js); a cloud Codex conversation fixes it through edit_file / apply_patch and runs `npm test`.
 # The last step checks that the tests now pass, that the change came through the coding actions,
@@ -31,7 +31,7 @@ env:
 jobs:
   device:
     runs-on: windows-latest
-    timeout-minutes: 75
+    timeout-minutes: 110
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -88,7 +88,7 @@ jobs:
         run: |
           $exe = Resolve-Path target/release/agentrouter.exe
           $run = Start-Process -FilePath $exe -ArgumentList @('run', '--background') -NoNewWindow -PassThru
-          $deadline = (Get-Date).AddMinutes(25)
+          $deadline = (Get-Date).AddMinutes(60)
           while ((Get-Date) -lt $deadline) {
             Start-Sleep -Seconds 10
             $s = (& $exe status | Out-String)

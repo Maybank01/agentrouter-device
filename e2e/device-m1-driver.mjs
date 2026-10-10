@@ -129,8 +129,10 @@ async function newestCode() {
 }
 let r = null;
 const tried = new Set();
-const until = Date.now() + 25 * 60_000;
-while (Date.now() < until) {
+const until = Date.now() + 30 * 60_000;
+const resume = process.env.DEVICE_ID; // an already linked device (a rerun against a runner that is still online)
+if (resume) r = { status: 200, data: { data: { device: { id: resume } } } };
+while (!resume && Date.now() < until) {
   const code = await newestCode().catch(() => null);
   if (code && !tried.has(code)) {
     tried.add(code);
@@ -153,7 +155,16 @@ for (let i = 0; i < 60 && !device; i++) {
 if (!device) { log("device did not come online"); process.exit(1); }
 log(`device ${device.id} online`);
 
-r = await http("POST", "/api/control/agent/sessions", { bearer: true, json: { prompt: "你好。先不用做任何事，回复“好的”就行。", kernel: KERNEL, model: MODEL, surface: "chat" }, timeoutMs: 120_000 });
+/** NewAPI may rate-limit the control plane for a moment: back off and retry. */
+async function patient(method, path, options) {
+  for (let i = 0; ; i++) {
+    const res = await http(method, path, options);
+    if (!(res.status === 503 || res.status === 429) || i >= 5) return res;
+    log(`${path}: HTTP ${res.status} ${res.data?.error?.code ?? ""}, retrying in 60 s`);
+    await sleep(60_000);
+  }
+}
+r = await patient("POST", "/api/control/agent/sessions", { bearer: true, json: { prompt: "你好。先不用做任何事，回复“好的”就行。", kernel: KERNEL, model: MODEL, surface: "chat" }, timeoutMs: 120_000 });
 const ags = r.data?.data?.id;
 log(`conversation: HTTP ${r.status} ${ags ?? clip(JSON.stringify(r.data), 300)}`);
 if (!ags) process.exit(1);
@@ -162,7 +173,7 @@ r = await http("PUT", `/api/control/personal/devices/${device.id}/sessions/${ags
 log(`grant: HTTP ${r.status}`);
 const prompt = `我链接了一台电脑（设备名 ${NAME}），它链接的文件夹是一个小的 Node 项目（calc.js 和 calc.test.js），现在 npm test 是失败的。`
   + "请在那台设备上：先看看这两个文件，用 edit_file 或 apply_patch 修好 calc.js 里的错误（不要改测试），然后在那个文件夹里运行 npm test，告诉我结果。";
-r = await http("POST", `/api/control/agent/sessions/${ags}/messages`, { bearer: true, json: { content: prompt }, timeoutMs: 120_000 });
+r = await patient("POST", `/api/control/agent/sessions/${ags}/messages`, { bearer: true, json: { content: prompt }, timeoutMs: 120_000 });
 log(`task message: HTTP ${r.status}`);
 const end = await turn(ags, 15 * 60_000);
 log(`task turn: ${end}`);
@@ -177,5 +188,13 @@ log(`conversation id ${ags}`);
 if (!KEEP_DEVICE) {
   r = await http("DELETE", `/api/control/personal/devices/${device.id}`);
   log(`device removed: HTTP ${r.status}`);
+  // Leftovers of earlier runs (offline CI devices) go too.
+  r = await http("GET", "/api/control/personal/devices");
+  for (const d of list(r.data?.data)) {
+    if (d.name === NAME && d.id !== device.id && d.online !== true && d.state !== "revoked") {
+      const del = await http("DELETE", `/api/control/personal/devices/${d.id}`);
+      log(`old ${d.id} removed: HTTP ${del.status}`);
+    }
+  }
 }
 save();
