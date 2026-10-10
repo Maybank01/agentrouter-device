@@ -6,8 +6,11 @@ name: Dev end-to-end
 # (calc.js); a cloud Codex conversation fixes it through edit_file / apply_patch and runs `npm test`.
 # The last step checks that the tests now pass, that the change came through the coding actions,
 # that a checkpoint was taken, and that nothing asked for approval.
-# Needs the secret DEV_E2E_WEB_SESSION: a short-lived Dev web session of the test account, set just
-# before the run and revoked after it. Started by pushing to an e2e/* branch.
+# The runner only runs the device. The web side (confirming the pairing code, the conversation,
+# removing the device) runs on the ops host under the shared test-account session lock
+# (agentrouter-ops e2e/README.md): the pairing code is published as the artifact `pairing-code`, and
+# `PAIR_CODE=<code> session-lock.sh dev node device-m1-driver.mjs` takes it from there. No session
+# ever reaches GitHub. Started by pushing to an e2e/* branch.
 on:
   push:
     branches: ["e2e/**"]
@@ -33,10 +36,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --locked -p agentrouter-device-cli
-      - name: Link to the Dev test account (folders, one sample repository, unattended)
+      - name: Start linking (folders, one sample repository, unattended)
         shell: pwsh
-        env:
-          WEB_SESSION: ${{ secrets.DEV_E2E_WEB_SESSION }}
         run: |
           $ErrorActionPreference = 'Stop'
           $root = Join-Path $env:GITHUB_WORKSPACE 'target\e2e'
@@ -63,12 +64,25 @@ jobs:
             if (Test-Path $out) { $m = [regex]::Match((Get-Content -Raw -Encoding utf8 $out), '[A-Z2-9]{4}-[A-Z2-9]{4}'); if ($m.Success) { $code = $m.Value } }
           }
           if (-not $code) { Get-Content "$out.err" -ErrorAction SilentlyContinue; throw 'no pairing code' }
-          $headers = @{ origin = $env:WEB; cookie = "ar_enterprise_session=$env:WEB_SESSION"; 'x-agentrouter-csrf' = '1' }
-          $r = Invoke-WebRequest -Method Post -Uri "$env:WEB/api/control/personal/devices/pair" -Headers $headers -ContentType 'application/json' -Body (@{ code = $code } | ConvertTo-Json) -SkipHttpErrorCheck
-          "pair confirm: HTTP $($r.StatusCode)"
-          if ($r.StatusCode -ne 200) { throw 'pairing was not confirmed' }
-          $link.WaitForExit(60000) | Out-Null
-          & $exe status
+          "pairing code: $code"
+          New-Item -ItemType Directory -Force (Join-Path $root 'pairing') | Out-Null
+          Set-Content -Encoding ascii -NoNewline (Join-Path $root 'pairing\code.txt') $code
+          "LINK_PID=$($link.Id)" >> $env:GITHUB_ENV
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pairing-code
+          path: target/e2e/pairing/code.txt
+          retention-days: 1
+      - name: Wait for the pairing to be confirmed (ops host)
+        shell: pwsh
+        run: |
+          $link = Get-Process -Id $env:LINK_PID -ErrorAction SilentlyContinue
+          if ($link) { $link.WaitForExit(900000) | Out-Null }
+          Get-Content -Encoding utf8 (Join-Path $env:GITHUB_WORKSPACE 'target\e2e\link.out') -ErrorAction SilentlyContinue | Select-Object -Last 3
+          $exe = Resolve-Path target/release/agentrouter.exe
+          $s = (& $exe status | Out-String)
+          $s
+          if ($s -match '未链接') { throw 'the pairing was not confirmed' }
       - name: Online until the device is removed on the web
         shell: pwsh
         run: |
