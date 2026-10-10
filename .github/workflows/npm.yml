@@ -2,7 +2,8 @@ name: npm packages
 
 # Builds the npm packages (`@agentrouter-top/cli` + `@agentrouter-top/cli-<os>-<arch>`) from a release build
 # and uploads the tarballs; they are published from a maintainer machine with
-# `npm publish <tgz> --access public --tag <tag>` (platform package first). No npm token in CI.
+# `npm publish <tgz> --access public --tag <tag>`: the platform package first, and the main package
+# only once `npm view <platform package>@<version>` answers (no npm token in CI).
 on:
   workflow_dispatch:
     inputs:

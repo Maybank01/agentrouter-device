@@ -1,22 +1,49 @@
 #!/usr/bin/env node
 // Runs the native `agentrouter` binary from the platform package npm installed next to this one
 // (the esbuild pattern: one optional dependency per OS/CPU, npm keeps only the matching one).
-// No install scripts, no downloads: the binary is whatever the registry served for that package.
+// npm skips an optional dependency it could not fetch without saying so (for example a few minutes
+// after a release, before the registry serves it everywhere), and npx then keeps that install. So if
+// the binary is missing on a supported system, install exactly that package version next to this one
+// once, from the same registry. No install scripts.
 "use strict";
 
-const { spawn } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
+const fs = require("node:fs");
 const path = require("node:path");
 
 const pkg = `@agentrouter-top/cli-${process.platform}-${process.arch}`;
 const exe = process.platform === "win32" ? "agentrouter.exe" : "agentrouter";
+const own = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
+const version = own.optionalDependencies?.[pkg];
+const fallback = path.join(__dirname, "..", ".platform");
 
-let binary;
-try {
-  binary = require.resolve(`${pkg}/bin/${exe}`);
-} catch {
+function find() {
+  for (const paths of [undefined, [fallback]]) {
+    try {
+      return require.resolve(`${pkg}/bin/${exe}`, paths ? { paths } : undefined);
+    } catch {
+      // not here
+    }
+  }
+  return null;
+}
+
+let binary = find();
+if (!binary && version) {
+  console.error(`第一次运行：补装 ${pkg}@${version} ……`);
+  fs.mkdirSync(fallback, { recursive: true });
+  const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+  const r = spawnSync(
+    `${npm} install --no-save --no-package-lock --no-audit --no-fund --no-update-notifier --loglevel=error --prefix "${fallback}" ${pkg}@${version}`,
+    { stdio: ["ignore", "ignore", "inherit"], shell: true },
+  );
+  if (r.status === 0) binary = find();
+}
+if (!binary) {
   console.error(
-    `AgentRouter 小助手还不支持这个系统（${process.platform}-${process.arch}），或者安装时跳过了可选依赖 ${pkg}。\n` +
-      "请不要用 --no-optional / --omit=optional 安装；仍然不行请到 https://github.com/Maybank01/agentrouter-device/issues 反馈。",
+    version
+      ? `没能装上 ${pkg}@${version}。请检查网络和 npm 源后重试；仍然不行请到 https://github.com/Maybank01/agentrouter-device/issues 反馈。`
+      : `AgentRouter 小助手还不支持这个系统（${process.platform}-${process.arch}）。`,
   );
   process.exit(1);
 }
