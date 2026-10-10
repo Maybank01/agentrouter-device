@@ -42,6 +42,8 @@ pub fn request_string(
 pub struct DeviceError {
     pub code: &'static str,
     pub message: String,
+    /// What the AI should do next (DEVICE-PROTOCOL.md §5.3), when there is something better than retrying.
+    pub next: Option<String>,
 }
 
 impl DeviceError {
@@ -49,7 +51,12 @@ impl DeviceError {
         Self {
             code,
             message: message.into(),
+            next: None,
         }
+    }
+    pub fn next(mut self, next: impl Into<String>) -> Self {
+        self.next = Some(next.into());
+        self
     }
     pub fn denied(message: impl Into<String>) -> Self {
         Self::new("DENIED", message)

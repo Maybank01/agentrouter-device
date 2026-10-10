@@ -75,7 +75,7 @@ pub fn temp_dir(tag: &str) -> PathBuf {
 pub fn confirm_with(answer: bool, asked: Arc<AtomicUsize>) -> Confirm {
     Arc::new(move |_: &Ask, _: &AtomicBool| {
         asked.fetch_add(1, Ordering::SeqCst);
-        answer
+        answer.into()
     })
 }
 

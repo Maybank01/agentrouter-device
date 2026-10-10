@@ -151,7 +151,7 @@ fn full_access_runs_commands_and_files_anywhere_but_the_app_data() {
 }
 
 #[test]
-fn folders_confine_files_and_ask_before_commands() {
+fn folders_confine_files_and_run_commands_without_asking() {
     let cp = ControlPlane::new();
     let data = temp_dir("folders");
     let folder = temp_dir("folders-allowed");
@@ -237,19 +237,17 @@ fn folders_confine_files_and_ask_before_commands() {
         "DENIED"
     );
     assert!(!outside.join("planted.txt").exists());
-    // Commands are asked on the device; declined means DENIED and nothing ran.
-    assert_eq!(
-        code(call(
-            &d,
-            &cp,
-            "exec",
-            json!({"command": echo("hi"), "timeout": 5})
-        )),
-        "DENIED"
-    );
-    assert_eq!(asked.load(Ordering::SeqCst), 1);
-    assert_eq!(d.jobs.running(), 0);
-    // A working folder outside is refused before anyone is asked.
+    // The default level: commands inside the folders run without asking (owner decision 2026-10-10).
+    let v = call(
+        &d,
+        &cp,
+        "exec",
+        json!({"command": echo("inside"), "timeout": 30}),
+    )
+    .unwrap();
+    assert!(v["output"].as_str().unwrap().contains("inside"), "{v}");
+    assert_eq!(asked.load(Ordering::SeqCst), 0);
+    // A working folder outside is refused.
     assert_eq!(
         code(call(
             &d,
@@ -259,9 +257,36 @@ fn folders_confine_files_and_ask_before_commands() {
         )),
         "DENIED"
     );
+    // A command that clearly writes outside is refused without a question, and nothing ran.
+    let target = outside.join("planted2.txt");
+    let overreach = if cfg!(windows) {
+        format!("Set-Content -Path '{}' -Value x", target.display())
+    } else {
+        format!("echo x > '{}'", target.display())
+    };
+    let r = call(
+        &d,
+        &cp,
+        "exec",
+        json!({"command": overreach, "timeout": 10}),
+    );
+    assert_eq!(r.as_ref().unwrap_err().0, "OUT_OF_SCOPE", "{r:?}");
+    assert_eq!(asked.load(Ordering::SeqCst), 0);
+    assert!(!target.exists());
+    // Saying why it must go beyond asks once; declined is DENIED_BY_USER.
+    assert_eq!(
+        code(call(
+            &d,
+            &cp,
+            "exec",
+            json!({"command": overreach, "timeout": 10, "beyondScope": "test"})
+        )),
+        "DENIED_BY_USER"
+    );
     assert_eq!(asked.load(Ordering::SeqCst), 1);
+    assert!(!target.exists());
 
-    // Approved: it runs, in the first folder by default.
+    // Approved: it runs.
     let yes = Arc::new(AtomicUsize::new(0));
     let d2 = device(
         &temp_dir("folders2"),
@@ -274,11 +299,13 @@ fn folders_confine_files_and_ask_before_commands() {
         &d2,
         &cp,
         "exec",
-        json!({"command": echo("approved"), "timeout": 30}),
+        json!({"command": overreach, "timeout": 30, "beyondScope": "the user asked for it"}),
     )
     .unwrap();
-    assert!(v["output"].as_str().unwrap().contains("approved"), "{v}");
+    assert_eq!(v["status"], "exited", "{v}");
+    assert!(v["approval"].as_str().unwrap().starts_with("apv_"), "{v}");
     assert_eq!(yes.load(Ordering::SeqCst), 1);
+    assert!(target.exists());
 }
 
 #[test]
@@ -350,7 +377,7 @@ fn confirm_asks_for_every_write() {
             "write_file",
             json!({"path": p, "content": "x", "encoding": "utf8", "append": false})
         )),
-        "DENIED"
+        "DENIED_BY_USER"
     );
     assert_eq!(asked.load(Ordering::SeqCst), 1);
     assert!(!folder.join("b.txt").exists());

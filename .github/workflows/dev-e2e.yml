@@ -2,18 +2,27 @@ name: Dev end-to-end
 
 # Links a throwaway GitHub-hosted Windows machine to a Dev test account (cap-test-*), stays online
 # while a Dev conversation uses it, and ends when the device is removed on the web (or after 25 min).
+# Scenario m1 (the default): the linked folder is a small git repository with a failing test
+# (calc.js); a cloud Codex conversation fixes it through edit_file / apply_patch and runs `npm test`.
+# The last step checks that the tests now pass, that the change came through the coding actions,
+# that a checkpoint was taken, and that nothing asked for approval.
 # Needs the secret DEV_E2E_WEB_SESSION: a short-lived Dev web session of the test account, set just
 # before the run and revoked after it. Started by pushing to an e2e/* branch.
 on:
   push:
     branches: ["e2e/**"]
   workflow_dispatch:
+    inputs:
+      scenario:
+        description: "m1 = cloud Codex edits the sample repo and its tests must pass; none = just stay online"
+        default: m1
 
 permissions:
   contents: read
 
 env:
   WEB: https://edge-d53hmn9blslvhcuff8rjsdvt.agentrouter.top
+  SCENARIO: ${{ inputs.scenario || 'm1' }}
 
 jobs:
   device:
@@ -24,7 +33,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --locked -p agentrouter-device-cli
-      - name: Link to the Dev test account (folders, one scratch folder, unattended)
+      - name: Link to the Dev test account (folders, one sample repository, unattended)
         shell: pwsh
         env:
           WEB_SESSION: ${{ secrets.DEV_E2E_WEB_SESSION }}
@@ -37,9 +46,17 @@ jobs:
           New-Item -ItemType Directory -Force $scratch, $env:AGENTROUTER_DEVICE_HOME | Out-Null
           Set-Content -Encoding utf8 (Join-Path $scratch 'readme.txt') '这是 AgentRouter 设备端到端测试用的文件夹。'
           Set-Content -Encoding utf8 (Join-Path $scratch 'notes.md') "# notes`n- hello from CI"
-          $exe = Resolve-Path target/release/agentrouter-device.exe
+          # The M1 sample: add() is wrong, `npm test` fails until it is fixed.
+          Set-Content -Encoding utf8 (Join-Path $scratch 'package.json') '{"name":"calc","private":true,"scripts":{"test":"node --test"}}'
+          Set-Content -Encoding utf8 (Join-Path $scratch 'calc.js') "exports.add = (a, b) => a - b;`nexports.mul = (a, b) => a * b;"
+          Set-Content -Encoding utf8 (Join-Path $scratch 'calc.test.js') "const test = require('node:test');`nconst assert = require('node:assert');`nconst { add, mul } = require('./calc');`ntest('add', () => assert.strictEqual(add(2, 3), 5));`ntest('mul', () => assert.strictEqual(mul(2, 3), 6));"
+          git -C $scratch init -q
+          git -C $scratch -c user.name=ci -c user.email=ci@example.com add -A
+          git -C $scratch -c user.name=ci -c user.email=ci@example.com commit -q -m 'sample'
+          "SAMPLE=$scratch" >> $env:GITHUB_ENV
+          $exe = Resolve-Path target/release/agentrouter.exe
           $out = Join-Path $root 'link.out'
-          $link = Start-Process -FilePath $exe -ArgumentList @('link', '--access', 'folders', '--folder', $scratch, '--name', 'CI-e2e', '--unattended', '--yes') -RedirectStandardOutput $out -RedirectStandardError "$out.err" -NoNewWindow -PassThru
+          $link = Start-Process -FilePath $exe -ArgumentList @('link', '--access', 'folders', '--folder', $scratch, '--name', 'CI-e2e', '--unattended', '--yes', '--no-run') -RedirectStandardOutput $out -RedirectStandardError "$out.err" -NoNewWindow -PassThru
           $code = $null
           for ($i = 0; $i -lt 60 -and -not $code; $i++) {
             Start-Sleep -Seconds 1
@@ -55,8 +72,8 @@ jobs:
       - name: Online until the device is removed on the web
         shell: pwsh
         run: |
-          $exe = Resolve-Path target/release/agentrouter-device.exe
-          $run = Start-Process -FilePath $exe -ArgumentList @('run') -NoNewWindow -PassThru
+          $exe = Resolve-Path target/release/agentrouter.exe
+          $run = Start-Process -FilePath $exe -ArgumentList @('run', '--background') -NoNewWindow -PassThru
           $deadline = (Get-Date).AddMinutes(25)
           while ((Get-Date) -lt $deadline) {
             Start-Sleep -Seconds 10
@@ -65,11 +82,32 @@ jobs:
           }
           Stop-Process -Id $run.Id -ErrorAction SilentlyContinue
           & $exe status
+      - name: M1 result (tests pass, changed through the coding actions, checkpointed)
+        if: env.SCENARIO == 'm1'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Push-Location $env:SAMPLE
+          node --test
+          if ($LASTEXITCODE -ne 0) { throw 'the sample tests still fail' }
+          Pop-Location
+          $entries = Get-Content -Encoding utf8 (Join-Path $env:AGENTROUTER_DEVICE_HOME 'audit.log') | ForEach-Object { $_ | ConvertFrom-Json }
+          $edits = @($entries | Where-Object { $_.action -in @('edit_file', 'apply_patch') -and $_.outcome -eq 'ok' })
+          $runs = @($entries | Where-Object { $_.action -eq 'exec' -and $_.outcome -eq 'ok' })
+          $asked = @($entries | Where-Object { $_.event -eq 'approval' })
+          "edit_file/apply_patch: $($edits.Count), exec: $($runs.Count), approvals: $($asked.Count)"
+          if ($edits.Count -lt 1) { throw 'calc.js was not changed through edit_file / apply_patch' }
+          if ($runs.Count -lt 1) { throw 'the conversation did not run the tests' }
+          $refs = git -C $env:SAMPLE for-each-ref refs/agentrouter/cp
+          "checkpoints: $(@($refs).Count)"
+          if (-not $refs) { throw 'no checkpoint was taken before the change' }
+          $exe = Resolve-Path target/release/agentrouter.exe
+          & $exe undo --list
       - name: Audit log
         if: always()
         shell: pwsh
         run: |
-          $exe = Resolve-Path target/release/agentrouter-device.exe
+          $exe = Resolve-Path target/release/agentrouter.exe
           & $exe audit verify
           $log = Join-Path $env:AGENTROUTER_DEVICE_HOME 'audit.log'
           if (Test-Path $log) { Get-Content -Encoding utf8 $log | ForEach-Object { ($_ | ConvertFrom-Json) | Select-Object at, event, session, action, text, outcome | ConvertTo-Json -Compress } }
