@@ -43,7 +43,7 @@ const USAGE: &str = "AgentRouter 小助手（agentrouter）：让你在云端对
                                 不写：在本机删除这台设备的身份
   agentrouter access <级别> [--folder <路径>]... [--readonly-commands on|off] [--yes]
   agentrouter undo [检查点] [--list] [--yes]
-                                撤销 AI 的改动：不写检查点就撤销当前文件夹最近一轮；--list 列出检查点
+                                撤销 AI 的改动：不写检查点就撤销当前文件夹最近一轮改动；--list 列出检查点
   agentrouter audit verify      检查审计日志有没有被改过
 
 确认时的选项：y 允许这一次 · a 本对话同类的都允许 · n 拒绝 · d 拒绝并断开
@@ -601,17 +601,40 @@ fn undo(flags: Flags) -> i32 {
         }
         return 0;
     }
-    let id = match flags.positional.first() {
-        Some(id) => id.clone(),
-        None => match all.iter().find(mine) {
-            Some(m) => m.id.clone(),
-            None => {
+    // Without an id: the newest checkpoint of this folder that has something to undo (a later round
+    // that only ran commands also leaves a checkpoint, and undoing that would change nothing).
+    let plan = match flags.positional.first() {
+        Some(id) => checkpoint::plan(&data, id),
+        None => {
+            let candidates: Vec<&checkpoint::Meta> = all.iter().filter(mine).collect();
+            if candidates.is_empty() {
                 println!("当前文件夹没有检查点（agentrouter undo --list 看全部）。");
                 return 1;
             }
-        },
+            let mut found = None;
+            for m in candidates.iter().take(20) {
+                match checkpoint::plan(&data, &m.id) {
+                    Ok(p) if !p.changes.is_empty() => {
+                        found = Some(Ok(p));
+                        break;
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        found = Some(Err(e));
+                        break;
+                    }
+                }
+            }
+            match found {
+                Some(p) => p,
+                None => {
+                    println!("最近几轮之后文件夹没有变化，不用撤销。");
+                    return 0;
+                }
+            }
+        }
     };
-    let plan = match checkpoint::plan(&data, &id) {
+    let plan = match plan {
         Ok(p) => p,
         Err(e) => {
             eprintln!("{e}");
