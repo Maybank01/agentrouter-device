@@ -251,7 +251,7 @@ fn writes_outside_the_folders_fail_every_time_whatever_the_text_says() {
     assert!(!target(11).exists(), "job input wrote outside: {v}");
 
     // Unlinking takes the label back.
-    confine::release(&data, &[]);
+    let failed = confine::release(&data, &[]);
     let acl = std::process::Command::new("icacls")
         .arg(&folder)
         .output()
@@ -261,7 +261,7 @@ fn writes_outside_the_folders_fail_every_time_whatever_the_text_says() {
     assert_eq!(
         confine::labelled(&folder),
         low_before,
-        "label after release; icacls: {acl}; record: {record}"
+        "label after release; failed: {failed:?}; icacls: {acl}; record: {record}"
     );
     let _ = std::fs::remove_dir(&junction);
 }

@@ -105,7 +105,9 @@ impl Confinement {
     /// `release` for this device, in turn with `prepare`.
     pub fn release(&self, keep: &[PathBuf]) {
         let _guard = self.lock.lock().unwrap();
-        release(&self.data_dir, keep);
+        for failed in release(&self.data_dir, keep) {
+            crate::util::log(&format!("could not take back a folder label: {failed}"));
+        }
     }
 
     /// Make the boundary hold for a command in `scope`'s folders: every linked folder labelled Low
@@ -167,15 +169,16 @@ impl Confinement {
 }
 
 /// Take back the labels this app put on folders that are not in `keep` (a folder unlinked, or the
-/// whole device unlinked with `keep` empty). Never fails; what could not be undone stays recorded and
-/// is tried again next time.
-pub fn release(data_dir: &Path, keep: &[PathBuf]) {
+/// whole device unlinked with `keep` empty). What could not be undone stays recorded, is tried again
+/// next time and is returned (path and reason) for the log.
+pub fn release(data_dir: &Path, keep: &[PathBuf]) -> Vec<String> {
     if !cfg!(windows) {
-        return;
+        return Vec::new();
     }
     let mut record = Record::load(data_dir);
-    record.release_except(keep);
+    let failed = record.release_except(keep);
     record.save(data_dir);
+    failed
 }
 
 /// Does `folder` carry the boundary label (everything in it writable by confined commands)?
@@ -242,21 +245,22 @@ impl Record {
     }
 
     /// Unlabel what is not one of `keep` (a folder inside a kept one keeps its inherited label).
-    fn release_except(&mut self, keep: &[PathBuf]) {
-        let kept = |p: &Path| keep.iter().any(|k| same(k, p));
-        self.labelled.retain(|p| {
-            if kept(p) {
-                return true;
+    fn release_except(&mut self, keep: &[PathBuf]) -> Vec<String> {
+        let mut failed = Vec::new();
+        // Kept in the record while it still needs undoing (gone already: nothing left to undo).
+        let mut undo = |p: &Path, unprotect: bool| match os::unlabel(p, unprotect) {
+            Ok(()) => false,
+            Err(_) if !p.exists() => false,
+            Err(e) => {
+                failed.push(format!("{}: {e}", crate::gate::display(p)));
+                true
             }
-            // Gone already: nothing left to undo.
-            !p.exists() || os::unlabel(p).is_err()
-        });
-        self.protected.retain(|p| {
-            if keep.iter().any(|k| inside(p, k)) {
-                return true;
-            }
-            !p.exists() || os::unlabel(p).is_err()
-        });
+        };
+        self.labelled
+            .retain(|p| keep.iter().any(|k| same(k, p)) || undo(p, false));
+        self.protected
+            .retain(|p| keep.iter().any(|k| inside(p, k)) || undo(p, true));
+        failed
     }
 }
 
@@ -420,7 +424,9 @@ mod os {
     }
 
     /// Remove this app's label: the folder goes back to what its parent gives it (usually none, Medium).
-    pub fn unlabel(path: &Path) -> std::io::Result<()> {
+    /// `unprotect` also lets a protected folder inherit again (changing the SACL's protection, which an
+    /// elevated caller may need the security privilege for, so only where it was set).
+    pub fn unlabel(path: &Path, unprotect: bool) -> std::io::Result<()> {
         // SAFETY: an empty ACL in a local buffer of the right size and alignment.
         unsafe {
             let mut buf = [0u64; 2];
@@ -431,7 +437,11 @@ mod os {
             let rc = SetNamedSecurityInfoW(
                 wide_path(path).as_ptr(),
                 SE_FILE_OBJECT,
-                LABEL_SECURITY_INFORMATION | UNPROTECTED_SACL_SECURITY_INFORMATION,
+                if unprotect {
+                    LABEL_SECURITY_INFORMATION | UNPROTECTED_SACL_SECURITY_INFORMATION
+                } else {
+                    LABEL_SECURITY_INFORMATION
+                },
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
                 std::ptr::null(),
@@ -461,7 +471,7 @@ mod os {
     pub fn protect(_: &Path) -> std::io::Result<()> {
         Ok(())
     }
-    pub fn unlabel(_: &Path) -> std::io::Result<()> {
+    pub fn unlabel(_: &Path, _: bool) -> std::io::Result<()> {
         Ok(())
     }
 }
