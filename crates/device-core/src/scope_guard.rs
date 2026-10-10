@@ -167,6 +167,90 @@ const WRITERS: &[&str] = &[
     "subst",
 ];
 
+/// Script and .NET calls that write, move or delete files (lower case): a command using one is a
+/// writer even though no writer program appears as a word (joint test 2026-10-10: a sub-Agent wrote
+/// `..\probe.txt` with `[IO.File]::WriteAllText`).
+const SCRIPT_WRITES: &[&str] = &[
+    "[io.file]::",
+    "[system.io.file]::",
+    "[io.directory]::",
+    "[system.io.directory]::",
+    "[io.fileinfo]",
+    "[system.io.fileinfo]",
+    "writealltext",
+    "writeallbytes",
+    "writealllines",
+    "appendalltext",
+    "appendalllines",
+    "streamwriter",
+    "filestream",
+    "writefile",
+    "appendfile",
+    "copyfile",
+    "rmsync",
+    "rmdirsync",
+    "unlinksync",
+    "renamesync",
+    "mkdirsync",
+    "cpsync",
+    "fs.rm",
+    "fs.unlink",
+    "fs.rename",
+    "fs.cp",
+    "shutil.",
+    "os.remove",
+    "os.unlink",
+    "os.rename",
+    "os.replace",
+    "os.makedirs",
+    "os.mkdir",
+    "os.rmdir",
+    "write_text",
+    "write_bytes",
+    "open(",
+    "file.write",
+    "file.delete",
+    "file.copy",
+    "file.move",
+];
+
+/// Interpreters given code inline: what the code does cannot be read from the words, so the command
+/// counts as a writer and every place it names must be inside the folders.
+const INLINE: &[(&str, &[&str])] = &[
+    ("node", &["-e", "--eval", "-p", "--print"]),
+    ("deno", &["eval"]),
+    ("bun", &["-e", "--eval"]),
+    ("python", &["-c"]),
+    ("python3", &["-c"]),
+    ("py", &["-c"]),
+    ("ruby", &["-e"]),
+    ("perl", &["-e", "-E"]),
+    ("php", &["-r"]),
+    // PowerShell also takes any prefix of its encoded-command switch (`-e`, `-ec`, `-enc`…): see `inline_flag`.
+    ("powershell", &["-c", "-command", "-e", "-ec"]),
+    ("pwsh", &["-c", "-command", "-e", "-ec"]),
+    ("bash", &["-c"]),
+    ("sh", &["-c"]),
+    ("zsh", &["-c"]),
+    ("cmd", &["/c", "/k"]),
+];
+
+fn inline_flag(program: &str, flags: &[&str], word: &str) -> bool {
+    let w = word.to_ascii_lowercase();
+    flags.iter().any(|f| w == f.to_ascii_lowercase())
+        || (matches!(program, "powershell" | "pwsh") && w.starts_with("-en"))
+}
+
+/// Every token of the command that could be a path, also inside quotes and calls
+/// (`'..\x'`, `writeFileSync('../x')`), for the places check.
+fn tokens(command: &str) -> Vec<String> {
+    command
+        .split(|c: char| c.is_whitespace() || "'\"`(),;=+[]{}".contains(c))
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 const PACKAGE_MANAGERS: &[&str] = &[
     "winget", "choco", "scoop", "brew", "apt", "apt-get", "dnf", "yum", "pacman", "zypper", "snap",
     "port", "apk",
@@ -424,7 +508,8 @@ pub fn check(command: &str, cwd: &Path, scope: &Scope, home: &Path) -> Result<()
         return Err(Blocked::new("会直接写磁盘"));
     }
     let segments = segments(command);
-    let mut writes = !redirect_targets(command).is_empty();
+    let mut writes = !redirect_targets(command).is_empty()
+        || SCRIPT_WRITES.iter().any(|needle| lower.contains(needle));
     for words in &segments {
         let head = program(&words[0]);
         let arg = |i: usize| {
@@ -562,11 +647,17 @@ pub fn check(command: &str, cwd: &Path, scope: &Scope, home: &Path) -> Result<()
         if head == "git" && arg(1) == "clone" {
             writes = true;
         }
+        if INLINE.iter().any(|(program, flags)| {
+            head == *program && words.iter().skip(1).any(|w| inline_flag(program, flags, w))
+        }) {
+            writes = true;
+        }
     }
     if writes {
         let folders = &scope.folders;
         let mut places: Vec<String> = segments.iter().flatten().cloned().collect();
         places.extend(redirect_targets(command));
+        places.extend(tokens(command));
         for word in places {
             if let Some(place) = outside_place(&word, cwd, home, folders) {
                 return Err(Blocked::new(format!(
@@ -623,6 +714,10 @@ mod tests {
             "echo hi > out.txt",
             "npx tsc --outDir ./dist",
             "Write-Output 'a' 2>&1",
+            "[IO.File]::WriteAllText('out.txt', 'x')",
+            "node -e \"console.log(1 + 1)\"",
+            "node -e \"require('fs').writeFileSync('dist/a.txt', 'x')\"",
+            "python -c \"import shutil; shutil.rmtree('build')\"",
         ] {
             assert!(
                 check(c, &repo, &scope, &home).is_ok(),
