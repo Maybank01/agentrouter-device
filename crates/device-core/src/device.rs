@@ -166,7 +166,8 @@ fn check_base(path: &Path, base: &str) -> Result<(), DeviceError> {
 /// (a repository's config and hooks can make later commands run any program).
 fn check_writable(scope: &Scope, real: &Path) -> Result<(), DeviceError> {
     if scope.access == Access::Readonly {
-        return Err(DeviceError::denied("这台设备设成了只读，不能写文件"));
+        return Err(DeviceError::denied("这台设备设成了只读，不能写文件")
+            .next(crate::protocol::NEXT_READONLY));
     }
     if scope.access != Access::Full
         && real
@@ -597,7 +598,8 @@ impl Device {
             .unwrap_or(0.0)
             .clamp(0.0, 600.0);
         if scope.access == Access::Readonly {
-            return Err(DeviceError::denied("这台设备设成了只读，不能运行命令"));
+            return Err(DeviceError::denied("这台设备设成了只读，不能运行命令")
+                .next(crate::protocol::NEXT_READONLY));
         }
         let cwd = match args
             .get("cwd")
@@ -611,9 +613,10 @@ impl Device {
                 }
                 path
             }
-            None => scope
-                .default_cwd(&self.home)
-                .ok_or_else(|| DeviceError::denied("这台设备没有允许的文件夹"))?,
+            None => scope.default_cwd(&self.home).ok_or_else(|| {
+                DeviceError::denied("这台设备没有允许的文件夹")
+                    .next(crate::protocol::NEXT_NO_FOLDER)
+            })?,
         };
         let started = Instant::now();
         let run: Run = {
@@ -788,7 +791,8 @@ impl Device {
             "input" => {
                 let input = args.get("input").and_then(Value::as_str).unwrap_or("");
                 if scope.access == Access::Readonly {
-                    return Err(DeviceError::denied("这台设备设成了只读"));
+                    return Err(DeviceError::denied("这台设备设成了只读")
+                        .next(crate::protocol::NEXT_READONLY));
                 }
                 let run: Run = {
                     let (job, input, console, session) = (
@@ -870,7 +874,8 @@ impl Device {
         cancel: &AtomicBool,
     ) -> Result<Value, DeviceError> {
         if scope.access == Access::Readonly {
-            return Err(DeviceError::denied("这台设备设成了只读，不能写文件"));
+            return Err(DeviceError::denied("这台设备设成了只读，不能写文件")
+                .next(crate::protocol::NEXT_READONLY));
         }
         let raw = args.get("path").and_then(Value::as_str).unwrap_or("");
         let path = scope.check(raw)?;

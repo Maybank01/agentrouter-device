@@ -194,7 +194,8 @@ impl Scope {
             ));
         }
         if self.access != Access::Full && !self.folders.iter().any(|f| inside(real, f)) {
-            return Err(DeviceError::denied("这个路径不在允许的文件夹里"));
+            return Err(DeviceError::denied("这个路径不在允许的文件夹里")
+                .next(crate::protocol::NEXT_OUTSIDE));
         }
         Ok(())
     }

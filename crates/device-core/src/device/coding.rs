@@ -104,7 +104,8 @@ impl Device {
         cancel: &AtomicBool,
     ) -> Result<Value, DeviceError> {
         if scope.access == Access::Readonly {
-            return Err(DeviceError::denied("这台设备设成了只读，不能写文件"));
+            return Err(DeviceError::denied("这台设备设成了只读，不能写文件")
+                .next(crate::protocol::NEXT_READONLY));
         }
         let raw = args.get("path").and_then(Value::as_str).unwrap_or("");
         let path = scope.check(raw)?;
@@ -227,7 +228,8 @@ impl Device {
         cancel: &AtomicBool,
     ) -> Result<Value, DeviceError> {
         if scope.access == Access::Readonly {
-            return Err(DeviceError::denied("这台设备设成了只读，不能写文件"));
+            return Err(DeviceError::denied("这台设备设成了只读，不能写文件")
+                .next(crate::protocol::NEXT_READONLY));
         }
         let patch = args.get("patch").and_then(Value::as_str).unwrap_or("");
         let ops = parse_patch(patch)?;
@@ -243,9 +245,10 @@ impl Device {
                 }
                 dir
             }
-            None => scope
-                .default_cwd(&self.home)
-                .ok_or_else(|| DeviceError::denied("这台设备没有允许的文件夹"))?,
+            None => scope.default_cwd(&self.home).ok_or_else(|| {
+                DeviceError::denied("这台设备没有允许的文件夹")
+                    .next(crate::protocol::NEXT_NO_FOLDER)
+            })?,
         };
         let resolve = |p: &str| -> Result<PathBuf, DeviceError> {
             let absolute = Path::new(p).is_absolute() || (!cfg!(windows) && p.starts_with('/'));
@@ -481,6 +484,7 @@ impl Device {
                     DeviceError::new("PATH_INVALID", "完全访问时要写 path")
                 } else {
                     DeviceError::denied("这台设备没有允许的文件夹")
+                        .next(crate::protocol::NEXT_NO_FOLDER)
                 });
             }
             None => scope.folders.clone(),

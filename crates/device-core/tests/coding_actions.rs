@@ -145,6 +145,20 @@ fn read_search_and_list() {
         .0,
         "DENIED"
     );
+    // A refusal tells the model what to do instead.
+    let args = json!({"path": outside.join("x").display().to_string(), "offset": 0, "limit": 10, "encoding": "utf8"});
+    let e = d
+        .serve(
+            &cp.sign("ags_x", "read_file", &args),
+            &args,
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+    assert_eq!(e.code, "DENIED");
+    assert!(
+        e.next.as_deref().unwrap_or("").contains("agentrouter link"),
+        "{e:?}"
+    );
 
     let v = call(
         &d,
