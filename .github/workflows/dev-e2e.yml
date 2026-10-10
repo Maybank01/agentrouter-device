@@ -31,7 +31,7 @@ env:
 jobs:
   device:
     runs-on: windows-latest
-    timeout-minutes: 40
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -60,19 +60,25 @@ jobs:
           "SAMPLE=$scratch" >> $env:GITHUB_ENV
           $exe = Resolve-Path target/release/agentrouter.exe
           $out = Join-Path $root 'link.out'
-          $link = Start-Process -FilePath $exe -ArgumentList @('link', '--access', 'folders', '--folder', $scratch, '--name', 'CI-e2e', '--unattended', '--yes', '--no-run') -RedirectStandardOutput $out -RedirectStandardError "$out.err" -NoNewWindow -PassThru
-          $code = $null
-          for ($i = 0; $i -lt 60 -and -not $code; $i++) {
-            Start-Sleep -Seconds 1
-            if (Test-Path $out) { $m = [regex]::Match((Get-Content -Raw -Encoding utf8 $out), '[A-Z2-9]{4}-[A-Z2-9]{4}'); if ($m.Success) { $code = $m.Value } }
+          # Hand each code to the ops host as a commit status (the code is in this public log anyway and
+          # lives 10 minutes); the ops host may wait for the shared session lock, so a fresh code follows
+          # when one expires. Everything stays in this step: a step's processes end with the step.
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            Remove-Item $out, "$out.err" -ErrorAction SilentlyContinue
+            $link = Start-Process -FilePath $exe -ArgumentList @('link', '--access', 'folders', '--folder', $scratch, '--name', 'CI-e2e', '--unattended', '--yes', '--no-run') -RedirectStandardOutput $out -RedirectStandardError "$out.err" -NoNewWindow -PassThru
+            $code = $null
+            for ($i = 0; $i -lt 60 -and -not $code; $i++) {
+              Start-Sleep -Seconds 1
+              if (Test-Path $out) { $m = [regex]::Match((Get-Content -Raw -Encoding utf8 $out), '[A-Z2-9]{4}-[A-Z2-9]{4}'); if ($m.Success) { $code = $m.Value } }
+            }
+            if (-not $code) { Get-Content "$out.err" -ErrorAction SilentlyContinue; throw 'no pairing code' }
+            "pairing code ($attempt): $code"
+            $status = @{ state = 'pending'; context = 'device-e2e/pairing-code'; description = $code } | ConvertTo-Json
+            Invoke-RestMethod -Method Post -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/statuses/$env:GITHUB_SHA" -Headers @{ authorization = "Bearer $env:GH_TOKEN"; accept = 'application/vnd.github+json' } -ContentType 'application/json' -Body $status | Out-Null
+            $link.WaitForExit(660000) | Out-Null
+            if (-not $link.HasExited) { Stop-Process -Id $link.Id -ErrorAction SilentlyContinue }
+            if (-not ((& $exe status | Out-String) -match '未链接')) { break }
           }
-          if (-not $code) { Get-Content "$out.err" -ErrorAction SilentlyContinue; throw 'no pairing code' }
-          "pairing code: $code"
-          # Hand the code to the ops host (a commit status; the code is in this public log anyway and
-          # lives 10 minutes), then wait here: a step's processes end with the step.
-          $status = @{ state = 'pending'; context = 'device-e2e/pairing-code'; description = $code } | ConvertTo-Json
-          Invoke-RestMethod -Method Post -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/statuses/$env:GITHUB_SHA" -Headers @{ authorization = "Bearer $env:GH_TOKEN"; accept = 'application/vnd.github+json' } -ContentType 'application/json' -Body $status | Out-Null
-          $link.WaitForExit(660000) | Out-Null
           Get-Content -Encoding utf8 $out -ErrorAction SilentlyContinue | Select-Object -Last 2
           $s = (& $exe status | Out-String)
           $s

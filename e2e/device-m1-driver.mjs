@@ -1,6 +1,8 @@
 // Device M1 end-to-end: the conversation side, run on the ops host under the shared-session lock:
-//   PAIR_CODE=XXXX-XXXX /root/agentrouter-ops/session-lock.sh dev node device-m1-driver.mjs
-// Confirms the pairing code shown by the Windows runner, waits for the device, starts a Codex
+//   E2E_SHA=<commit of the e2e run> /root/agentrouter-ops/session-lock.sh dev node device-m1-driver.mjs
+// Takes the newest pairing code the Windows runner published as the commit status
+// `device-e2e/pairing-code` (the runner issues a fresh one every 10 minutes, so waiting for the
+// lock does not matter), confirms it, waits for the device, starts a Codex
 // conversation, grants it the device, asks it to fix the sample repo and run its tests, waits for the
 // turn, prints the outcome, and removes the device (which ends the runner's job). Never prints cookies
 // or tokens; writes the rotated session back after every refresh (e2e/README.md).
@@ -9,13 +11,14 @@ import { readFileSync, renameSync, writeFileSync } from "node:fs";
 const ORIGIN = "https://edge-d53hmn9blslvhcuff8rjsdvt.agentrouter.top";
 const HOST = new URL(ORIGIN).hostname;
 const SESSION_FILE = process.env.SESSION_FILE;
-const CODE = (process.env.PAIR_CODE || "").trim();
+const SHA = (process.env.E2E_SHA || "").trim();
+const REPO = process.env.E2E_REPO || "Maybank01/agentrouter-device";
 const MODEL = process.env.MODEL || "gpt-5.5";
 const KERNEL = process.env.KERNEL || "codex";
 const NAME = process.env.DEVICE_NAME || "CI-e2e";
 const KEEP_DEVICE = process.env.KEEP_DEVICE === "1";
 if (!SESSION_FILE || process.env.SESSION_LOCKED !== SESSION_FILE) throw new Error("run under session-lock.sh dev");
-if (!/^[A-Z2-9]{4}-[A-Z2-9]{4}$/u.test(CODE)) throw new Error("PAIR_CODE missing");
+if (!/^[0-9a-f]{40}$/u.test(SHA)) throw new Error("E2E_SHA missing");
 
 const jar = new Map();
 let origins = [];
@@ -115,9 +118,29 @@ async function turn(ags, maxMs) {
 load();
 await token();
 log("session ok");
-let r = await http("POST", "/api/control/personal/devices/pair", { json: { code: CODE, name: NAME } });
-log(`pair: HTTP ${r.status} ${r.status === 200 ? "" : clip(JSON.stringify(r.data), 200)}`);
-if (r.status !== 200) process.exit(1);
+/** The newest code the runner published (fresh = issued under 9 minutes ago). */
+async function newestCode() {
+  const response = await fetch(`https://api.github.com/repos/${REPO}/commits/${SHA}/statuses?per_page=100`,
+    { headers: { accept: "application/vnd.github+json", "user-agent": "agentrouter-device-e2e" }, signal: AbortSignal.timeout(15_000) });
+  if (!response.ok) return null;
+  const s = (await response.json()).filter((x) => x.context === "device-e2e/pairing-code" && /^[A-Z2-9]{4}-[A-Z2-9]{4}$/u.test(x.description ?? ""))
+    .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+  return s && Date.now() - Date.parse(s.created_at) < 9 * 60_000 ? s.description : null;
+}
+let r = null;
+const tried = new Set();
+const until = Date.now() + 25 * 60_000;
+while (Date.now() < until) {
+  const code = await newestCode().catch(() => null);
+  if (code && !tried.has(code)) {
+    tried.add(code);
+    r = await http("POST", "/api/control/personal/devices/pair", { json: { code, name: NAME } });
+    log(`pair ${code}: HTTP ${r.status} ${r.status === 200 ? "" : clip(JSON.stringify(r.data?.error?.code ?? r.data), 120)}`);
+    if (r.status === 200) break;
+  }
+  await sleep(20_000);
+}
+if (r?.status !== 200) { log("no pairing"); process.exit(1); }
 const paired = r.data?.data?.device?.id;
 let device = null;
 for (let i = 0; i < 60 && !device; i++) {
