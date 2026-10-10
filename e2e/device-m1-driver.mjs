@@ -18,7 +18,8 @@ const KERNEL = process.env.KERNEL || "codex";
 const NAME = process.env.DEVICE_NAME || "CI-e2e";
 const KEEP_DEVICE = process.env.KEEP_DEVICE === "1";
 if (!SESSION_FILE || process.env.SESSION_LOCKED !== SESSION_FILE) throw new Error("run under session-lock.sh dev");
-if (!/^[0-9a-f]{40}$/u.test(SHA)) throw new Error("E2E_SHA missing");
+const GIVEN = (process.env.PAIR_CODE || "").trim(); // a code shown by a helper run by hand
+if (!GIVEN && !/^[0-9a-f]{40}$/u.test(SHA)) throw new Error("E2E_SHA or PAIR_CODE missing");
 
 const jar = new Map();
 let origins = [];
@@ -120,6 +121,7 @@ await token();
 log("session ok");
 /** The newest code the runner published (fresh = issued under 9 minutes ago). */
 async function newestCode() {
+  if (GIVEN) return GIVEN;
   const response = await fetch(`https://api.github.com/repos/${REPO}/commits/${SHA}/statuses?per_page=100`,
     { headers: { accept: "application/vnd.github+json", "user-agent": "agentrouter-device-e2e" }, signal: AbortSignal.timeout(15_000) });
   if (!response.ok) return null;
