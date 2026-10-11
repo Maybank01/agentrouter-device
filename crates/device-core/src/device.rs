@@ -18,6 +18,7 @@ use crate::approvals::{Approvals, Outcome, Pending, Run, Settle};
 use crate::audit::Audit;
 use crate::checkpoint::{Change, Checkpoints};
 use crate::config::Access;
+use crate::confine::{Confinement, Sandbox};
 use crate::consent::{Ask, Confirm, Decision};
 use crate::gate::{Scope, display, inside, resolve_folders};
 use crate::jobs::{EventSink, Jobs, MAX_JOBS, Shell};
@@ -87,6 +88,8 @@ pub struct Device {
     echo: Arc<Mutex<Option<Echo>>>,
     home: PathBuf,
     shell: Shell,
+    /// The OS write boundary for commands at the folder levels (confine.rs).
+    confinement: Confinement,
 }
 
 pub struct Options {
@@ -255,6 +258,7 @@ impl Device {
             echo: Arc::new(Mutex::new(None)),
             home: options.home,
             shell: options.shell,
+            confinement: Confinement::new(&options.data_dir),
         }
     }
 
@@ -271,11 +275,16 @@ impl Device {
     }
 
     pub fn set_access(&self, access: Access, folders: &[String]) {
-        let mut scope = self.scope.write().unwrap();
-        scope.access = access;
-        scope.folders = resolve_folders(folders);
+        let kept = {
+            let mut scope = self.scope.write().unwrap();
+            scope.access = access;
+            scope.folders = resolve_folders(folders);
+            scope.folders.clone()
+        };
         self.trusted.lock().unwrap().clear();
         self.allowances.lock().unwrap().clear();
+        // A folder no longer linked gets its label back (the linked ones are labelled before their next command).
+        self.confinement.release(&kept);
     }
 
     pub fn access(&self) -> Access {
@@ -619,7 +628,7 @@ impl Device {
             })?,
         };
         let started = Instant::now();
-        let run: Run = {
+        let make_run = |sandbox: Option<Sandbox>| -> Run {
             let (jobs, shell, checkpoints) =
                 (self.jobs.clone(), self.shell, self.checkpoints.clone());
             let (command, cwd, session) = (command.to_string(), cwd.clone(), session.to_string());
@@ -628,12 +637,16 @@ impl Device {
                 let checkpoint = folder.and_then(|f| {
                     checkpoints.before(&session, turn.as_deref(), &f, Change::Command)
                 });
-                jobs.start(&command, &cwd, &session, shell)
+                jobs.start(&command, &cwd, &session, shell, sandbox.as_ref())
                     .map(|job| with_checkpoint(job.view(0), checkpoint))
             })
         };
+        // At the folder levels the command runs inside the OS write boundary (Windows): it can write
+        // only in the linked folders, whatever the command text says (Dev check 2026-10-11).
+        let confined = || self.confinement.prepare(scope);
         let shown_cwd = Some(display(&cwd));
         let value = if scope.access == Access::Full {
+            let run = make_run(None);
             if self.trusted.lock().unwrap().contains(session) {
                 run()?
             } else {
@@ -651,7 +664,7 @@ impl Device {
             // The default: no questions inside the folders; clear overreach is refused, and only a
             // request that says why it must go beyond them is asked about, once.
             match scope_guard::check(command, &cwd, scope, &self.home) {
-                Ok(()) => run()?,
+                Ok(()) => make_run(confined()?)()?,
                 Err(blocked) => {
                     let Some(reason) = args
                         .get("beyondScope")
@@ -672,10 +685,12 @@ impl Device {
                         cwd: shown_cwd,
                         kind: None,
                     };
-                    self.gated(session, "exec", args, ask, None, run, cancel)?
+                    // The person said yes to going beyond the folders: this one command runs unconfined.
+                    self.gated(session, "exec", args, ask, None, make_run(None), cancel)?
                 }
             }
         } else {
+            let run = make_run(confined()?);
             let auto = scope.access == Access::Confirm
                 && self.readonly_commands.load(Ordering::SeqCst)
                 && allowlist::readonly_allowed(command, &cwd, scope);

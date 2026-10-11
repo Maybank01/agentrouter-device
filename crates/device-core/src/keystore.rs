@@ -74,6 +74,8 @@ pub fn forget() {
         }
         let _ = std::fs::remove_file(&p);
     }
+    // The folders' write-boundary labels go too (confine.rs): nothing of the link stays on them.
+    let _ = crate::confine::release(&data_dir(), &[]);
 }
 
 #[cfg(windows)]

@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | 命令行普通、可见 | `powershell -NoLogo -NoProfile -NonInteractive -InputFormat None -Command "<命令>"`（Linux/macOS 是 `/bin/sh -c`）；不用 `-EncodedCommand`，不解 Base64，不改执行策略 | 是 |
 | 不隐藏 shell 窗口 | 不用 `CREATE_NO_WINDOW` / `WindowStyle Hidden`：桌面版里每个命令有自己可见的控制台窗口，命令行版共用当前终端 | 是 |
-| 不挂起、不注入 | 普通 CreateProcess 后放进 Job Object；不用 `CREATE_SUSPENDED`、`ResumeThread`、跨进程写内存 | 是 |
+| 不挂起、不注入 | 创建时就用 `PROC_THREAD_ATTRIBUTE_JOB_LIST` 放进 Job Object；不用 `CREATE_SUSPENDED`、`ResumeThread`、跨进程写内存；文件夹级别的命令用本人令牌的受限、低完整性副本启动（只降权，不提权） | 是 |
 | 先同意再执行 | 本机确认框在任何 shell 启动之前；只读级别从不启动 shell | 单元测试（`crates/device-core/tests`） |
 | 安装位置稳定 | 安装包是 MSI（Windows Installer，按机器装到 Program Files，不是自解压程序）；不自带 WebView2 引导下载（Windows 10/11 已自带）；绝不从 %TEMP% 运行，不在临时目录里自更新 | 源码里不出现 `temp_dir` / `%TEMP%`（测试除外） |
 | 文件信息齐全 | 版本资源（公司、产品名、版本、版权、说明）、图标、清单（`asInvoker`，不要求管理员权限） | 清单是 `asInvoker`；CI 读取 exe 的版本信息，缺了就失败 |
