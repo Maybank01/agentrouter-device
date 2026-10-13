@@ -127,3 +127,15 @@ fn a_stdio_server_starts_answers_restarts_and_stops() {
     host.set(false);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[cfg(windows)]
+#[test]
+fn a_command_resolves_to_its_windows_program_not_the_shell_script_beside_it() {
+    let dir = std::env::temp_dir().join(format!("ar-mcp-resolve-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("npx"), "#!/bin/sh").unwrap();
+    std::fs::write(dir.join("npx.cmd"), "@echo off").unwrap();
+    let found = resolve_command(&dir.join("npx").display().to_string());
+    assert_eq!(found, Some(dir.join("npx.cmd")));
+    let _ = std::fs::remove_dir_all(&dir);
+}
