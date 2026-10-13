@@ -50,7 +50,7 @@ const USAGE: &str = "AgentRouter 小助手（agentrouter）：让你在云端对
                                 打开和关闭程序、操作鼠标键盘，不再逐条问你；屏幕上方有提示条。
                                 锁屏和 UAC 上不操作，不往密码框里输入，你在用电脑时 AI 先等；
                                 --private-app 的程序截图时涂黑、不给标题、不让点
-  agentrouter mcp on|off       本机工具（MCP）：打开后云端对话可以在这台电脑上装和运行 MCP 服务
+  agentrouter mcp on|off       本机工具（MCP，默认开）：云端对话可以在这台电脑上运行 MCP 服务
                                 （例如 Windows-MCP），它们的工具给云端的 AI 用，不再逐条问你；
                                 只在「只限这些文件夹」和「完全访问」级别；锁屏和 UAC 上不操作；
                                 断开、Ctrl+C 或 off 时全部停止

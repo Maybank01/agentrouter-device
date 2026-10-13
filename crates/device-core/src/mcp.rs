@@ -136,6 +136,30 @@ impl Spec {
         })
     }
 
+    /// The linked folders go in where the definition says (`{{folders}}`: each one as an argument, `{{folder}}`: the
+    /// first): the device fills them in, so a server gets exactly the folders the person linked here.
+    fn scoped(mut self, folders: &[PathBuf]) -> Result<Spec, DeviceError> {
+        let wants = self.args.iter().any(|a| a.contains("{{folder"));
+        if wants && folders.is_empty() {
+            return Err(error("MCP_NO_FOLDER", "这台设备还没有链接文件夹")
+                .next(crate::protocol::NEXT_NO_FOLDER));
+        }
+        let shown: Vec<String> = folders.iter().map(|f| crate::gate::display(f)).collect();
+        let mut args = Vec::new();
+        for a in self.args {
+            if a == "{{folders}}" {
+                args.extend(shown.iter().cloned());
+            } else {
+                args.push(a.replace(
+                    "{{folder}}",
+                    shown.first().map(String::as_str).unwrap_or(""),
+                ));
+            }
+        }
+        self.args = args;
+        Ok(self)
+    }
+
     fn secrets(&self) -> Vec<String> {
         self.env
             .iter()
@@ -220,6 +244,8 @@ struct Proc {
 struct Server {
     spec: Spec,
     dir: PathBuf,
+    /// Where it runs: the first linked folder (servers that work on "the current project"), else its own folder.
+    cwd: PathBuf,
     proc: Mutex<Option<Proc>>,
     pending: Mutex<HashMap<i64, Sender<Value>>>,
     status: Mutex<Status>,
@@ -501,7 +527,7 @@ impl McpHost {
         cancel: &AtomicBool,
     ) -> Result<Value, DeviceError> {
         self.check(scope)?;
-        let spec = Spec::parse(args)?;
+        let spec = Spec::parse(args)?.scoped(&scope.folders)?;
         let wait = args
             .get("waitMs")
             .and_then(Value::as_u64)
@@ -535,9 +561,15 @@ impl McpHost {
                         .ok_or_else(|| missing_runtime(&spec.command))?;
                     let dir = self.dir.join(&spec.name);
                     let _ = std::fs::create_dir_all(&dir);
+                    let cwd = scope
+                        .folders
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| dir.clone());
                     let server = Arc::new(Server {
                         spec,
                         dir,
+                        cwd,
                         proc: Mutex::new(None),
                         pending: Mutex::new(HashMap::new()),
                         status: Mutex::new(Status {
@@ -703,7 +735,7 @@ impl McpHost {
 fn launch(server: &Arc<Server>, program: &Path) -> Result<(), String> {
     let mut cmd = Command::new(program);
     cmd.args(&server.spec.args)
-        .current_dir(&server.dir)
+        .current_dir(&server.cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -1018,6 +1050,24 @@ mod tests {
         redact_value(&mut v, &spec.secrets());
         assert_eq!(v["content"][0]["text"], "key=[secret] mode=fast");
         assert!(!spec.shown().contains("s3cr3t"));
+    }
+
+    #[test]
+    fn linked_folders_are_filled_in_by_the_device() {
+        let spec = Spec::parse(
+            &json!({"name": "files", "command": "npx", "args": ["-y", "srv@1.0.0", "{{folders}}"]}),
+        )
+        .unwrap();
+        let folders = vec![PathBuf::from("/a/repo"), PathBuf::from("/b/notes")];
+        let scoped = spec.clone().scoped(&folders).unwrap();
+        assert_eq!(scoped.args[2..].len(), 2);
+        assert!(scoped.args[2].ends_with("repo") && scoped.args[3].ends_with("notes"));
+        let one = Spec::parse(
+            &json!({"name": "git", "command": "uvx", "args": ["--repository", "{{folder}}"]}),
+        )
+        .unwrap();
+        assert!(one.scoped(&folders).unwrap().args[1].ends_with("repo"));
+        assert_eq!(spec.scoped(&[]).unwrap_err().code, "MCP_NO_FOLDER");
     }
 
     #[test]
