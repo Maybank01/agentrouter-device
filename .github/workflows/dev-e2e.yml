@@ -44,7 +44,7 @@ jobs:
       - run: cargo build --release --locked -p agentrouter-device-cli
       - name: uv (the bundle's Python servers run through uvx)
         if: env.SCENARIO == 'mcp'
-        uses: astral-sh/setup-uv@v10
+        uses: astral-sh/setup-uv@v10.3.0
       - name: Link (folders, one sample repository, unattended; the ops host confirms the code)
         shell: pwsh
         env:
