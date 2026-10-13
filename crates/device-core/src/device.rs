@@ -523,7 +523,26 @@ impl Device {
             "mcp_start" => self.mcp.start(&scope, args, cancel),
             "mcp_stop" => self.mcp.stop(args),
             "mcp_list" => self.mcp.list(),
-            "mcp_call" => self.mcp.call(&scope, args, cancel),
+            "mcp_call" => {
+                // A call that may change files takes this turn's checkpoint of every linked folder first
+                // (`agentrouter undo` rolls it back, as for commands and edits).
+                let checkpoint = if args.get("writes").and_then(Value::as_bool) == Some(true) {
+                    let turn = turn_of(args);
+                    scope
+                        .folders
+                        .iter()
+                        .filter_map(|f| {
+                            self.checkpoints
+                                .before(session, turn.as_deref(), f, Change::Command)
+                        })
+                        .next()
+                } else {
+                    None
+                };
+                self.mcp
+                    .call(&scope, args, cancel)
+                    .map(|v| with_checkpoint(v, checkpoint))
+            }
             "mcp_logs" => self.mcp.logs(args),
             _ => Err(DeviceError::new("UNKNOWN_ACTION", "unknown action")),
         }
