@@ -25,6 +25,7 @@ use crate::jobs::{EventSink, Jobs, MAX_JOBS, Shell};
 use crate::keystore::Identity;
 use crate::protocol::{DeviceError, ReplayCache, canonical_json, check_request};
 use crate::scope_guard;
+use crate::screen::{self, Screen};
 use crate::util::{b64, b64_decode, clip, hex, now_ms};
 
 mod coding;
@@ -90,6 +91,8 @@ pub struct Device {
     shell: Shell,
     /// The OS write boundary for commands at the folder levels (confine.rs).
     confinement: Confinement,
+    /// Screenshots, windows, mouse and keyboard, GUI programs (screen.rs); off until the person turns it on.
+    pub screen: Screen,
 }
 
 pub struct Options {
@@ -259,6 +262,7 @@ impl Device {
             home: options.home,
             shell: options.shell,
             confinement: Confinement::new(&options.data_dir),
+            screen: Screen::default(),
         }
     }
 
@@ -299,6 +303,20 @@ impl Device {
     /// A person is at the terminal (the command line in the foreground).
     pub fn set_foreground(&self, on: bool) {
         self.foreground.store(on, Ordering::SeqCst);
+    }
+
+    /// The screen tools (`agentrouter screen on`) and the programs never shown to the AI.
+    pub fn set_screen(&self, on: bool, private_apps: &[String]) {
+        self.screen.set(on, private_apps);
+    }
+
+    /// The actions this device serves now: the screen ones where the platform has them.
+    pub fn actions(&self) -> Vec<&'static str> {
+        let mut list = ACTIONS.to_vec();
+        if screen::supported() {
+            list.extend_from_slice(screen::ACTIONS);
+        }
+        list
     }
 
     pub fn set_confirm(&self, confirm: Confirm) {
@@ -358,7 +376,8 @@ impl Device {
             "app": crate::util::app_kind(),
             "version": env!("CARGO_PKG_VERSION"),
             "maxJobs": MAX_JOBS,
-            "actions": ACTIONS,
+            "actions": self.actions(),
+            "screen": self.screen.enabled(),
             "readonlyCommands": self.readonly_commands.load(Ordering::SeqCst) && scope.access == Access::Confirm,
             "scopeGuard": scope.access == Access::Folders,
             "checkpoints": true,
@@ -372,6 +391,7 @@ impl Device {
         self.jobs.kill_all();
         self.trusted.lock().unwrap().clear();
         self.allowances.lock().unwrap().clear();
+        self.screen.forget();
         self.record(json!({"event": "stop_all", "reason": why}));
     }
 
@@ -483,6 +503,11 @@ impl Device {
             "search" => self.search(&scope, session, args),
             "read_files" => self.read_files(&scope, session, args),
             "list_dir" => self.list_dir(&scope, session, args),
+            "screenshot" => self.screen.screenshot(session, args),
+            "windows" => self.screen.windows(),
+            "gui" => self.screen.gui(session, &scope, args),
+            "app" => self.screen.app(session, &scope, args),
+            "screen_record" => self.screen.record(session, args),
             _ => Err(DeviceError::new("UNKNOWN_ACTION", "unknown action")),
         }
     }
@@ -1060,6 +1085,32 @@ fn summary(action: &str, args: &Value) -> String {
                     .join(", ")
             })
             .unwrap_or_default(),
+        "screenshot" | "screen_record" => {
+            let target = s("target");
+            if target.is_empty() {
+                "screen".to_string()
+            } else {
+                target
+            }
+        }
+        "gui" => args
+            .get("actions")
+            .and_then(Value::as_array)
+            .map(|list| {
+                list.iter()
+                    .map(|a| {
+                        a.get("action")
+                            .and_then(Value::as_str)
+                            .unwrap_or("?")
+                            .to_string()
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default(),
+        "app" => format!("{} {}{}", s("op"), s("command"), s("app"))
+            .trim()
+            .to_string(),
         _ => String::new(),
     };
     clip(&text, 4000)

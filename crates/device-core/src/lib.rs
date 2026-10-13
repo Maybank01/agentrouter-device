@@ -21,5 +21,6 @@ pub mod link;
 pub mod net;
 pub mod protocol;
 pub mod scope_guard;
+pub mod screen;
 pub mod search;
 pub mod util;
