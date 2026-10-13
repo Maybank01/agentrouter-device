@@ -19,6 +19,7 @@ pub mod jobs;
 pub mod keystore;
 pub mod link;
 pub mod mcp;
+pub mod mcp_pkg;
 pub mod net;
 pub mod protocol;
 pub mod scope_guard;

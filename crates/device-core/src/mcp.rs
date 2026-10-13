@@ -11,6 +11,8 @@
 //! - The platform rules stay here, for every server: the person turns the host on once (`agentrouter mcp on`); only at
 //!   「只限这些文件夹」 or 「完全访问」; nothing while the lock screen, UAC or a secure desktop is up; the
 //!   「正在操作」 bar names the server and tool; `stop_all` (tray 断开, Ctrl+C, revocation) stops every server.
+//! - Catalog packages run only as the file the cloud's catalog pinned (checked here, `mcp_pkg`); a broken npx cache
+//!   entry is cleared once; a server's data folder in the project is kept out of git (`keepOut`).
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
@@ -25,11 +27,19 @@ use serde_json::{Value, json};
 
 use crate::config::Access;
 use crate::gate::Scope;
+use crate::mcp_pkg::{Packages, Pin};
 use crate::protocol::DeviceError;
 use crate::util::{clip, now_ms};
 
 /// The signed actions of the host (listed in `info.actions`).
-pub const ACTIONS: &[&str] = &["mcp_start", "mcp_stop", "mcp_list", "mcp_call", "mcp_logs"];
+pub const ACTIONS: &[&str] = &[
+    "mcp_start",
+    "mcp_stop",
+    "mcp_list",
+    "mcp_call",
+    "mcp_logs",
+    "mcp_package",
+];
 
 const PROTOCOL_VERSION: &str = "2025-06-18";
 const MAX_SERVERS: usize = 8;
@@ -74,6 +84,10 @@ struct Spec {
     secret_env: Vec<String>,
     /// The cloud's hash of the definition (a different one replaces the running server).
     hash: String,
+    /// A catalog package: run only as this checked file (`{{package}}`).
+    pin: Option<Pin>,
+    /// Folders the server keeps its data in, inside a linked folder (serena's `.serena`): kept out of git.
+    keep_out: Vec<String>,
 }
 
 impl Spec {
@@ -126,6 +140,20 @@ impl Spec {
                     .collect()
             })
             .unwrap_or_default();
+        let mut keep_out = Vec::new();
+        for k in args
+            .get("keepOut")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+        {
+            match k.as_str() {
+                Some(name) if crate::mcp_pkg::valid_keep_out(name) && keep_out.len() < 4 => {
+                    keep_out.push(name.to_string())
+                }
+                _ => return Err(error("FAILED", "keepOut 要是以 . 开头的文件夹名")),
+            }
+        }
         Ok(Spec {
             name,
             command,
@@ -133,6 +161,8 @@ impl Spec {
             env,
             secret_env,
             hash: clip(str_arg(args, "hash"), 80),
+            pin: Pin::parse(args)?,
+            keep_out,
         })
     }
 
@@ -231,6 +261,8 @@ struct Status {
     crashes: VecDeque<i64>,
     restarts: u32,
     generation: u64,
+    /// A broken npx cache entry was cleared once for this server.
+    healed: bool,
 }
 
 struct Proc {
@@ -453,6 +485,7 @@ fn missing_runtime(command: &str) -> DeviceError {
 pub struct McpHost {
     enabled: AtomicBool,
     dir: PathBuf,
+    packages: Packages,
     servers: Arc<Mutex<HashMap<String, Arc<Server>>>>,
 }
 
@@ -461,6 +494,8 @@ impl McpHost {
         McpHost {
             enabled: AtomicBool::new(false),
             dir: data_dir.join("mcp"),
+            // Beside the servers' folders, not in them (a server may be called anything).
+            packages: Packages::new(data_dir.join("mcp-packages")),
             servers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -531,7 +566,9 @@ impl McpHost {
         cancel: &AtomicBool,
     ) -> Result<Value, DeviceError> {
         self.check(scope)?;
-        let spec = Spec::parse(args)?.scoped(&scope.folders)?;
+        let mut spec = Spec::parse(args)?.scoped(&scope.folders)?;
+        // A catalog package runs only as the checked file (MCP_PACKAGE_NEEDED: the cloud sends it first).
+        self.packages.apply(spec.pin.as_ref(), &mut spec.args)?;
         let wait = args
             .get("waitMs")
             .and_then(Value::as_u64)
@@ -565,6 +602,15 @@ impl McpHost {
                         .ok_or_else(|| missing_runtime(&spec.command))?;
                     let dir = self.dir.join(&spec.name);
                     let _ = std::fs::create_dir_all(&dir);
+                    // Its data folder in the linked folders it works on stays out of the person's git.
+                    for folder in scope.folders.iter().filter(|f| {
+                        let shown = crate::gate::display(f);
+                        spec.args.iter().any(|a| a.contains(&shown))
+                    }) {
+                        for name in &spec.keep_out {
+                            crate::mcp_pkg::keep_out(folder, name);
+                        }
+                    }
                     let cwd = scope
                         .folders
                         .first()
@@ -586,6 +632,7 @@ impl McpHost {
                             crashes: VecDeque::new(),
                             restarts: 0,
                             generation: 0,
+                            healed: false,
                         }),
                         changed: Condvar::new(),
                         logs: Mutex::new(VecDeque::new()),
@@ -602,6 +649,12 @@ impl McpHost {
         };
         server.wait_ready(Instant::now() + Duration::from_millis(wait), Some(cancel));
         Ok(server.view())
+    }
+
+    /// `mcp_package`: a pinned catalog package the cloud sends; kept only when it is exactly the pinned file.
+    pub fn package(&self, scope: &Scope, args: &Value) -> Result<Value, DeviceError> {
+        self.check(scope)?;
+        self.packages.store(args)
     }
 
     pub fn stop(&self, args: &Value) -> Result<Value, DeviceError> {
@@ -940,6 +993,22 @@ fn exited(server: Arc<Server>, generation: u64) {
         drop(tx);
     }
     server.log(&format!("[agentrouter] exited (code {code:?})"));
+    if heal_npx(&server) {
+        if server.stopping.load(Ordering::SeqCst) {
+            return;
+        }
+        server.status.lock().unwrap().restarts += 1;
+        server.set_state(State::Restarting, Some("cleared a broken npx cache entry".into()));
+        match resolve_command(&server.spec.command) {
+            Some(program) => {
+                if let Err(e) = launch(&server, &program) {
+                    server.set_state(State::Crashed, Some(e));
+                }
+            }
+            None => server.set_state(State::Crashed, Some("command not found".into())),
+        }
+        return;
+    }
     let again = {
         let mut st = server.status.lock().unwrap();
         let now = now_ms();
@@ -976,6 +1045,78 @@ fn exited(server: Arc<Server>, generation: u64) {
             }
         }
         None => server.set_state(State::Crashed, Some("command not found".into())),
+    }
+}
+
+/// An npx server that died before it was ready, with a log that says its files are missing: clear only its broken
+/// `_npx/<hash>` entry (an install cut midway) and say so; once per server.
+fn heal_npx(server: &Server) -> bool {
+    let is_npx = Path::new(&server.spec.command)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .is_some_and(|s| s.eq_ignore_ascii_case("npx"));
+    {
+        let st = server.status.lock().unwrap();
+        if !is_npx || st.healed || st.state == State::Ready {
+            return false;
+        }
+    }
+    // This start's output only.
+    let log: Vec<String> = {
+        let logs = server.logs.lock().unwrap();
+        let from = logs
+            .iter()
+            .rposition(|l| l.starts_with("[agentrouter] started"))
+            .unwrap_or(0);
+        logs.iter().skip(from).cloned().collect()
+    };
+    let specs: Vec<String> = server
+        .spec
+        .args
+        .iter()
+        .filter(|a| !a.starts_with('-'))
+        .cloned()
+        .collect();
+    let package = match &server.spec.pin {
+        Some(pin) => pin.package.clone(),
+        None => package_of(&server.spec.args),
+    };
+    let Some(entry) =
+        crate::mcp_pkg::broken_npx_entry(&log, &server.spec.env, &specs, &package)
+    else {
+        return false;
+    };
+    server.status.lock().unwrap().healed = true;
+    match std::fs::remove_dir_all(&entry) {
+        Ok(()) => {
+            server.log(&format!(
+                "[agentrouter] cleared the broken npx cache entry {} (an install was cut midway); starting once more",
+                crate::gate::display(&entry)
+            ));
+            true
+        }
+        Err(e) => {
+            server.log(&format!(
+                "[agentrouter] could not clear the broken npx cache entry {}: {e}",
+                crate::gate::display(&entry)
+            ));
+            false
+        }
+    }
+}
+
+/// The npm package an npx command line runs (`-p <spec>`, else the first package argument), without its version.
+fn package_of(args: &[String]) -> String {
+    let spec = args
+        .iter()
+        .position(|a| a == "-p" || a == "--package")
+        .and_then(|i| args.get(i + 1))
+        .or_else(|| args.iter().find(|a| !a.starts_with('-')))
+        .cloned()
+        .unwrap_or_default();
+    match spec.rfind('@') {
+        Some(at) if at > 0 => spec[..at].to_string(),
+        _ => spec,
     }
 }
 
