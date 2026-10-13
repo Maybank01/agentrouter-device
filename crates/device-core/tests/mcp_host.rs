@@ -48,6 +48,10 @@ fn python() -> Option<String> {
 }
 
 fn wait_state(host: &McpHost, name: &str, state: &str) -> Value {
+    wait_until(host, name, |s| s["state"] == state)
+}
+
+fn wait_until(host: &McpHost, name: &str, done: impl Fn(&Value) -> bool) -> Value {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let list = host.list().unwrap();
@@ -58,7 +62,7 @@ fn wait_state(host: &McpHost, name: &str, state: &str) -> Value {
             .find(|s| s["name"] == name)
             .cloned()
             .unwrap_or(Value::Null);
-        if server["state"] == state || Instant::now() > deadline {
+        if done(&server) || Instant::now() > deadline {
             return server;
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -102,7 +106,10 @@ fn a_stdio_server_starts_answers_restarts_and_stops() {
 
     // A crash: the call fails, the host starts it again.
     assert!(call("die").is_err());
-    let again = wait_state(&host, "fake", "ready");
+    // The exit is seen a moment later than the failed call: wait for the restarted one, not the old state.
+    let again = wait_until(&host, "fake", |s| {
+        s["state"] == "ready" && s["restarts"] == 1
+    });
     assert_eq!(again["restarts"], 1, "{again}");
     assert_eq!(call("echo").unwrap()["content"][0]["text"], "hi [secret]");
 
