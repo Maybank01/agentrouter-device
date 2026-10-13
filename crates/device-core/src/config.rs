@@ -118,6 +118,9 @@ pub struct Config {
     pub screen: bool,
     /// Programs never shown to the AI (blacked out, no titles, no clicks), e.g. `KeePass.exe`.
     pub private_apps: Vec<String>,
+    /// The person let conversations run local MCP servers here (`agentrouter mcp on`, LINKED-DEVICES.md §23):
+    /// the tools the cloud installs on this computer. Off by default; nothing is asked once on.
+    pub mcp: bool,
 }
 
 impl Default for Config {
@@ -134,6 +137,7 @@ impl Default for Config {
             readonly_commands: true,
             screen: false,
             private_apps: Vec::new(),
+            mcp: false,
         }
     }
 }

@@ -871,6 +871,18 @@ pub fn supported() -> bool {
     cfg!(windows)
 }
 
+/// The lock screen, UAC or another secure desktop is up (nothing acts there; local MCP servers included).
+pub fn secure_desktop_active() -> bool {
+    supported() && !platform::input_desktop_available()
+}
+
+/// The 「正在操作」 bar for actions that are not the screen tools' own (a local MCP server's call).
+pub fn note_banner(text: &str) {
+    if supported() {
+        note(text);
+    }
+}
+
 #[cfg(windows)]
 mod platform {
     pub use super::win::*;
