@@ -40,7 +40,10 @@ pub struct Pin {
 
 fn valid_file(file: &str) -> bool {
     (5..=160).contains(&file.len())
-        && file.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && file
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphanumeric())
         && file
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+'))
@@ -84,7 +87,13 @@ impl Pin {
         let Some(pin) = args.get("pin").filter(|p| !p.is_null()) else {
             return Ok(None);
         };
-        let s = |k: &str| pin.get(k).and_then(Value::as_str).unwrap_or("").trim().to_string();
+        let s = |k: &str| {
+            pin.get(k)
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        };
         let (file, digest) = (s("file"), s("digest"));
         if !valid_file(&file) {
             return Err(error("FAILED", "pin.file 要是一个 .tgz 或 .whl 文件名"));
@@ -117,7 +126,9 @@ impl Pin {
                 self.package, self.version, self.digest
             ),
         )
-        .next("不要重试，也不要换别的方式装它：告诉用户这个本机工具的安装包没通过校验，平台已记录。")
+        .next(
+            "不要重试，也不要换别的方式装它：告诉用户这个本机工具的安装包没通过校验，平台已记录。",
+        )
     }
 }
 
@@ -216,7 +227,8 @@ const BROKEN_SIGNS: &[&str] = &[
 
 /// npm's cache folder: `npm_config_cache` (the server's environment, then ours), else npm's default.
 pub fn npm_cache(env: &[(String, String)]) -> Option<PathBuf> {
-    let from = |k: &str, v: &str| k.eq_ignore_ascii_case("npm_config_cache") && !v.trim().is_empty();
+    let from =
+        |k: &str, v: &str| k.eq_ignore_ascii_case("npm_config_cache") && !v.trim().is_empty();
     if let Some((_, v)) = env.iter().find(|(k, v)| from(k, v)) {
         return Some(PathBuf::from(v.trim()));
     }
@@ -237,7 +249,10 @@ fn entry_in(line: &str) -> Option<(String, String)> {
     let at = line.find("_npx")?;
     let rest = &line[at + 4..];
     let sep = rest.chars().next().filter(|c| *c == '\\' || *c == '/')?;
-    let hash: String = rest[1..].chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+    let hash: String = rest[1..]
+        .chars()
+        .take_while(|c| c.is_ascii_hexdigit())
+        .collect();
     if !(8..=64).contains(&hash.len()) {
         return None;
     }
@@ -260,7 +275,11 @@ fn entry_is_ours(entry: &Path, specs: &[String], package: &str) -> bool {
         let listed = manifest
             .pointer("/_npx/packages")
             .and_then(Value::as_array)
-            .is_some_and(|l| l.iter().filter_map(Value::as_str).any(|p| specs.iter().any(|s| s == p)));
+            .is_some_and(|l| {
+                l.iter()
+                    .filter_map(Value::as_str)
+                    .any(|p| specs.iter().any(|s| s == p))
+            });
         let depends = !package.is_empty()
             && manifest
                 .get("dependencies")
@@ -289,7 +308,11 @@ pub fn broken_npx_entry(
     // The entry the error names, when it is ours.
     for line in log {
         if let Some((dir, hash)) = entry_in(line) {
-            let base = if dir.is_empty() { cache.clone()? } else { PathBuf::from(dir) };
+            let base = if dir.is_empty() {
+                cache.clone()?
+            } else {
+                PathBuf::from(dir)
+            };
             let entry = base.join("_npx").join(&hash);
             if entry.is_dir() && entry_is_ours(&entry, specs, package) {
                 return Some(entry);
@@ -328,7 +351,8 @@ pub fn keep_out(folder: &Path, name: &str) -> bool {
     if dir.exists() || !folder.is_dir() {
         return false;
     }
-    std::fs::create_dir(&dir).is_ok() && std::fs::write(dir.join(".gitignore"), KEEP_OUT_NOTE).is_ok()
+    std::fs::create_dir(&dir).is_ok()
+        && std::fs::write(dir.join(".gitignore"), KEEP_OUT_NOTE).is_ok()
 }
 
 #[cfg(test)]
@@ -350,7 +374,11 @@ mod tests {
         let p = pin(b"abc");
         assert!(p.check(b"abc").is_ok());
         assert!(p.check(b"abd").unwrap_err().starts_with("sha512-"));
-        let wheel = Pin { digest: format!("sha256:{}", hex(&Sha256::digest(b"whl"))), file: "a-1-py3-none-any.whl".into(), ..p };
+        let wheel = Pin {
+            digest: format!("sha256:{}", hex(&Sha256::digest(b"whl"))),
+            file: "a-1-py3-none-any.whl".into(),
+            ..p
+        };
         assert!(wheel.check(b"whl").is_ok());
         assert!(wheel.check(b"other").unwrap_err().starts_with("sha256:"));
         assert!(expected("md5:abc").is_none());
@@ -361,23 +389,39 @@ mod tests {
     fn file_names_are_plain() {
         assert!(valid_file("server-filesystem-1.0.0.tgz"));
         assert!(valid_file("serena_agent-2.0.0-py3-none-any.whl"));
-        for bad in ["../x.tgz", "a/b.tgz", "a\\b.whl", "x.exe", ".tgz", "a..b.tgz"] {
+        for bad in [
+            "../x.tgz", "a/b.tgz", "a\\b.whl", "x.exe", ".tgz", "a..b.tgz",
+        ] {
             assert!(!valid_file(bad), "{bad}");
         }
     }
 
     #[test]
     fn a_package_is_kept_only_when_it_matches_and_fills_the_launch() {
-        let root = std::env::current_dir().unwrap().join("target").join("test-mcp-pkg");
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join("test-mcp-pkg");
         let _ = std::fs::remove_dir_all(&root);
         let packages = Packages::new(root.clone());
         let p = pin(b"package bytes");
         let args = |data: &[u8]| json!({"pin": {"file": p.file, "digest": p.digest, "package": "pkg", "version": "1.0.0"}, "data": crate::util::b64(data)});
         // Not there yet: the cloud is asked for it.
-        let mut launch = vec!["-y".to_string(), "-p".into(), PACKAGE_ARG.into(), "bin".into()];
-        assert_eq!(packages.apply(Some(&p), &mut launch).unwrap_err().code, "MCP_PACKAGE_NEEDED");
+        let mut launch = vec![
+            "-y".to_string(),
+            "-p".into(),
+            PACKAGE_ARG.into(),
+            "bin".into(),
+        ];
+        assert_eq!(
+            packages.apply(Some(&p), &mut launch).unwrap_err().code,
+            "MCP_PACKAGE_NEEDED"
+        );
         // Different bytes: refused, nothing kept.
-        assert_eq!(packages.store(&args(b"tampered")).unwrap_err().code, "MCP_DIGEST_MISMATCH");
+        assert_eq!(
+            packages.store(&args(b"tampered")).unwrap_err().code,
+            "MCP_DIGEST_MISMATCH"
+        );
         assert!(!root.join(&p.file).exists());
         packages.store(&args(b"package bytes")).unwrap();
         packages.apply(Some(&p), &mut launch).unwrap();
@@ -385,10 +429,17 @@ mod tests {
         // Changed on disk afterwards: dropped, asked for again.
         std::fs::write(root.join(&p.file), b"changed").unwrap();
         let mut again = vec![PACKAGE_ARG.to_string()];
-        assert_eq!(packages.apply(Some(&p), &mut again).unwrap_err().code, "MCP_PACKAGE_NEEDED");
+        assert_eq!(
+            packages.apply(Some(&p), &mut again).unwrap_err().code,
+            "MCP_PACKAGE_NEEDED"
+        );
         assert!(!root.join(&p.file).exists());
         // {{package}} only with a pin, a pin only with {{package}}.
-        assert!(packages.apply(None, &mut [PACKAGE_ARG.to_string()]).is_err());
+        assert!(
+            packages
+                .apply(None, &mut [PACKAGE_ARG.to_string()])
+                .is_err()
+        );
         assert!(packages.apply(Some(&p), &mut ["x".to_string()]).is_err());
         assert!(packages.apply(None, &mut ["x".to_string()]).is_ok());
         let _ = std::fs::remove_dir_all(&root);
@@ -396,42 +447,83 @@ mod tests {
 
     #[test]
     fn a_half_written_npx_entry_is_found_from_the_error_or_the_cache() {
-        let root = std::env::current_dir().unwrap().join("target").join("test-mcp-npx");
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join("test-mcp-npx");
         let _ = std::fs::remove_dir_all(&root);
         let cache = root.join("npm-cache");
         let ours = cache.join("_npx").join("8c4e7a05d0d4c8f3");
         let other = cache.join("_npx").join("0123456789abcdef");
         std::fs::create_dir_all(ours.join("node_modules").join("@scope").join("srv")).unwrap();
         std::fs::create_dir_all(other.join("node_modules").join("left-pad")).unwrap();
-        std::fs::write(other.join("package.json"), r#"{"dependencies":{"left-pad":"1"},"_npx":{"packages":["left-pad@1"]}}"#).unwrap();
+        std::fs::write(
+            other.join("package.json"),
+            r#"{"dependencies":{"left-pad":"1"},"_npx":{"packages":["left-pad@1"]}}"#,
+        )
+        .unwrap();
         let env = vec![("npm_config_cache".to_string(), cache.display().to_string())];
         let specs = vec!["@scope/srv@1.0.0".to_string()];
         // A crash without the signs of missing files: not a cache problem.
-        assert!(broken_npx_entry(&["TypeError: x is not a function".into()], &env, &specs, "@scope/srv").is_none());
+        assert!(
+            broken_npx_entry(
+                &["TypeError: x is not a function".into()],
+                &env,
+                &specs,
+                "@scope/srv"
+            )
+            .is_none()
+        );
         // Named in the error.
-        let line = format!("Error: Cannot find module '../helpers/x'\nRequire stack:\n- {}", ours.join("node_modules").join("a.js").display());
-        assert_eq!(broken_npx_entry(&[line], &env, &specs, "@scope/srv"), Some(ours.clone()));
+        let line = format!(
+            "Error: Cannot find module '../helpers/x'\nRequire stack:\n- {}",
+            ours.join("node_modules").join("a.js").display()
+        );
+        assert_eq!(
+            broken_npx_entry(&[line], &env, &specs, "@scope/srv"),
+            Some(ours.clone())
+        );
         // A missing program names no path: found by its package.
-        let missing = vec!["'srv' is not recognized as an internal or external command,".to_string()];
-        assert_eq!(broken_npx_entry(&missing, &env, &specs, "@scope/srv"), Some(ours.clone()));
+        let missing =
+            vec!["'srv' is not recognized as an internal or external command,".to_string()];
+        assert_eq!(
+            broken_npx_entry(&missing, &env, &specs, "@scope/srv"),
+            Some(ours.clone())
+        );
         // Never another package's entry.
-        let theirs = format!("Cannot find module 'x' {}", other.join("node_modules").display());
-        assert_eq!(broken_npx_entry(&[theirs], &env, &specs, "@scope/srv"), Some(ours.clone()));
+        let theirs = format!(
+            "Cannot find module 'x' {}",
+            other.join("node_modules").display()
+        );
+        assert_eq!(
+            broken_npx_entry(&[theirs], &env, &specs, "@scope/srv"),
+            Some(ours.clone())
+        );
         assert!(broken_npx_entry(&missing, &env, &["nothing@1".into()], "nothing").is_none());
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn keep_out_folders_are_ignored_by_git_and_never_overwritten() {
-        let root = std::env::current_dir().unwrap().join("target").join("test-mcp-keep-out");
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join("test-mcp-keep-out");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         assert!(keep_out(&root, ".serena"));
-        assert!(std::fs::read_to_string(root.join(".serena").join(".gitignore")).unwrap().contains("\n*\n"));
+        assert!(
+            std::fs::read_to_string(root.join(".serena").join(".gitignore"))
+                .unwrap()
+                .contains("\n*\n")
+        );
         // The person's own (or an earlier) folder stays as it is.
         std::fs::write(root.join(".serena").join(".gitignore"), "/cache\n").unwrap();
         assert!(!keep_out(&root, ".serena"));
-        assert_eq!(std::fs::read_to_string(root.join(".serena").join(".gitignore")).unwrap(), "/cache\n");
+        assert_eq!(
+            std::fs::read_to_string(root.join(".serena").join(".gitignore")).unwrap(),
+            "/cache\n"
+        );
         for bad in [".git", "..", "serena", ".a/b", "."] {
             assert!(!valid_keep_out(bad), "{bad}");
         }

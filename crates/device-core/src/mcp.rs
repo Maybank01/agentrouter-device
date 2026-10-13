@@ -998,7 +998,10 @@ fn exited(server: Arc<Server>, generation: u64) {
             return;
         }
         server.status.lock().unwrap().restarts += 1;
-        server.set_state(State::Restarting, Some("cleared a broken npx cache entry".into()));
+        server.set_state(
+            State::Restarting,
+            Some("cleared a broken npx cache entry".into()),
+        );
         match resolve_command(&server.spec.command) {
             Some(program) => {
                 if let Err(e) = launch(&server, &program) {
@@ -1081,8 +1084,7 @@ fn heal_npx(server: &Server) -> bool {
         Some(pin) => pin.package.clone(),
         None => package_of(&server.spec.args),
     };
-    let Some(entry) =
-        crate::mcp_pkg::broken_npx_entry(&log, &server.spec.env, &specs, &package)
+    let Some(entry) = crate::mcp_pkg::broken_npx_entry(&log, &server.spec.env, &specs, &package)
     else {
         return false;
     };
