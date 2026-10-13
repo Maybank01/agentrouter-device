@@ -175,7 +175,7 @@ r = await http("PUT", `/api/control/personal/devices/${device.id}/sessions/${ags
 log(`grant: HTTP ${r.status}`);
 // TASK=screen (CAPABILITIES-1029 A): a GUI program, a screenshot, a click and typing, a look at the result, then close it.
 const SCREEN = process.env.TASK === "screen";
-const prompt = SCREEN
+const prompt = process.env.PROMPT ? process.env.PROMPT : SCREEN
   ? `我链接了一台 Windows 电脑（设备名 ${NAME}），屏幕功能开着。请在那台电脑上：用 app 打开记事本（notepad），用 screenshot 截一张记事本窗口的图，`
     + "用 gui 点一下记事本的编辑区，输入“AgentRouter 测试 123”，再截一张图确认文字确实出现在记事本里，然后用 app 关掉记事本（force:true，不保存）。最后告诉我第二张图里你看到了什么。"
   : `我链接了一台电脑（设备名 ${NAME}），它链接的文件夹是一个小的 Node 项目（calc.js 和 calc.test.js），现在 npm test 是失败的。`
