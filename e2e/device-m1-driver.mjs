@@ -192,6 +192,9 @@ const tools = msgs.flatMap((m) => (Array.isArray(m.parts) ? m.parts : [])).filte
   .map((p) => `${p.toolName ?? p.type}${p.input?.action ? `:${p.input.action}` : ""}${p.state ? `(${p.state})` : ""}`);
 log(`tool calls: ${clip(tools.join(", "), 900)}`);
 log(`conversation id ${ags}`);
+// HOLD_SECONDS: keep the device linked a while after the turn (the runner checks local things that need it running).
+const HOLD = Number(process.env.HOLD_SECONDS || 0);
+if (HOLD > 0) { log(`holding the device for ${HOLD} s`); await sleep(HOLD * 1000); }
 if (!KEEP_DEVICE) {
   r = await http("DELETE", `/api/control/personal/devices/${device.id}`);
   log(`device removed: HTTP ${r.status}`);

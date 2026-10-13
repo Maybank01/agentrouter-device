@@ -11,13 +11,18 @@ name: Dev end-to-end
 # (agentrouter-ops e2e/README.md): the pairing code is published as the commit status `device-e2e/pairing-code`, and
 # `PAIR_CODE=<code> session-lock.sh dev node device-m1-driver.mjs` takes it from there. No session
 # ever reaches GitHub. Started by pushing to an e2e/* branch.
+# Scenario mcp (an e2e/* branch with "mcp" in its name): the default local tools bundle (LINKED-DEVICES §23,
+# DEVICE-PROTOCOL §18). The conversation commits a fix through the git MCP server; the runner breaks the
+# filesystem server's npx cache entry once while it runs. The last step checks that the catalog packages
+# arrived as checked files (mcp_package), the commit, that the broken entry was cleared and the server came
+# back, and that serena's .serena/ stays out of git.
 on:
   push:
     branches: ["e2e/**"]
   workflow_dispatch:
     inputs:
       scenario:
-        description: "m1 = cloud Codex edits the sample repo and its tests must pass; none = just stay online"
+        description: "m1 = cloud Codex edits the sample repo and its tests must pass; mcp = local tools bundle; none = just stay online"
         default: m1
 
 permissions:
@@ -26,7 +31,7 @@ permissions:
 
 env:
   WEB: https://edge-d53hmn9blslvhcuff8rjsdvt.agentrouter.top
-  SCENARIO: ${{ inputs.scenario || 'm1' }}
+  SCENARIO: ${{ inputs.scenario || (contains(github.ref_name, 'mcp') && 'mcp') || 'm1' }}
 
 jobs:
   device:
@@ -37,6 +42,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --locked -p agentrouter-device-cli
+      - name: uv (the bundle's Python servers run through uvx)
+        if: env.SCENARIO == 'mcp'
+        uses: astral-sh/setup-uv@v10
       - name: Link (folders, one sample repository, unattended; the ops host confirms the code)
         shell: pwsh
         env:
@@ -57,6 +65,8 @@ jobs:
           git -C $scratch init -q
           git -C $scratch -c user.name=ci -c user.email=ci@example.com add -A
           git -C $scratch -c user.name=ci -c user.email=ci@example.com commit -q -m 'sample'
+          git -C $scratch config user.name ci
+          git -C $scratch config user.email ci@example.com
           "SAMPLE=$scratch" >> $env:GITHUB_ENV
           $exe = Resolve-Path target/release/agentrouter.exe
           $out = Join-Path $root 'link.out'
@@ -89,8 +99,31 @@ jobs:
           $exe = Resolve-Path target/release/agentrouter.exe
           $run = Start-Process -FilePath $exe -ArgumentList @('run', '--background') -NoNewWindow -PassThru
           $deadline = (Get-Date).AddMinutes(60)
+          # mcp: once the filesystem server has run a while, remove a file from its npx cache entry and end it
+          # (an install cut midway); the device must clear that entry and start it once more.
+          $heal = 'waiting'; $healAt = $null; $healPid = 0; $healFile = $null; $healSeen = @{}
           while ((Get-Date) -lt $deadline) {
             Start-Sleep -Seconds 10
+            if ($env:SCENARIO -eq 'mcp' -and $heal -ne 'healed') {
+              $fs = @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -match '\\_npx\\[0-9a-f]+\\node_modules\\@modelcontextprotocol\\server-filesystem\\' })
+              foreach ($p in $fs) { if (-not $healSeen[$p.ProcessId]) { $healSeen[$p.ProcessId] = Get-Date } }
+              if ($heal -eq 'waiting') {
+                $p = $fs | Where-Object { ((Get-Date) - $healSeen[$_.ProcessId]).TotalSeconds -ge 20 } | Select-Object -First 1
+                if ($p) {
+                  $m = [regex]::Match($p.CommandLine, '([A-Za-z]:\\[^" ]*?\\_npx\\[0-9a-f]+)\\node_modules')
+                  $healFile = Join-Path $m.Groups[1].Value 'node_modules\@modelcontextprotocol\server-filesystem\dist\index.js'
+                  Remove-Item -Force $healFile
+                  Stop-Process -Id $p.ProcessId -Force
+                  $heal = 'broken'; $healAt = Get-Date; $healPid = $p.ProcessId
+                  "broke the filesystem server's npx entry ($healFile), ended pid $healPid"
+                }
+              } elseif ($heal -eq 'broken') {
+                $back = $fs | Where-Object { $_.ProcessId -ne $healPid }
+                if ($back -and (Test-Path $healFile)) { $heal = 'healed'; "the filesystem server is back (pid $(@($back)[0].ProcessId)), its entry reinstalled" }
+                elseif (((Get-Date) - $healAt).TotalMinutes -gt 4) { $heal = 'not healed' }
+              }
+              Set-Content -Encoding utf8 (Join-Path $env:RUNNER_TEMP 'heal.txt') $heal
+            }
             $s = (& $exe status | Out-String)
             if ($s -match '未链接') { 'the device was removed on the web'; break }
           }
@@ -117,6 +150,31 @@ jobs:
           if (-not $refs) { throw 'no checkpoint was taken before the change' }
           $exe = Resolve-Path target/release/agentrouter.exe
           & $exe undo --list
+      - name: MCP result (checked packages, the commit through git MCP, npx self-heal, .serena kept out)
+        if: env.SCENARIO == 'mcp'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $entries = Get-Content -Encoding utf8 (Join-Path $env:AGENTROUTER_DEVICE_HOME 'audit.log') | ForEach-Object { $_ | ConvertFrom-Json }
+          $packages = @($entries | Where-Object { $_.action -eq 'mcp_package' })
+          $packages | ForEach-Object { "mcp_package $($_.text): $($_.outcome)" }
+          $calls = @($entries | Where-Object { $_.action -eq 'mcp_call' })
+          $calls | ForEach-Object { "mcp_call $($_.text): $($_.outcome)" }
+          if (-not ($packages | Where-Object { $_.outcome -eq 'ok' })) { throw 'no catalog package arrived as a checked file' }
+          if ($entries | Where-Object { "$($_.outcome)$($_.detail)" -match 'DIGEST_MISMATCH' }) { throw 'a digest did not match' }
+          if (-not ($calls | Where-Object { $_.text -match '\.git_commit$' -and $_.outcome -eq 'ok' })) { throw 'git_commit did not run through the git MCP server' }
+          git -C $env:SAMPLE log --format='%h %s' -3
+          if (@(git -C $env:SAMPLE rev-list HEAD).Count -lt 2) { throw 'no commit was made' }
+          git -C $env:SAMPLE show --stat HEAD
+          $heal = Get-Content -Encoding utf8 (Join-Path $env:RUNNER_TEMP 'heal.txt') -ErrorAction SilentlyContinue
+          "npx self-heal: $heal"
+          if ($heal -ne 'healed') { throw 'the broken npx entry was not cleared and the server did not come back' }
+          $serena = Join-Path $env:SAMPLE '.serena'
+          if (Test-Path $serena) { Get-ChildItem -Force -Recurse $serena | Select-Object -First 10 FullName }
+          if (-not (Test-Path (Join-Path $serena '.gitignore'))) { throw '.serena has no .gitignore' }
+          $dirty = git -C $env:SAMPLE status --porcelain --untracked-files=all
+          "git status: $dirty"
+          if ($dirty -match '\.serena') { throw '.serena shows up in git status' }
       - name: Audit log
         if: always()
         shell: pwsh
