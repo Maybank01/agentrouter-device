@@ -25,6 +25,10 @@ AgentRouter 的客户端是一层很小的皮：窗口里就是云端网页（�
 
 `agentrouter screen on`（或 `agentrouter link --screen`）之后，云端对话可以按需截图（不串流桌面）、列出窗口、打开和关闭程序、操作鼠标键盘（坐标属于某一张截图，过期或屏幕布局变了要重新截），也可以连拍几帧做成 GIF。打开时就是同意，之后不再逐条问；屏幕上方有一条「AI 正在操作这台电脑」的提示条（不进截图、点不到）。永远不做：锁屏 / UAC / 安全桌面上的操作、往密码框里输入（尽力识别）、点 `--private-app` 标成不给 AI 看的程序（截图里涂黑，不给标题）；你刚动过鼠标键盘时 AI 先等。只读和每条都确认两级只能截图和看窗口。动作：`screenshot`、`windows`、`gui`、`app`、`screen_record`。
 
+## 本机工具（MCP 服务）
+
+我们只做远程联通，能力交给电脑上的 MCP 服务（所有者 2026-10-13）。`agentrouter mcp on`（或 `agentrouter link --mcp`）之后，云端对话可以把 stdio MCP 服务（例如 `uvx windows-mcp@0.8.8 serve`）装到这台电脑上：小助手启动它、崩了重启（2 分钟内最多 3 次）、留 stderr 日志（密钥涂掉）、把它的工具调用原样转过去（截图照样是图）。只在“只限这些文件夹”和“完全访问”级别；锁屏和 UAC 上不调用；调用时屏幕上方提示条写“本机工具 <名字> · <工具>”；`mcp off`、托盘断开、Ctrl+C 全部停掉。定义和密钥在云端（工具作品 + 密钥库），这里不落盘。协议见 Cloud 仓库 `DEVICE-PROTOCOL.md` §18，代码 `crates/device-core/src/mcp.rs`。
+
 设备动作（协议见 Cloud 仓库 `docs/product/workspace-v1/DEVICE-PROTOCOL.md` §5）：`list_files`、`list_dir`、`read_file`、`read_files`、`write_file`、`edit_file`（旧→新替换，带 base hash 冲突检查）、`apply_patch`（Codex 格式）、`search`（ripgrep 库）、`exec`、`job`。测试向量在 `crates/device-core/tests/fixtures/action-vectors.json`。
 
 ## 命令行

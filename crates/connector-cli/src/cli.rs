@@ -37,6 +37,7 @@ const USAGE: &str = "AgentRouter 小助手（agentrouter）：让你在云端对
                                 运行时不再逐条确认，所有操作照样记审计
       --screen                  同时打开屏幕功能（见 agentrouter screen）
       --private-app <程序>      这个程序不给 AI 看（例如 KeePass.exe；可写多次）
+      --mcp                     同时打开本机工具（见 agentrouter mcp）
   agentrouter [run] [--background]
                                 连上网关，等云端对话的请求。在终端里运行时确认就在终端里问；
                                 --background（或没有终端）时 Windows 弹窗问，macOS / Linux 一律拒绝
@@ -49,6 +50,10 @@ const USAGE: &str = "AgentRouter 小助手（agentrouter）：让你在云端对
                                 打开和关闭程序、操作鼠标键盘，不再逐条问你；屏幕上方有提示条。
                                 锁屏和 UAC 上不操作，不往密码框里输入，你在用电脑时 AI 先等；
                                 --private-app 的程序截图时涂黑、不给标题、不让点
+  agentrouter mcp on|off       本机工具（MCP）：打开后云端对话可以在这台电脑上装和运行 MCP 服务
+                                （例如 Windows-MCP），它们的工具给云端的 AI 用，不再逐条问你；
+                                只在「只限这些文件夹」和「完全访问」级别；锁屏和 UAC 上不操作；
+                                断开、Ctrl+C 或 off 时全部停止
   agentrouter undo [检查点] [--list] [--yes]
                                 撤销 AI 的改动：不写检查点就撤销当前文件夹最近一轮改动；--list 列出检查点
   agentrouter audit verify      检查审计日志有没有被改过
@@ -70,6 +75,7 @@ struct Flags {
     no_run: bool,
     background: bool,
     screen: Option<bool>,
+    mcp: Option<bool>,
     private_apps: Vec<String>,
     positional: Vec<String>,
 }
@@ -101,6 +107,7 @@ fn parse(args: &[String]) -> Result<Flags, String> {
             "--no-run" => flags.no_run = true,
             "--background" => flags.background = true,
             "--screen" => flags.screen = Some(true),
+            "--mcp" => flags.mcp = Some(true),
             "--private-app" => flags.private_apps.push(value("--private-app")?),
             other if other.starts_with("--") => return Err(format!("不认识的选项：{other}")),
             other => flags.positional.push(other.to_string()),
@@ -169,6 +176,7 @@ pub fn main() {
         "unlink" => unlink(flags),
         "undo" => undo(flags),
         "screen" => cmd_screen(flags),
+        "mcp" => cmd_mcp(flags),
         "audit" => match audit::verify(&data_dir().join("audit.log")) {
             Ok(n) => {
                 println!("审计日志完好，共 {n} 条。");
@@ -289,6 +297,9 @@ fn serve(foreground: bool, _lock: std::fs::File) -> i32 {
         println!("链接的文件夹：{}", folders_text(&cfg.folders));
         if cfg.screen {
             println!("{}（AI 操作时屏幕上方有提示条）", screen_text(&cfg));
+        }
+        if cfg.mcp {
+            println!("{}", mcp_text(&cfg));
         }
         println!(
             "{}按 Ctrl+C 断开（这次起的命令都会结束）。\n",
@@ -460,6 +471,9 @@ fn apply_screen(cfg: &mut Config, flags: &Flags) {
     if let Some(on) = flags.screen {
         cfg.screen = on;
     }
+    if let Some(on) = flags.mcp {
+        cfg.mcp = on;
+    }
     for app in &flags.private_apps {
         if !cfg.private_apps.iter().any(|a| a.eq_ignore_ascii_case(app)) {
             cfg.private_apps.push(app.clone());
@@ -481,6 +495,48 @@ fn screen_text(cfg: &Config) -> String {
             "关"
         }
     )
+}
+
+fn mcp_text(cfg: &Config) -> String {
+    format!(
+        "本机工具（MCP）：{}",
+        if cfg.mcp {
+            "开（云端对话装的 MCP 服务在这台电脑上运行）"
+        } else {
+            "关"
+        }
+    )
+}
+
+/// `agentrouter mcp on|off`: let conversations run local MCP servers here (LINKED-DEVICES.md §23).
+fn cmd_mcp(mut flags: Flags) -> i32 {
+    let mut cfg = Config::load();
+    match flags.positional.first().map(String::as_str) {
+        Some("on") => flags.mcp = Some(true),
+        Some("off") => flags.mcp = Some(false),
+        None | Some("status") => {}
+        Some(other) => {
+            eprintln!("agentrouter mcp 后面写 on 或 off，不是 {other}");
+            return 2;
+        }
+    }
+    if let Some(on) = flags.mcp {
+        cfg.mcp = on;
+    }
+    if let Err(e) = cfg.save() {
+        eprintln!("设置没有保存：{e}");
+        return 1;
+    }
+    audit::Audit::open(&data_dir().join("audit.log"))
+        .record(serde_json::json!({"event": "mcp", "on": cfg.mcp}));
+    println!("{}", mcp_text(&cfg));
+    if cfg.mcp && matches!(cfg.access, Access::Readonly | Access::Confirm) {
+        println!(
+            "访问级别是{}：本机工具不能运行；运行 agentrouter access folders 后才可以。",
+            cfg.access.label()
+        );
+    }
+    0
 }
 
 /// `agentrouter screen on|off`: let conversations look at the screen and operate it (LINKED-DEVICES.md §20).
@@ -647,6 +703,7 @@ fn status() -> i32 {
         println!("无人值守：命令不逐条确认（链接时由本机管理员预先同意）");
     }
     println!("{}", screen_text(&cfg));
+    println!("{}", mcp_text(&cfg));
     let log = data_dir().join("audit.log");
     match audit::verify(&log) {
         Ok(n) => println!("审计日志：{}（{n} 条，完好）", log.display()),

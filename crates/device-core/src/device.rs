@@ -23,6 +23,7 @@ use crate::consent::{Ask, Confirm, Decision};
 use crate::gate::{Scope, display, inside, resolve_folders};
 use crate::jobs::{EventSink, Jobs, MAX_JOBS, Shell};
 use crate::keystore::Identity;
+use crate::mcp::McpHost;
 use crate::protocol::{DeviceError, ReplayCache, canonical_json, check_request};
 use crate::scope_guard;
 use crate::screen::{self, Screen};
@@ -93,6 +94,7 @@ pub struct Device {
     confinement: Confinement,
     /// Screenshots, windows, mouse and keyboard, GUI programs (screen.rs); off until the person turns it on.
     pub screen: Screen,
+    mcp: McpHost,
 }
 
 pub struct Options {
@@ -263,6 +265,7 @@ impl Device {
             shell: options.shell,
             confinement: Confinement::new(&options.data_dir),
             screen: Screen::default(),
+            mcp: McpHost::new(&options.data_dir),
         }
     }
 
@@ -310,9 +313,15 @@ impl Device {
         self.screen.set(on, private_apps);
     }
 
-    /// The actions this device serves now: the screen ones where the platform has them.
+    /// Local MCP servers (`agentrouter mcp on`): run the servers the cloud installs here.
+    pub fn set_mcp(&self, on: bool) {
+        self.mcp.set(on);
+    }
+
+    /// The actions this device serves now: the screen ones where the platform has them, and the MCP host.
     pub fn actions(&self) -> Vec<&'static str> {
         let mut list = ACTIONS.to_vec();
+        list.extend_from_slice(crate::mcp::ACTIONS);
         if screen::supported() {
             list.extend_from_slice(screen::ACTIONS);
         }
@@ -378,6 +387,8 @@ impl Device {
             "maxJobs": MAX_JOBS,
             "actions": self.actions(),
             "screen": self.screen.enabled(),
+            "mcp": self.mcp.enabled(),
+            "mcpServers": self.mcp.summary(),
             "readonlyCommands": self.readonly_commands.load(Ordering::SeqCst) && scope.access == Access::Confirm,
             "scopeGuard": scope.access == Access::Folders,
             "checkpoints": true,
@@ -392,6 +403,7 @@ impl Device {
         self.trusted.lock().unwrap().clear();
         self.allowances.lock().unwrap().clear();
         self.screen.forget();
+        self.mcp.stop_all();
         self.record(json!({"event": "stop_all", "reason": why}));
     }
 
@@ -508,6 +520,11 @@ impl Device {
             "gui" => self.screen.gui(session, &scope, args),
             "app" => self.screen.app(session, &scope, args),
             "screen_record" => self.screen.record(session, args),
+            "mcp_start" => self.mcp.start(&scope, args, cancel),
+            "mcp_stop" => self.mcp.stop(args),
+            "mcp_list" => self.mcp.list(),
+            "mcp_call" => self.mcp.call(&scope, args, cancel),
+            "mcp_logs" => self.mcp.logs(args),
             _ => Err(DeviceError::new("UNKNOWN_ACTION", "unknown action")),
         }
     }
@@ -1111,6 +1128,22 @@ fn summary(action: &str, args: &Value) -> String {
         "app" => format!("{} {}{}", s("op"), s("command"), s("app"))
             .trim()
             .to_string(),
+        // Never the environment (it carries the person's secrets).
+        "mcp_start" => format!(
+            "{} = {} {}",
+            s("name"),
+            s("command"),
+            args.get("args")
+                .and_then(Value::as_array)
+                .map(|a| a
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(" "))
+                .unwrap_or_default()
+        ),
+        "mcp_call" => format!("{}.{}", s("name"), s("tool")),
+        "mcp_stop" | "mcp_logs" => s("name"),
         _ => String::new(),
     };
     clip(&text, 4000)

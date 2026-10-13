@@ -18,6 +18,7 @@ pub mod gate;
 pub mod jobs;
 pub mod keystore;
 pub mod link;
+pub mod mcp;
 pub mod net;
 pub mod protocol;
 pub mod scope_guard;
