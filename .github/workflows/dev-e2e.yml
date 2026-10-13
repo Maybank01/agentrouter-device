@@ -100,12 +100,13 @@ jobs:
           $run = Start-Process -FilePath $exe -ArgumentList @('run', '--background') -NoNewWindow -PassThru
           $deadline = (Get-Date).AddMinutes(60)
           # mcp: once the filesystem server has run a while, remove a file from its npx cache entry and end it
-          # (an install cut midway); the device must clear that entry and start it once more.
+          # (an install cut midway); the device must clear that entry and start it once more. npx runs it through
+          # the .bin shim: node <cache>\_npx\<hash>\node_modules\.bin\..\@modelcontextprotocol\server-filesystem\dist\index.js
           $heal = 'waiting'; $healAt = $null; $healPid = 0; $healFile = $null; $healSeen = @{}
           while ((Get-Date) -lt $deadline) {
             Start-Sleep -Seconds 10
             if ($env:SCENARIO -eq 'mcp' -and $heal -ne 'healed') {
-              $fs = @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -match '\\_npx\\[0-9a-f]+\\node_modules\\@modelcontextprotocol\\server-filesystem\\' })
+              $fs = @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -match '\\_npx\\[0-9a-f]+\\node_modules\\.*server-filesystem\\dist\\index\.js' })
               foreach ($p in $fs) { if (-not $healSeen[$p.ProcessId]) { $healSeen[$p.ProcessId] = Get-Date } }
               if ($heal -eq 'waiting') {
                 $p = $fs | Where-Object { ((Get-Date) - $healSeen[$_.ProcessId]).TotalSeconds -ge 20 } | Select-Object -First 1
