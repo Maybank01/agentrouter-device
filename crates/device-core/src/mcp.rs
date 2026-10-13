@@ -400,6 +400,10 @@ pub fn resolve_command(command: &str) -> Option<PathBuf> {
     let found = |p: &Path| -> Option<PathBuf> {
         for ext in &exts {
             let candidate = if ext.is_empty() {
+                // Windows runs only files with an extension: `npx` beside `npx.cmd` is a shell script (os error 193).
+                if cfg!(windows) && p.extension().is_none() {
+                    continue;
+                }
                 p.to_path_buf()
             } else {
                 PathBuf::from(format!("{}{ext}", p.display()))
