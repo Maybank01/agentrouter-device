@@ -410,7 +410,7 @@ fn missing_runtime(command: &str) -> DeviceError {
         .to_ascii_lowercase();
     let next = match base.as_str() {
         "uvx" | "uv" => {
-            "这台电脑没有装 uv（运行 Python 写的 MCP 服务要用）。请用户装上 uv（Windows：在 PowerShell 里运行 powershell -ExecutionPolicy ByPass -c \"irm https://astral.sh/uv/install.ps1 | iex\"；macOS / Linux：curl -LsSf https://astral.sh/uv/install.sh | sh），装好后再试，不用重启 AgentRouter。"
+            "这台电脑没有装 uv（运行 Python 写的 MCP 服务要用）。请用户按 https://docs.astral.sh/uv/getting-started/installation/ 装上 uv，装好后再试，不用重启 AgentRouter。"
         }
         "npx" | "node" | "npm" => {
             "这台电脑没有装 Node.js（运行 JavaScript 写的 MCP 服务要用）。请用户从 https://nodejs.org 装上 Node.js LTS 后再试。"
@@ -712,11 +712,6 @@ fn launch(server: &Arc<Server>, program: &Path) -> Result<(), String> {
     }
     // Python servers print UTF-8; tell them so (Windows consoles default to the ANSI code page).
     cmd.env("PYTHONIOENCODING", "utf-8").env("PYTHONUTF8", "1");
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -1027,8 +1022,8 @@ mod tests {
 
     #[test]
     fn the_host_is_off_until_the_person_turns_it_on() {
-        let dir = std::env::temp_dir().join(format!("ar-mcp-{}", now_ms()));
-        let host = McpHost::new(&dir);
+        // Nothing is started here: every case is refused before a process or a folder is made.
+        let host = McpHost::new(Path::new("unused"));
         let scope = Scope {
             access: Access::Full,
             folders: vec![],
