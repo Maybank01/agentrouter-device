@@ -544,6 +544,7 @@ impl Device {
                     .map(|v| with_checkpoint(v, checkpoint))
             }
             "mcp_logs" => self.mcp.logs(args),
+            "mcp_package" => self.mcp.package(&scope, args),
             _ => Err(DeviceError::new("UNKNOWN_ACTION", "unknown action")),
         }
     }
@@ -1163,6 +1164,17 @@ fn summary(action: &str, args: &Value) -> String {
         ),
         "mcp_call" => format!("{}.{}", s("name"), s("tool")),
         "mcp_stop" | "mcp_logs" => s("name"),
+        // The file and its digest, never the bytes.
+        "mcp_package" => args
+            .get("pin")
+            .map(|p| {
+                format!(
+                    "{} {}",
+                    p.get("file").and_then(Value::as_str).unwrap_or(""),
+                    p.get("digest").and_then(Value::as_str).unwrap_or("")
+                )
+            })
+            .unwrap_or_default(),
         _ => String::new(),
     };
     clip(&text, 4000)
