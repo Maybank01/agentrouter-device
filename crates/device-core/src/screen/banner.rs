@@ -15,9 +15,9 @@ use windows_sys::Win32::Graphics::Gdi::{
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClientRect, GetMessageW, HWND_TOPMOST,
-    LWA_ALPHA, MSG, RegisterClassW, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSIZE, SetLayeredWindowAttributes, SetTimer, SetWindowDisplayAffinity, SetWindowPos,
-    ShowWindow, TranslateMessage, WM_PAINT, WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    LWA_ALPHA, MSG, RegisterClassW, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SetLayeredWindowAttributes, SetTimer, SetWindowDisplayAffinity, SetWindowPos, ShowWindow,
+    TranslateMessage, WM_PAINT, WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
     WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
@@ -99,8 +99,9 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             let active = now_ms() - LAST.load(Ordering::SeqCst) < SHOW_MS;
             if active != SHOWN.load(Ordering::SeqCst) {
                 SHOWN.store(active, Ordering::SeqCst);
+                // Faded out rather than hidden: it stays a plain visible window (docs/AV-HYGIENE.md).
                 unsafe {
-                    ShowWindow(hwnd, if active { SW_SHOWNOACTIVATE } else { SW_HIDE });
+                    SetLayeredWindowAttributes(hwnd, 0, if active { 235 } else { 0 }, LWA_ALPHA);
                 }
             }
             if active {
@@ -157,7 +158,8 @@ fn run() {
         if hwnd.is_null() {
             return;
         }
-        SetLayeredWindowAttributes(hwnd, 0, 235, LWA_ALPHA);
+        SetLayeredWindowAttributes(hwnd, 0, 0, LWA_ALPHA);
+        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
         // WDA_EXCLUDEFROMCAPTURE (Windows 10 2004+): not in screenshots.
         SetWindowDisplayAffinity(hwnd, 0x11);
         WINDOW.store(hwnd as i64, Ordering::SeqCst);
