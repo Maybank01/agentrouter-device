@@ -256,6 +256,7 @@ pub struct Runtime {
 
 impl Runtime {
     pub fn new(device: Arc<Device>, config: Config) -> Arc<Runtime> {
+        device.set_screen(config.screen, &config.private_apps);
         Arc::new(Runtime {
             device,
             config: Mutex::new(config),
@@ -574,12 +575,14 @@ pub fn watch_config(rt: Arc<Runtime>) {
         let level_changed = fresh.access != cfg.access || fresh.folders != cfg.folders;
         let gateway_changed = fresh.gateway != cfg.gateway;
         rt.device.set_readonly_commands(fresh.readonly_commands);
+        let screen_changed = fresh.screen != cfg.screen;
+        rt.device.set_screen(fresh.screen, &fresh.private_apps);
         *cfg = fresh;
         if level_changed {
             rt.device.set_access(cfg.access, &cfg.folders);
         }
         drop(cfg);
-        if level_changed || gateway_changed {
+        if level_changed || gateway_changed || screen_changed {
             rt.reconnect.store(true, Ordering::SeqCst);
         }
     }

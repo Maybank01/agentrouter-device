@@ -35,6 +35,8 @@ const USAGE: &str = "AgentRouter 小助手（agentrouter）：让你在云端对
       --no-run                  只链接，不在前台运行
       --unattended              无人值守（只用于服务器和 CI）：这台机器的管理员现在预先同意命令，
                                 运行时不再逐条确认，所有操作照样记审计
+      --screen                  同时打开屏幕功能（见 agentrouter screen）
+      --private-app <程序>      这个程序不给 AI 看（例如 KeePass.exe；可写多次）
   agentrouter [run] [--background]
                                 连上网关，等云端对话的请求。在终端里运行时确认就在终端里问；
                                 --background（或没有终端）时 Windows 弹窗问，macOS / Linux 一律拒绝
@@ -42,6 +44,11 @@ const USAGE: &str = "AgentRouter 小助手（agentrouter）：让你在云端对
   agentrouter unlink [文件夹]   写了文件夹（. 是当前文件夹）：只取消链接这个文件夹；
                                 不写：在本机删除这台设备的身份
   agentrouter access <级别> [--folder <路径>]... [--readonly-commands on|off] [--yes]
+  agentrouter screen on|off [--private-app <程序>]...
+                                屏幕功能（目前只有 Windows）：打开后云端对话可以截图、列出窗口、
+                                打开和关闭程序、操作鼠标键盘，不再逐条问你；屏幕上方有提示条。
+                                锁屏和 UAC 上不操作，不往密码框里输入，你在用电脑时 AI 先等；
+                                --private-app 的程序截图时涂黑、不给标题、不让点
   agentrouter undo [检查点] [--list] [--yes]
                                 撤销 AI 的改动：不写检查点就撤销当前文件夹最近一轮改动；--list 列出检查点
   agentrouter audit verify      检查审计日志有没有被改过
@@ -62,6 +69,8 @@ struct Flags {
     unattended: bool,
     no_run: bool,
     background: bool,
+    screen: Option<bool>,
+    private_apps: Vec<String>,
     positional: Vec<String>,
 }
 
@@ -91,6 +100,8 @@ fn parse(args: &[String]) -> Result<Flags, String> {
             "--unattended" => flags.unattended = true,
             "--no-run" => flags.no_run = true,
             "--background" => flags.background = true,
+            "--screen" => flags.screen = Some(true),
+            "--private-app" => flags.private_apps.push(value("--private-app")?),
             other if other.starts_with("--") => return Err(format!("不认识的选项：{other}")),
             other => flags.positional.push(other.to_string()),
         }
@@ -157,6 +168,7 @@ pub fn main() {
         "status" => status(),
         "unlink" => unlink(flags),
         "undo" => undo(flags),
+        "screen" => cmd_screen(flags),
         "audit" => match audit::verify(&data_dir().join("audit.log")) {
             Ok(n) => {
                 println!("审计日志完好，共 {n} 条。");
@@ -275,6 +287,9 @@ fn serve(foreground: bool, _lock: std::fs::File) -> i32 {
             }
         );
         println!("链接的文件夹：{}", folders_text(&cfg.folders));
+        if cfg.screen {
+            println!("{}（AI 操作时屏幕上方有提示条）", screen_text(&cfg));
+        }
         println!(
             "{}按 Ctrl+C 断开（这次起的命令都会结束）。\n",
             match cfg.access {
@@ -339,10 +354,10 @@ fn serve(foreground: bool, _lock: std::fs::File) -> i32 {
 
 fn cmd_link(flags: Flags) -> i32 {
     let mut cfg = Config::load();
-    if let Some(g) = flags.gateway {
+    if let Some(g) = flags.gateway.clone() {
         cfg.gateway = g;
     }
-    if let Some(n) = flags.name {
+    if let Some(n) = flags.name.clone() {
         cfg.name = n;
     }
     let wanted = if flags.folders.is_empty() {
@@ -377,6 +392,10 @@ fn cmd_link(flags: Flags) -> i32 {
         if let Some(on) = flags.readonly_commands {
             cfg.readonly_commands = on;
         }
+        if flags.unattended {
+            cfg.unattended = cfg.access != Access::Readonly;
+        }
+        apply_screen(&mut cfg, &flags);
         if let Err(e) = cfg.save() {
             eprintln!("设置没有保存：{e}");
             return 1;
@@ -398,6 +417,7 @@ fn cmd_link(flags: Flags) -> i32 {
         cfg.paused = false;
         cfg.disconnected = false;
         cfg.unattended = flags.unattended && cfg.access != Access::Readonly;
+        apply_screen(&mut cfg, &flags);
         println!(
             "把这台电脑链接到 AgentRouter：{}\n访问级别：{}\n{}\n文件夹：{}\n",
             cfg.name,
@@ -434,6 +454,69 @@ fn cmd_link(flags: Flags) -> i32 {
         return 0;
     };
     serve(!flags.background && std::io::stdin().is_terminal(), lock)
+}
+
+fn apply_screen(cfg: &mut Config, flags: &Flags) {
+    if let Some(on) = flags.screen {
+        cfg.screen = on;
+    }
+    for app in &flags.private_apps {
+        if !cfg.private_apps.iter().any(|a| a.eq_ignore_ascii_case(app)) {
+            cfg.private_apps.push(app.clone());
+        }
+    }
+}
+
+fn screen_text(cfg: &Config) -> String {
+    let private = if cfg.private_apps.is_empty() {
+        String::new()
+    } else {
+        format!("；不给 AI 看：{}", cfg.private_apps.join("、"))
+    };
+    format!(
+        "屏幕功能：{}{private}",
+        if cfg.screen {
+            "开（截图、窗口、鼠标键盘、打开和关闭程序）"
+        } else {
+            "关"
+        }
+    )
+}
+
+/// `agentrouter screen on|off`: let conversations look at the screen and operate it (LINKED-DEVICES.md §20).
+fn cmd_screen(mut flags: Flags) -> i32 {
+    let mut cfg = Config::load();
+    match flags.positional.first().map(String::as_str) {
+        Some("on") => flags.screen = Some(true),
+        Some("off") => flags.screen = Some(false),
+        None | Some("status") => {}
+        Some(other) => {
+            eprintln!("agentrouter screen 后面写 on 或 off，不是 {other}");
+            return 2;
+        }
+    }
+    if !agentrouter_device::screen::supported() && flags.screen == Some(true) {
+        eprintln!("这台电脑的系统还不支持屏幕功能（目前只有 Windows）。");
+        return 1;
+    }
+    apply_screen(&mut cfg, &flags);
+    if let Err(e) = cfg.save() {
+        eprintln!("设置没有保存：{e}");
+        return 1;
+    }
+    audit::Audit::open(&data_dir().join("audit.log")).record(serde_json::json!({
+        "event": "screen", "on": cfg.screen, "privateApps": cfg.private_apps,
+    }));
+    println!("{}", screen_text(&cfg));
+    if cfg.screen && cfg.access == Access::Readonly {
+        println!("访问级别是只读：AI 只能截图和看窗口，不能操作鼠标键盘。");
+    }
+    if cfg.screen && cfg.access == Access::Confirm {
+        println!(
+            "访问级别是每条都确认：AI 只能截图和看窗口；要让它操作，运行 agentrouter access folders。"
+        );
+    }
+    0
 }
 
 fn unlink(flags: Flags) -> i32 {
@@ -563,6 +646,7 @@ fn status() -> i32 {
     if cfg.unattended {
         println!("无人值守：命令不逐条确认（链接时由本机管理员预先同意）");
     }
+    println!("{}", screen_text(&cfg));
     let log = data_dir().join("audit.log");
     match audit::verify(&log) {
         Ok(n) => println!("审计日志：{}（{n} 条，完好）", log.display()),

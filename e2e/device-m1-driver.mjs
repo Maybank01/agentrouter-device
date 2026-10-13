@@ -173,8 +173,13 @@ if (!ags) process.exit(1);
 log(`first turn: ${await turn(ags, 5 * 60_000)}`);
 r = await http("PUT", `/api/control/personal/devices/${device.id}/sessions/${ags}`, { json: { actions: ["exec", "read", "write"], granted: true } });
 log(`grant: HTTP ${r.status}`);
-const prompt = `我链接了一台电脑（设备名 ${NAME}），它链接的文件夹是一个小的 Node 项目（calc.js 和 calc.test.js），现在 npm test 是失败的。`
-  + "请在那台设备上：先看看这两个文件，用 edit_file 或 apply_patch 修好 calc.js 里的错误（不要改测试），然后在那个文件夹里运行 npm test，告诉我结果。";
+// TASK=screen (CAPABILITIES-1029 A): a GUI program, a screenshot, a click and typing, a look at the result, then close it.
+const SCREEN = process.env.TASK === "screen";
+const prompt = SCREEN
+  ? `我链接了一台 Windows 电脑（设备名 ${NAME}），屏幕功能开着。请在那台电脑上：用 app 打开记事本（notepad），用 screenshot 截一张记事本窗口的图，`
+    + "用 gui 点一下记事本的编辑区，输入“AgentRouter 测试 123”，再截一张图确认文字确实出现在记事本里，然后用 app 关掉记事本（force:true，不保存）。最后告诉我第二张图里你看到了什么。"
+  : `我链接了一台电脑（设备名 ${NAME}），它链接的文件夹是一个小的 Node 项目（calc.js 和 calc.test.js），现在 npm test 是失败的。`
+    + "请在那台设备上：先看看这两个文件，用 edit_file 或 apply_patch 修好 calc.js 里的错误（不要改测试），然后在那个文件夹里运行 npm test，告诉我结果。";
 r = await patient("POST", `/api/control/agent/sessions/${ags}/messages`, { bearer: true, json: { content: prompt }, timeoutMs: 120_000 });
 log(`task message: HTTP ${r.status}`);
 const end = await turn(ags, 15 * 60_000);

@@ -21,6 +21,10 @@ AgentRouter 的客户端是一层很小的皮：窗口里就是云端网页（�
 
 不管哪一级，应用自己的数据目录（密钥、审计日志、检查点）都碰不到；每个请求都写进带哈希链的审计日志。
 
+## 屏幕（目前只有 Windows）
+
+`agentrouter screen on`（或 `agentrouter link --screen`）之后，云端对话可以按需截图（不串流桌面）、列出窗口、打开和关闭程序、操作鼠标键盘（坐标属于某一张截图，过期或屏幕布局变了要重新截），也可以连拍几帧做成 GIF。打开时就是同意，之后不再逐条问；屏幕上方有一条「AI 正在操作这台电脑」的提示条（不进截图、点不到）。永远不做：锁屏 / UAC / 安全桌面上的操作、往密码框里输入（尽力识别）、点 `--private-app` 标成不给 AI 看的程序（截图里涂黑，不给标题）；你刚动过鼠标键盘时 AI 先等。只读和每条都确认两级只能截图和看窗口。动作：`screenshot`、`windows`、`gui`、`app`、`screen_record`。
+
 设备动作（协议见 Cloud 仓库 `docs/product/workspace-v1/DEVICE-PROTOCOL.md` §5）：`list_files`、`list_dir`、`read_file`、`read_files`、`write_file`、`edit_file`（旧→新替换，带 base hash 冲突检查）、`apply_patch`（Codex 格式）、`search`（ripgrep 库）、`exec`、`job`。测试向量在 `crates/device-core/tests/fixtures/action-vectors.json`。
 
 ## 命令行

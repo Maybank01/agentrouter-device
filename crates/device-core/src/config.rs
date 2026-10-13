@@ -113,6 +113,11 @@ pub struct Config {
     /// At 「每条都确认」, read-only commands (`git status`, `ls`, `rg`, `cat` …) run without asking
     /// (DEVICE-PROTOCOL.md §5.6). On unless the person turns it off.
     pub readonly_commands: bool,
+    /// The person let conversations look at the screen and use mouse, keyboard and GUI programs
+    /// (`agentrouter screen on`, LINKED-DEVICES.md §20). Off by default; nothing is asked once on.
+    pub screen: bool,
+    /// Programs never shown to the AI (blacked out, no titles, no clicks), e.g. `KeePass.exe`.
+    pub private_apps: Vec<String>,
 }
 
 impl Default for Config {
@@ -127,6 +132,8 @@ impl Default for Config {
             disconnected: false,
             unattended: false,
             readonly_commands: true,
+            screen: false,
+            private_apps: Vec::new(),
         }
     }
 }
