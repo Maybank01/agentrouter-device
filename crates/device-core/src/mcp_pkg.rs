@@ -259,7 +259,7 @@ fn entry_in(line: &str) -> Option<(String, String)> {
     // The cache folder is what comes before `_npx` on that line (after the last space or quote).
     let before = &line[..at];
     let start = before
-        .rfind(|c: char| c == ' ' || c == '\'' || c == '"' || c == '(' || c == '\t')
+        .rfind([' ', '\'', '"', '(', '\t'])
         .map(|i| i + 1)
         .unwrap_or(0);
     let cache = before[start..].trim_end_matches(sep).to_string();
