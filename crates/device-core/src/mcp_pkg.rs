@@ -1,4 +1,4 @@
-//! Packages of local MCP servers (DEVICE-PROTOCOL.md §18.6–§18.8): pinned catalog packages are checked here before
+//! Packages of local MCP servers (DEVICE-PROTOCOL.md §18.1–§18.3): pinned catalog packages are checked here before
 //! they run, a broken npx cache entry is cleared, and a server's own data folder is kept out of the person's git.
 //!
 //! - Pinned packages: the cloud's catalog records each package's registry digest (npm `integrity`, PyPI wheel
