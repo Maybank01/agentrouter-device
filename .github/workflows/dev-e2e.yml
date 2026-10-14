@@ -165,7 +165,8 @@ jobs:
           $entries = Get-Content -Encoding utf8 (Join-Path $env:AGENTROUTER_DEVICE_HOME 'audit.log') | ForEach-Object { $_ | ConvertFrom-Json }
           $calls = @($entries | Where-Object { $_.action -eq 'mcp_call' })
           $calls | ForEach-Object { "mcp_call $($_.text): $($_.outcome)" }
-          $ok = @($calls | Where-Object { $_.outcome -eq 'ok' } | ForEach-Object { "$($_.text)" })
+          # A person with several computers gets per-device server names (files_4348): compare by the bundle name.
+          $ok = @($calls | Where-Object { $_.outcome -eq 'ok' } | ForEach-Object { "$($_.text)" -replace '^([a-z_]+?)_[0-9a-f]{4,}\.', '$1.' })
           $builtin = @($entries | Where-Object { $_.action -in @('exec', 'job', 'read_file', 'write_file', 'edit_file', 'apply_patch', 'search', 'read_files', 'list_dir', 'screenshot', 'windows', 'gui', 'app', 'screen_record') })
           "built-in actions asked for: $($builtin.Count)"
           if ($builtin.Count) { $builtin | ForEach-Object { "  $($_.action) $($_.text): $($_.outcome)" }; throw 'a built-in device action was used' }
@@ -187,7 +188,8 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'the sample tests still fail' }
             Pop-Location
             if (-not (& $has '^(files\.(edit_file|write_file)|desktop_commander\.(edit_block|write_file)|serena\..+)$')) { throw 'calc.js was not changed through a local tool' }
-            if (-not (& $has '^desktop_commander\.(start_process|interact_with_process)$')) { throw 'the tests were not run through desktop_commander' }
+            # The tests run on the computer through a local server: DesktopCommander's process tools, or serena's shell when it was still starting.
+            if (-not (& $has '^desktop_commander\.(start_process|interact_with_process)$|^serena\.(serena_repl|execute_shell_command)$')) { throw 'the tests were not run through a local server' }
             git -C $env:SAMPLE log --format='%h %s' -3
             if (@(git -C $env:SAMPLE rev-list HEAD).Count -lt 2) { throw 'no commit was made' }
             $refs = git -C $env:SAMPLE for-each-ref refs/agentrouter/cp
