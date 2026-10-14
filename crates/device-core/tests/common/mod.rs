@@ -2,13 +2,10 @@
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::AtomicBool;
 
 use agentrouter_device::config::Access;
-use agentrouter_device::consent::{Ask, Confirm};
 use agentrouter_device::device::{Device, Options};
-use agentrouter_device::jobs::Shell;
 use agentrouter_device::keystore::Identity;
 use agentrouter_device::protocol::{
     ControlKey, DeviceKey, args_digest, request_string, sha256_hex,
@@ -71,28 +68,12 @@ pub fn temp_dir(tag: &str) -> PathBuf {
     ))
 }
 
-/// Confirmation decided by the test, counting how often it was asked.
-pub fn confirm_with(answer: bool, asked: Arc<AtomicUsize>) -> Confirm {
-    Arc::new(move |_: &Ask, _: &AtomicBool| {
-        asked.fetch_add(1, Ordering::SeqCst);
-        answer.into()
-    })
-}
-
-pub fn device(
-    data: &Path,
-    access: Access,
-    folders: &[&Path],
-    confirm: Confirm,
-    cp: &ControlPlane,
-) -> Device {
+pub fn device(data: &Path, access: Access, folders: &[&Path], cp: &ControlPlane) -> Device {
     let device = Device::new(Options {
         data_dir: data.to_path_buf(),
         access,
         folders: folders.iter().map(|f| f.display().to_string()).collect(),
-        confirm,
         home: data.to_path_buf(),
-        shell: Shell::default_for_os(),
     });
     device.set_identity(Some(Identity {
         key: DeviceKey::generate(),
@@ -112,24 +93,4 @@ pub fn call(
     device
         .serve(&request, &args, &AtomicBool::new(false))
         .map_err(|e| (e.code.to_string(), e.message))
-}
-
-/// A command that prints `text` in the device's default shell.
-pub fn echo(text: &str) -> String {
-    if cfg!(windows) {
-        format!("Write-Output '{text}'")
-    } else {
-        format!("echo '{text}'")
-    }
-}
-
-/// A command that runs about `seconds` and starts a child process that would outlive a plain kill.
-pub fn long_tree(seconds: u32) -> String {
-    if cfg!(windows) {
-        format!(
-            "Start-Process -NoNewWindow powershell -ArgumentList '-NoProfile','-Command','Start-Sleep {seconds}'; Start-Sleep {seconds}"
-        )
-    } else {
-        format!("sleep {seconds} & sleep {seconds}")
-    }
 }

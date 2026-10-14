@@ -1,8 +1,8 @@
 //! `agentrouter` (also installed as `agentrouter-device`): the linked-device helper on the command
 //! line. Run `agentrouter link` in a project folder: the first time it pairs this computer (a code to
-//! confirm on the web), later it adds the folder to the same device; then it stays in the foreground,
-//! asking in the terminal before anything that needs a yes. Ctrl+C stops every job it started and
-//! disconnects. The desktop app (`app/`) embeds the same core with a tray and the cloud web UI.
+//! confirm on the web), later it adds the folder to the same device; then it stays in the foreground and
+//! relays the cloud conversations' calls to the local MCP servers it runs here (LINKED-DEVICES.md §23.8).
+//! Ctrl+C stops every server and disconnects. The desktop app (`app/`) embeds the same core with a tray.
 
 use std::io::IsTerminal;
 use std::path::Path;
@@ -12,53 +12,43 @@ use std::time::Duration;
 
 use agentrouter_device::config::{Access, Config};
 use agentrouter_device::device::{Device, Options};
-use agentrouter_device::jobs::Shell;
 use agentrouter_device::net::{self, Conn, Runtime};
 use agentrouter_device::util::{data_dir, home_dir, log};
-use agentrouter_device::{audit, checkpoint, consent, gate, keystore, link};
-
-use crate::prompt;
+use agentrouter_device::{audit, checkpoint, gate, keystore, link};
 
 /// Set by Ctrl+C (one handler for the whole run: pairing, then serving).
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
-const USAGE: &str = "AgentRouter 小助手（agentrouter）：让你在云端对话里用的 AI 在这台电脑的文件夹里干活
+const USAGE: &str = "AgentRouter 小助手（agentrouter）：把这台电脑链接到 AgentRouter，云端对话里的 AI 通过电脑上的本机工具（MCP 服务）干活
 
 用法：
   agentrouter link [选项]       在项目文件夹里运行。第一次：显示配对码，在网页上确认后链接这台电脑；
                                 之后：把当前文件夹加到同一台设备。然后在前台运行（Ctrl+C 断开）
-      --access folders|confirm|readonly|full
-                                访问级别（默认 folders：在链接的文件夹里读写、运行命令都不用问；
-                                明显越界的命令直接拦下；每轮改动前自动打检查点，可以撤销）
+      --access folders|full|readonly|confirm
+                                访问级别（默认 folders：本机工具在这台电脑上为 AI 干活，不用问你；
+                                会改文件的调用之前自动打检查点，可以撤销；readonly 和 confirm 不运行本机工具）
       --folder <路径>           链接这个文件夹，而不是当前文件夹（可写多次）
       --name <名字>  --gateway <网址>
       --no-run                  只链接，不在前台运行
-      --unattended              无人值守（只用于服务器和 CI）：这台机器的管理员现在预先同意命令，
-                                运行时不再逐条确认，所有操作照样记审计
       --screen                  同时打开屏幕功能（见 agentrouter screen）
-      --private-app <程序>      这个程序不给 AI 看（例如 KeePass.exe；可写多次）
-      --mcp                     同时打开本机工具（见 agentrouter mcp）
+      --mcp                     同时打开本机工具（默认开；见 agentrouter mcp）
   agentrouter [run] [--background]
-                                连上网关，等云端对话的请求。在终端里运行时确认就在终端里问；
-                                --background（或没有终端）时 Windows 弹窗问，macOS / Linux 一律拒绝
+                                连上网关，等云端对话的请求
   agentrouter status            链接、文件夹、访问级别、是否在运行、审计日志
   agentrouter unlink [文件夹]   写了文件夹（. 是当前文件夹）：只取消链接这个文件夹；
                                 不写：在本机删除这台设备的身份
-  agentrouter access <级别> [--folder <路径>]... [--readonly-commands on|off] [--yes]
-  agentrouter screen on|off [--private-app <程序>]...
-                                屏幕功能（目前只有 Windows）：打开后云端对话可以截图、列出窗口、
-                                打开和关闭程序、操作鼠标键盘，不再逐条问你；屏幕上方有提示条。
-                                锁屏和 UAC 上不操作，不往密码框里输入，你在用电脑时 AI 先等；
-                                --private-app 的程序截图时涂黑、不给标题、不让点
-  agentrouter mcp on|off       本机工具（MCP，默认开）：云端对话可以在这台电脑上运行 MCP 服务
-                                （例如 Windows-MCP），它们的工具给云端的 AI 用，不再逐条问你；
-                                只在「只限这些文件夹」和「完全访问」级别；锁屏和 UAC 上不操作；
+  agentrouter access <级别> [--folder <路径>]... [--yes]
+  agentrouter screen on|off     屏幕功能（目前只有 Windows）：打开后默认装上 Windows 操作的本机工具
+                                （Windows-MCP），AI 可以截图、操作鼠标键盘、打开和关闭程序；
+                                屏幕上方有提示条，锁屏和 UAC 上不操作
+  agentrouter mcp on|off       本机工具（MCP，默认开）：云端对话在这台电脑上运行的 MCP 服务
+                                （文件、Git、终端、代码理解，屏幕打开时加 Windows 操作，也可以装别的），
+                                它们的工具给云端的 AI 用，不再逐条问你；只在「只限这些文件夹」和「完全访问」级别；
                                 断开、Ctrl+C 或 off 时全部停止
   agentrouter undo [检查点] [--list] [--yes]
                                 撤销 AI 的改动：不写检查点就撤销当前文件夹最近一轮改动；--list 列出检查点
   agentrouter audit verify      检查审计日志有没有被改过
 
-确认时的选项：y 允许这一次 · a 本对话同类的都允许 · n 拒绝 · d 拒绝并断开
 （agentrouter-device 是同一个程序的旧名字，用法一样。）
 ";
 
@@ -68,7 +58,6 @@ struct Flags {
     name: Option<String>,
     access: Option<Access>,
     folders: Vec<String>,
-    readonly_commands: Option<bool>,
     yes: bool,
     list: bool,
     unattended: bool,
@@ -76,7 +65,6 @@ struct Flags {
     background: bool,
     screen: Option<bool>,
     mcp: Option<bool>,
-    private_apps: Vec<String>,
     positional: Vec<String>,
 }
 
@@ -93,14 +81,6 @@ fn parse(args: &[String]) -> Result<Flags, String> {
                 flags.access = Some(Access::parse(&v).ok_or(format!("不认识的访问级别：{v}"))?);
             }
             "--folder" => flags.folders.push(value("--folder")?),
-            "--readonly-commands" => {
-                let v = value("--readonly-commands")?;
-                flags.readonly_commands = Some(match v.as_str() {
-                    "on" | "true" | "yes" => true,
-                    "off" | "false" | "no" => false,
-                    _ => return Err(format!("--readonly-commands 要写 on 或 off，不是 {v}")),
-                });
-            }
             "--yes" | "-y" => flags.yes = true,
             "--list" => flags.list = true,
             "--unattended" => flags.unattended = true,
@@ -108,7 +88,6 @@ fn parse(args: &[String]) -> Result<Flags, String> {
             "--background" => flags.background = true,
             "--screen" => flags.screen = Some(true),
             "--mcp" => flags.mcp = Some(true),
-            "--private-app" => flags.private_apps.push(value("--private-app")?),
             other if other.starts_with("--") => return Err(format!("不认识的选项：{other}")),
             other => flags.positional.push(other.to_string()),
         }
@@ -250,25 +229,12 @@ fn serve(foreground: bool, _lock: std::fs::File) -> i32 {
         println!("这台电脑还没有链接。在项目文件夹里运行 agentrouter link。");
         return 1;
     }
-    let confirm = if cfg.unattended && cfg.access != Access::Readonly {
-        // Unattended: the operator approved commands when linking this machine (`link --unattended`).
-        consent::preapproved()
-    } else if foreground {
-        prompt::terminal()
-    } else if cfg!(windows) {
-        consent::native()
-    } else {
-        consent::unavailable()
-    };
     let device = Arc::new(Device::new(Options {
         data_dir: data_dir(),
         access: cfg.access,
         folders: cfg.folders.clone(),
-        confirm,
         home: home_dir(),
-        shell: Shell::default_for_os(),
     }));
-    device.set_readonly_commands(cfg.readonly_commands);
     device.set_foreground(foreground);
     log(&format!(
         "starting {} (gateway {}, access {}, {} folder(s), {})",
@@ -285,14 +251,9 @@ fn serve(foreground: bool, _lock: std::fs::File) -> i32 {
     if foreground {
         device.set_echo(Some(Arc::new(|line: &str| println!("  · {line}"))));
         println!(
-            "\nAgentRouter 小助手在前台运行：{}（{}{}）",
+            "\nAgentRouter 小助手在前台运行：{}（{}）",
             cfg.name,
-            cfg.access.label(),
-            if cfg.access == Access::Confirm && cfg.readonly_commands {
-                "，只读命令直接执行"
-            } else {
-                ""
-            }
+            cfg.access.label()
         );
         println!("链接的文件夹：{}", folders_text(&cfg.folders));
         if cfg.screen {
@@ -302,13 +263,12 @@ fn serve(foreground: bool, _lock: std::fs::File) -> i32 {
             println!("{}", mcp_text(&cfg));
         }
         println!(
-            "{}按 Ctrl+C 断开（这次起的命令都会结束）。\n",
+            "{}按 Ctrl+C 断开（本机工具都会停下）。\n",
             match cfg.access {
-                Access::Folders => {
-                    "AI 在这些文件夹里干活不用问你，每轮改动前自动打检查点（agentrouter undo 撤销）；要越界时会在这里问你一次。"
+                Access::Folders | Access::Full => {
+                    "AI 用这台电脑上的本机工具干活，不用问你；会改文件的调用之前自动打检查点（agentrouter undo 撤销）。"
                 }
-                Access::Readonly => "AI 只能读这些文件夹。",
-                _ => "需要你同意的操作会在这里问你。",
+                _ => "这个访问级别下本机工具不运行（agentrouter access folders 打开）。",
             }
         );
     }
@@ -321,10 +281,6 @@ fn serve(foreground: bool, _lock: std::fs::File) -> i32 {
     let mut code = 0;
     while !rt.stop.load(Ordering::SeqCst) && !INTERRUPTED.load(Ordering::SeqCst) {
         std::thread::sleep(Duration::from_millis(200));
-        if device.take_disconnect_request() {
-            println!("\n你选了断开。");
-            break;
-        }
         if rt.revoked_notice.swap(false, Ordering::SeqCst) {
             println!("\n这台设备在网页上被移除了。要再用，运行 agentrouter link 重新链接。");
             code = 1;
@@ -343,7 +299,6 @@ fn serve(foreground: bool, _lock: std::fs::File) -> i32 {
         }
     }
     rt.stop.store(true, Ordering::SeqCst);
-    let running = device.jobs.running();
     device.stop_all("quit");
     let deadline = std::time::Instant::now() + Duration::from_secs(3);
     while !net.is_finished() && std::time::Instant::now() < deadline {
@@ -351,14 +306,7 @@ fn serve(foreground: bool, _lock: std::fs::File) -> i32 {
     }
     log("stopped");
     if foreground {
-        println!(
-            "已断开。{}",
-            if running > 0 {
-                format!("结束了 {running} 个还在运行的命令。")
-            } else {
-                String::new()
-            }
-        );
+        println!("已断开。");
     }
     code
 }
@@ -400,9 +348,6 @@ fn cmd_link(flags: Flags) -> i32 {
         if let Some(a) = flags.access {
             cfg.access = a;
         }
-        if let Some(on) = flags.readonly_commands {
-            cfg.readonly_commands = on;
-        }
         if flags.unattended {
             cfg.unattended = cfg.access != Access::Readonly;
         }
@@ -422,9 +367,6 @@ fn cmd_link(flags: Flags) -> i32 {
     } else {
         cfg.access = flags.access.unwrap_or(Access::Folders);
         cfg.folders = folders;
-        if let Some(on) = flags.readonly_commands {
-            cfg.readonly_commands = on;
-        }
         cfg.paused = false;
         cfg.disconnected = false;
         cfg.unattended = flags.unattended && cfg.access != Access::Readonly;
@@ -474,23 +416,13 @@ fn apply_screen(cfg: &mut Config, flags: &Flags) {
     if let Some(on) = flags.mcp {
         cfg.mcp = on;
     }
-    for app in &flags.private_apps {
-        if !cfg.private_apps.iter().any(|a| a.eq_ignore_ascii_case(app)) {
-            cfg.private_apps.push(app.clone());
-        }
-    }
 }
 
 fn screen_text(cfg: &Config) -> String {
-    let private = if cfg.private_apps.is_empty() {
-        String::new()
-    } else {
-        format!("；不给 AI 看：{}", cfg.private_apps.join("、"))
-    };
     format!(
-        "屏幕功能：{}{private}",
+        "屏幕功能：{}",
         if cfg.screen {
-            "开（截图、窗口、鼠标键盘、打开和关闭程序）"
+            "开（Windows 操作的本机工具：截图、鼠标键盘、打开和关闭程序）"
         } else {
             "关"
         }
@@ -561,15 +493,13 @@ fn cmd_screen(mut flags: Flags) -> i32 {
         return 1;
     }
     audit::Audit::open(&data_dir().join("audit.log")).record(serde_json::json!({
-        "event": "screen", "on": cfg.screen, "privateApps": cfg.private_apps,
+        "event": "screen", "on": cfg.screen,
     }));
     println!("{}", screen_text(&cfg));
-    if cfg.screen && cfg.access == Access::Readonly {
-        println!("访问级别是只读：AI 只能截图和看窗口，不能操作鼠标键盘。");
-    }
-    if cfg.screen && cfg.access == Access::Confirm {
+    if cfg.screen && matches!(cfg.access, Access::Readonly | Access::Confirm) {
         println!(
-            "访问级别是每条都确认：AI 只能截图和看窗口；要让它操作，运行 agentrouter access folders。"
+            "访问级别是{}：本机工具不能运行；运行 agentrouter access folders 后才可以。",
+            cfg.access.label()
         );
     }
     0
@@ -621,7 +551,6 @@ fn cmd_access(flags: Flags) -> i32 {
                 return 2;
             }
         },
-        None if flags.readonly_commands.is_some() => cfg.access,
         None => {
             eprintln!("要写访问级别：readonly、folders、confirm 或 full");
             return 2;
@@ -648,20 +577,15 @@ fn cmd_access(flags: Flags) -> i32 {
     }
     cfg.access = level;
     cfg.folders = folders;
-    if let Some(on) = flags.readonly_commands {
-        cfg.readonly_commands = on;
-    }
     match cfg.save() {
         Ok(()) => {
             audit::Audit::open(&data_dir().join("audit.log")).record(serde_json::json!({
                 "event": "access", "access": cfg.access.as_str(), "folders": cfg.folders,
-                "readonlyCommands": cfg.readonly_commands,
             }));
             println!(
-                "访问级别：{}；文件夹：{}；只读命令直接执行：{}",
+                "访问级别：{}；文件夹：{}",
                 cfg.access.label(),
-                folders_text(&cfg.folders),
-                if cfg.readonly_commands { "开" } else { "关" }
+                folders_text(&cfg.folders)
             );
             0
         }
@@ -686,21 +610,12 @@ fn status() -> i32 {
     println!("网关：{}", cfg.gateway);
     println!("名字：{}", cfg.name);
     println!("访问级别：{}", cfg.access.label());
-    if cfg.access == Access::Confirm {
-        println!(
-            "只读命令直接执行：{}",
-            if cfg.readonly_commands { "开" } else { "关" }
-        );
-    }
     println!("文件夹：{}", folders_text(&cfg.folders));
     if cfg.paused {
         println!("已暂停");
     }
     if cfg.disconnected {
         println!("已断开（在托盘里点「重新连接」）");
-    }
-    if cfg.unattended {
-        println!("无人值守：命令不逐条确认（链接时由本机管理员预先同意）");
     }
     println!("{}", screen_text(&cfg));
     println!("{}", mcp_text(&cfg));

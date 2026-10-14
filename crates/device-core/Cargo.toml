@@ -1,6 +1,6 @@
 [package]
 name = "agentrouter-device-core"
-description = "AgentRouter linked device: protocol checks, local gate, jobs, audit log, key store and the gateway connection."
+description = "AgentRouter linked device: protocol checks, local gate, MCP host, checkpoints, audit log, key store and the gateway connection."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

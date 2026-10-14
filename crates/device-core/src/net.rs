@@ -521,10 +521,7 @@ fn on_frame(
             }
         }
         "health" => {
-            let _ = tx.send(
-                json!({"id": id, "value": {"ok": true, "jobs": rt.device.jobs.running()}})
-                    .to_string(),
-            );
+            let _ = tx.send(json!({"id": id, "value": {"ok": true, "jobs": 0}}).to_string());
         }
         "events" if frame.get("handle").and_then(Value::as_str) == Some("console") => {
             rt.device.set_console(Some((tx.clone(), id)));
@@ -575,7 +572,6 @@ pub fn watch_config(rt: Arc<Runtime>) {
         let mut cfg = rt.config.lock().unwrap();
         let level_changed = fresh.access != cfg.access || fresh.folders != cfg.folders;
         let gateway_changed = fresh.gateway != cfg.gateway;
-        rt.device.set_readonly_commands(fresh.readonly_commands);
         let screen_changed = fresh.screen != cfg.screen;
         rt.device.set_screen(fresh.screen, &fresh.private_apps);
         let mcp_changed = fresh.mcp != cfg.mcp;

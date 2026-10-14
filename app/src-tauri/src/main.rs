@@ -10,9 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use agentrouter_device::config::Config;
-use agentrouter_device::consent;
 use agentrouter_device::device::{Device, Options};
-use agentrouter_device::jobs::Shell;
 use agentrouter_device::net::{self, Runtime};
 use agentrouter_device::util::{data_dir, home_dir, log};
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
@@ -35,9 +33,7 @@ fn main() {
         data_dir: data_dir(),
         access: cfg.access,
         folders: cfg.folders.clone(),
-        confirm: consent::native(),
         home: home_dir(),
-        shell: Shell::default_for_os(),
     }));
     log(&format!(
         "desktop {} starting (web {}, gateway {}, access {})",
