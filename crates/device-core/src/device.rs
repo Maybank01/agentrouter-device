@@ -147,8 +147,8 @@ impl Device {
     }
 
     /// The screen switch (`agentrouter screen on`).
-    pub fn set_screen(&self, on: bool, private_apps: &[String]) {
-        self.screen.set(on, private_apps);
+    pub fn set_screen(&self, on: bool) {
+        self.screen.set(on);
     }
 
     /// Local MCP servers (`agentrouter mcp on`): run the servers the cloud installs here.

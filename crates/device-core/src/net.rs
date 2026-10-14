@@ -256,7 +256,7 @@ pub struct Runtime {
 
 impl Runtime {
     pub fn new(device: Arc<Device>, config: Config) -> Arc<Runtime> {
-        device.set_screen(config.screen, &config.private_apps);
+        device.set_screen(config.screen);
         device.set_mcp(config.mcp);
         Arc::new(Runtime {
             device,
@@ -573,7 +573,7 @@ pub fn watch_config(rt: Arc<Runtime>) {
         let level_changed = fresh.access != cfg.access || fresh.folders != cfg.folders;
         let gateway_changed = fresh.gateway != cfg.gateway;
         let screen_changed = fresh.screen != cfg.screen;
-        rt.device.set_screen(fresh.screen, &fresh.private_apps);
+        rt.device.set_screen(fresh.screen);
         let mcp_changed = fresh.mcp != cfg.mcp;
         rt.device.set_mcp(fresh.mcp);
         *cfg = fresh;
