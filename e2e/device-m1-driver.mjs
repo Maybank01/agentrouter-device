@@ -117,7 +117,8 @@ async function turn(ags, maxMs) {
 }
 
 load();
-await token();
+// Dev may be redeploying: a few tries before giving up.
+for (let i = 0; ; i++) { try { await token(); break; } catch (e) { if (i >= 20) throw e; log(String(e.message)); await sleep(30_000); } }
 log("session ok");
 /** The newest code the runner published (fresh = issued under 9 minutes ago). */
 async function newestCode() {
@@ -194,16 +195,19 @@ async function settle(maxMs) {
   let quietSince = Date.now(); let seen = "";
   while (Date.now() - start < maxMs) {
     const s = await status(ags);
-    const t = await http("GET", `/api/control/v1/personal/chat/conversations/${ags}/tasks`);
-    const tasks = Array.isArray(t.data?.data?.tasks) ? t.data.data.tasks : [];
-    const busy = tasks.filter((x) => !["done", "failed", "rejected", "needs_input", "cancelled", "canceled", "merged", "stopped"].includes(String(x.state)));
     const m = await http("GET", `/api/control/agent/sessions/${ags}/ui-messages`);
-    const n = JSON.stringify(m.data?.data ?? null).length;
-    const now = `${s}|${busy.map((x) => `${x.ref ?? x.id}:${x.state}`).join(",")}|${n}`;
-    if (now !== seen) { log(`settle: ${s}; tasks ${tasks.map((x) => `${x.title ?? x.ref ?? x.id}=${x.state}`).join(", ") || "none"}`); seen = now; quietSince = Date.now(); }
-    // The tree may not be readable by this session id (404); a dispatched sub-Agent then gets a longer quiet window.
-    const quiet = (t.status === 404 && /task_spawn/u.test(JSON.stringify(m.data?.data ?? null)) ? Math.max(SETTLE, 240) : SETTLE) * 1000;
-    if (!["running", "starting", "queued"].includes(s) && !busy.length && Date.now() - quietSince > quiet) return s;
+    const parts = (Array.isArray(m.data?.data) ? m.data.data : m.data?.data?.messages ?? []).flatMap((x) => (Array.isArray(x.parts) ? x.parts : []));
+    // Sub-Agents: every dispatched key collected (task_collect) before the turn counts as finished.
+    const spawned = new Set(); const collected = new Set();
+    for (const p of parts) {
+      const name = String(p.toolName ?? p.type ?? "");
+      if (/task_spawn/u.test(name)) for (const t of Array.isArray(p.input?.tasks) ? p.input.tasks : []) spawned.add(t.key);
+      if (/task_collect/u.test(name) && p.input?.key) collected.add(p.input.key);
+    }
+    const waiting = [...spawned].filter((k) => !collected.has(k));
+    const now = `${s}|${waiting.join(",")}|${parts.length}`;
+    if (now !== seen) { log(`settle: ${s}; parts ${parts.length}; sub-Agents not collected: ${waiting.join(", ") || "none"}`); seen = now; quietSince = Date.now(); }
+    if (!["running", "starting", "queued"].includes(s) && !waiting.length && Date.now() - quietSince > SETTLE * 1000) return s;
     await sleep(10_000);
   }
   return "timeout";
