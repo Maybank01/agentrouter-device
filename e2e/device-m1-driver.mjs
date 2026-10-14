@@ -185,7 +185,30 @@ const prompt = process.env.PROMPT ? process.env.PROMPT : SCREEN
     + "请在那台电脑上：先看看这两个文件，修好 calc.js 里的错误（不要改测试），在那个文件夹里运行 npm test 确认通过，然后把这个修改提交到 git（提交信息写“fix add”）。告诉我测试结果和提交号。";
 r = await patient("POST", `/api/control/agent/sessions/${ags}/messages`, { bearer: true, json: { content: prompt }, timeoutMs: 120_000 });
 log(`task message: HTTP ${r.status}`);
-const end = await turn(ags, 15 * 60_000);
+let end = await turn(ags, 15 * 60_000);
+// One turn is not the whole answer: a context note can be answered first, and sub-Agents report back in later turns.
+// Settled = the conversation and every task of its tree idle, with no new message, for SETTLE_SECONDS.
+const SETTLE = Number(process.env.SETTLE_SECONDS || 60);
+async function settle(maxMs) {
+  const start = Date.now();
+  let quietSince = Date.now(); let seen = "";
+  while (Date.now() - start < maxMs) {
+    const s = await status(ags);
+    const t = await http("GET", `/api/control/v1/personal/chat/conversations/${ags}/tasks`);
+    const tasks = Array.isArray(t.data?.data?.tasks) ? t.data.data.tasks : [];
+    const busy = tasks.filter((x) => !["done", "failed", "rejected", "needs_input", "cancelled", "canceled", "merged", "stopped"].includes(String(x.state)));
+    const m = await http("GET", `/api/control/agent/sessions/${ags}/ui-messages`);
+    const n = JSON.stringify(m.data?.data ?? null).length;
+    const now = `${s}|${busy.map((x) => `${x.ref ?? x.id}:${x.state}`).join(",")}|${n}`;
+    if (now !== seen) { log(`settle: ${s}; tasks ${tasks.map((x) => `${x.title ?? x.ref ?? x.id}=${x.state}`).join(", ") || "none"}`); seen = now; quietSince = Date.now(); }
+    // The tree may not be readable by this session id (404); a dispatched sub-Agent then gets a longer quiet window.
+    const quiet = (t.status === 404 && /task_spawn/u.test(JSON.stringify(m.data?.data ?? null)) ? Math.max(SETTLE, 240) : SETTLE) * 1000;
+    if (!["running", "starting", "queued"].includes(s) && !busy.length && Date.now() - quietSince > quiet) return s;
+    await sleep(10_000);
+  }
+  return "timeout";
+}
+end = await settle(25 * 60_000);
 log(`task turn: ${end}`);
 r = await http("GET", `/api/control/agent/sessions/${ags}/ui-messages`);
 const msgs = Array.isArray(r.data?.data) ? r.data.data : Array.isArray(r.data?.data?.messages) ? r.data.data.messages : [];
