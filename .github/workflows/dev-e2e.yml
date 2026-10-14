@@ -2,28 +2,29 @@ name: Dev end-to-end
 
 # Links a throwaway GitHub-hosted Windows machine to a Dev test account (cap-test-*), stays online
 # while a Dev conversation uses it, and ends when the device is removed on the web (or after 60 min).
-# Scenario m1 (the default): the linked folder is a small git repository with a failing test
-# (calc.js); a cloud Codex conversation fixes it through edit_file / apply_patch and runs `npm test`.
-# The last step checks that the tests now pass, that the change came through the coding actions,
-# that a checkpoint was taken, and that nothing asked for approval.
+# The device is only the link (LINKED-DEVICES §23.8): every scenario works through the default local MCP servers.
 # The runner only runs the device. The web side (confirming the pairing code, the conversation,
 # removing the device) runs on the ops host under the shared test-account session lock
 # (agentrouter-ops e2e/README.md): the pairing code is published as the commit status `device-e2e/pairing-code`, and
 # `PAIR_CODE=<code> session-lock.sh dev node device-m1-driver.mjs` takes it from there. No session
-# ever reaches GitHub. Started by pushing to an e2e/* branch.
-# Scenario mcp (an e2e/* branch with "mcp" in its name): the default local tools bundle (LINKED-DEVICES §23,
-# DEVICE-PROTOCOL §18). The conversation commits a fix through the git MCP server; the runner breaks the
-# filesystem server's npx cache entry once while it runs. The last step checks that the catalog packages
-# arrived as checked files (mcp_package), the commit, that the broken entry was cleared and the server came
-# back, and that serena's .serena/ stays out of git.
+# ever reaches GitHub. Started by pushing to an e2e/* branch; the branch name picks the scenario:
+# - mcp-code (the default): the linked folder is a small git repository with a failing test (calc.js); the
+#   conversation fixes it, runs the tests and commits, all through local MCP servers.
+# - mcp-a: the 10-29 A scenario with the screen on (launch Notepad, screenshot, click and type, screenshot,
+#   record a GIF into a 作品, close).
+# - mcp: the bundle itself. The conversation commits a fix through the git MCP server; the runner breaks the
+#   filesystem server's npx cache entry once while it runs. The last step checks that the catalog packages
+#   arrived as checked files (mcp_package), the commit, that the broken entry was cleared and the server came
+#   back, and that serena's .serena/ stays out of git.
+# mcp-a and mcp-code check the audit log too: the work went through mcp_call only, and nothing asked.
 on:
   push:
     branches: ["e2e/**"]
   workflow_dispatch:
     inputs:
       scenario:
-        description: "m1 = cloud Codex edits the sample repo and its tests must pass; mcp = local tools bundle; none = just stay online"
-        default: m1
+        description: "mcp-code = fix, test and commit the sample repo; mcp-a = the screen scenario; mcp = the bundle checks; none = just stay online"
+        default: mcp-code
 
 permissions:
   contents: read
@@ -31,7 +32,7 @@ permissions:
 
 env:
   WEB: https://edge-d53hmn9blslvhcuff8rjsdvt.agentrouter.top
-  SCENARIO: ${{ inputs.scenario || (contains(github.ref_name, 'mcp') && 'mcp') || 'm1' }}
+  SCENARIO: ${{ inputs.scenario || (contains(github.ref_name, 'mcp-a') && 'mcp-a') || (contains(github.ref_name, 'mcp-code') && 'mcp-code') || (contains(github.ref_name, 'mcp') && 'mcp') || 'mcp-code' }}
 
 jobs:
   device:
@@ -43,7 +44,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --locked -p agentrouter-device-cli
       - name: uv (the bundle's Python servers run through uvx)
-        if: env.SCENARIO == 'mcp'
         uses: astral-sh/setup-uv@v10.3.0
       - name: Link (folders, one sample repository, unattended; the ops host confirms the code)
         shell: pwsh
@@ -70,12 +70,14 @@ jobs:
           "SAMPLE=$scratch" >> $env:GITHUB_ENV
           $exe = Resolve-Path target/release/agentrouter.exe
           $out = Join-Path $root 'link.out'
+          $extra = @()
+          if ($env:SCENARIO -eq 'mcp-a') { $extra = @('--screen') }
           # Hand each code to the ops host as a commit status (the code is in this public log anyway and
           # lives 10 minutes); the ops host may wait for the shared session lock, so a fresh code follows
           # when one expires. Everything stays in this step: a step's processes end with the step.
           for ($attempt = 1; $attempt -le 3; $attempt++) {
             Remove-Item $out, "$out.err" -ErrorAction SilentlyContinue
-            $link = Start-Process -FilePath $exe -ArgumentList @('link', '--access', 'folders', '--folder', $scratch, '--name', 'CI-e2e', '--unattended', '--yes', '--no-run') -RedirectStandardOutput $out -RedirectStandardError "$out.err" -NoNewWindow -PassThru
+            $link = Start-Process -FilePath $exe -ArgumentList (@('link', '--access', 'folders', '--folder', $scratch, '--name', 'CI-e2e', '--unattended', '--yes', '--no-run') + $extra) -RedirectStandardOutput $out -RedirectStandardError "$out.err" -NoNewWindow -PassThru
             $code = $null
             for ($i = 0; $i -lt 60 -and -not $code; $i++) {
               Start-Sleep -Seconds 1
@@ -130,27 +132,6 @@ jobs:
           }
           Stop-Process -Id $run.Id -ErrorAction SilentlyContinue
           & $exe status
-      - name: M1 result (tests pass, changed through the coding actions, checkpointed)
-        if: env.SCENARIO == 'm1'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          Push-Location $env:SAMPLE
-          node --test
-          if ($LASTEXITCODE -ne 0) { throw 'the sample tests still fail' }
-          Pop-Location
-          $entries = Get-Content -Encoding utf8 (Join-Path $env:AGENTROUTER_DEVICE_HOME 'audit.log') | ForEach-Object { $_ | ConvertFrom-Json }
-          $edits = @($entries | Where-Object { $_.action -in @('edit_file', 'apply_patch') -and $_.outcome -eq 'ok' })
-          $runs = @($entries | Where-Object { $_.action -eq 'exec' -and $_.outcome -eq 'ok' })
-          $asked = @($entries | Where-Object { $_.event -eq 'approval' })
-          "edit_file/apply_patch: $($edits.Count), exec: $($runs.Count), approvals: $($asked.Count)"
-          if ($edits.Count -lt 1) { throw 'calc.js was not changed through edit_file / apply_patch' }
-          if ($runs.Count -lt 1) { throw 'the conversation did not run the tests' }
-          $refs = git -C $env:SAMPLE for-each-ref refs/agentrouter/cp
-          "checkpoints: $(@($refs).Count)"
-          if (-not $refs) { throw 'no checkpoint was taken before the change' }
-          $exe = Resolve-Path target/release/agentrouter.exe
-          & $exe undo --list
       - name: MCP result (checked packages, the commit through git MCP, npx self-heal, .serena kept out)
         if: env.SCENARIO == 'mcp'
         shell: pwsh
@@ -176,6 +157,44 @@ jobs:
           $dirty = git -C $env:SAMPLE status --porcelain --untracked-files=all
           "git status: $dirty"
           if ($dirty -match '\.serena') { throw '.serena shows up in git status' }
+      - name: Result (the work went through the local MCP servers only)
+        if: env.SCENARIO == 'mcp-a' || env.SCENARIO == 'mcp-code'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $entries = Get-Content -Encoding utf8 (Join-Path $env:AGENTROUTER_DEVICE_HOME 'audit.log') | ForEach-Object { $_ | ConvertFrom-Json }
+          $calls = @($entries | Where-Object { $_.action -eq 'mcp_call' })
+          $calls | ForEach-Object { "mcp_call $($_.text): $($_.outcome)" }
+          # A person with several computers gets per-device server names (files_4348): compare by the bundle name.
+          $ok = @($calls | Where-Object { $_.outcome -eq 'ok' } | ForEach-Object { "$($_.text)" -replace '^([a-z_]+?)_[0-9a-f]{4,}\.', '$1.' })
+          $builtin = @($entries | Where-Object { $_.action -in @('exec', 'job', 'read_file', 'write_file', 'edit_file', 'apply_patch', 'search', 'read_files', 'list_dir', 'screenshot', 'windows', 'gui', 'app', 'screen_record') })
+          "built-in actions asked for: $($builtin.Count)"
+          if ($builtin.Count) { $builtin | ForEach-Object { "  $($_.action) $($_.text): $($_.outcome)" }; throw 'a built-in device action was used' }
+          $asked = @($entries | Where-Object { $_.event -eq 'approval' })
+          if ($asked.Count) { throw 'something asked for approval' }
+          $has = { param($pattern) [bool]($ok | Where-Object { $_ -match $pattern }) }
+          if ($env:SCENARIO -eq 'mcp-a') {
+            foreach ($need in @('^windows\.App$', '^windows\.(Screenshot|Snapshot)$', '^windows\.Click$', '^windows\.Type$')) { if (-not (& $has $need)) { throw "no successful $need" } }
+            if (@($ok | Where-Object { $_ -match '^windows\.(Screenshot|Snapshot)$' }).Count -lt 2) { throw 'fewer than two looks at the screen' }
+            if (-not ((& $has '^windows\.(Process|Shortcut)$') -or (& $has '^desktop_commander\.(start_process|kill_process)$'))) { throw 'notepad was not closed through a local tool' }
+            if (Get-Process notepad -ErrorAction SilentlyContinue) { throw 'notepad is still running' }
+            $gifs = @(Get-ChildItem -Recurse -Filter *.gif $env:SAMPLE -ErrorAction SilentlyContinue)
+            $gifs | ForEach-Object { "recording: $($_.FullName) $($_.Length) bytes" }
+            if (-not $gifs) { throw 'no GIF recording in the linked folder' }
+            if (-not (& $has '^files\.read_media_file$|^desktop_commander\.read_file$')) { throw 'the recording was not read back for the cloud' }
+          } else {
+            Push-Location $env:SAMPLE
+            node --test
+            if ($LASTEXITCODE -ne 0) { throw 'the sample tests still fail' }
+            Pop-Location
+            if (-not (& $has '^(files\.(edit_file|write_file)|desktop_commander\.(edit_block|write_file)|serena\..+)$')) { throw 'calc.js was not changed through a local tool' }
+            # The tests run on the computer through a local server: DesktopCommander's process tools, or serena's shell when it was still starting.
+            if (-not (& $has '^desktop_commander\.(start_process|interact_with_process)$|^serena\.(serena_repl|execute_shell_command)$')) { throw 'the tests were not run through a local server' }
+            git -C $env:SAMPLE log --format='%h %s' -3
+            if (@(git -C $env:SAMPLE rev-list HEAD).Count -lt 2) { throw 'no commit was made' }
+            $refs = git -C $env:SAMPLE for-each-ref refs/agentrouter/cp
+            "checkpoints: $(@($refs).Count)"
+          }
       - name: Audit log
         if: always()
         shell: pwsh

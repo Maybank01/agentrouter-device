@@ -1,10 +1,10 @@
-// Device M1 end-to-end: the conversation side, run on the ops host under the shared-session lock:
+// Device end-to-end: the conversation side, run on the ops host under the shared-session lock:
 //   E2E_SHA=<commit of the e2e run> /root/agentrouter-ops/session-lock.sh dev node device-m1-driver.mjs
 // Takes the newest pairing code the Windows runner published as the commit status
 // `device-e2e/pairing-code` (the runner issues a fresh one every 10 minutes, so waiting for the
-// lock does not matter), confirms it, waits for the device, starts a Codex
-// conversation, grants it the device, asks it to fix the sample repo and run its tests, waits for the
-// turn, prints the outcome, and removes the device (which ends the runner's job). Never prints cookies
+// lock does not matter), confirms it, waits for the device, starts a conversation (KERNEL, MODEL), grants it the
+// device, sends the task (fix, test and commit the sample repo; TASK=screen: the screen scenario), waits for the
+// turn (HOLD_SECONDS longer for sub-Agents), prints the outcome, and removes the device (which ends the runner's job). Never prints cookies
 // or tokens; writes the rotated session back after every refresh (e2e/README.md).
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 
@@ -117,7 +117,8 @@ async function turn(ags, maxMs) {
 }
 
 load();
-await token();
+// Dev may be redeploying: a few tries before giving up.
+for (let i = 0; ; i++) { try { await token(); break; } catch (e) { if (i >= 20) throw e; log(String(e.message)); await sleep(30_000); } }
 log("session ok");
 /** The newest code the runner published (fresh = issued under 9 minutes ago). */
 async function newestCode() {
@@ -173,16 +174,45 @@ if (!ags) process.exit(1);
 log(`first turn: ${await turn(ags, 5 * 60_000)}`);
 r = await http("PUT", `/api/control/personal/devices/${device.id}/sessions/${ags}`, { json: { actions: ["exec", "read", "write"], granted: true } });
 log(`grant: HTTP ${r.status}`);
-// TASK=screen (CAPABILITIES-1029 A): a GUI program, a screenshot, a click and typing, a look at the result, then close it.
+// TASK=screen (CAPABILITIES-1029 A, scenario mcp-a): a GUI program, a screenshot, a click and typing, a look at the result,
+// a GIF recording into a 作品, then close it. Otherwise (mcp-code): fix, test and commit the sample repository. The prompts
+// name no tools: the conversation finds them among the computer's local MCP servers (LINKED-DEVICES.md §23.8).
 const SCREEN = process.env.TASK === "screen";
 const prompt = process.env.PROMPT ? process.env.PROMPT : SCREEN
-  ? `我链接了一台 Windows 电脑（设备名 ${NAME}），屏幕功能开着。请在那台电脑上：用 app 打开记事本（notepad），用 screenshot 截一张记事本窗口的图，`
-    + "用 gui 点一下记事本的编辑区，输入“AgentRouter 测试 123”，再截一张图确认文字确实出现在记事本里，然后用 app 关掉记事本（force:true，不保存）。最后告诉我第二张图里你看到了什么。"
-  : `我链接了一台电脑（设备名 ${NAME}），它链接的文件夹是一个小的 Node 项目（calc.js 和 calc.test.js），现在 npm test 是失败的。`
-    + "请在那台设备上：先看看这两个文件，用 edit_file 或 apply_patch 修好 calc.js 里的错误（不要改测试），然后在那个文件夹里运行 npm test，告诉我结果。";
+  ? `我链接了一台 Windows 电脑（设备名 ${NAME}），屏幕功能开着。请在那台电脑上：打开记事本，截一张图看看记事本窗口，点一下记事本的编辑区，`
+    + "输入“AgentRouter MCP 测试 123”，再截一张图确认文字确实出现在记事本里；然后录一段 5 秒左右的屏幕 GIF（存到那台电脑链接的文件夹里），"
+    + "再关掉记事本（不保存）。最后把这个 GIF 放进一个新作品《MCP 录屏测试》，告诉我第二张图里看到了什么，以及 GIF 在作品里的位置。"
+  : `我链接了一台电脑（设备名 ${NAME}），它链接的文件夹是一个 git 仓库（小 Node 项目：calc.js 和 calc.test.js），现在 npm test 是失败的。`
+    + "请在那台电脑上：先看看这两个文件，修好 calc.js 里的错误（不要改测试），在那个文件夹里运行 npm test 确认通过，然后把这个修改提交到 git（提交信息写“fix add”）。告诉我测试结果和提交号。";
 r = await patient("POST", `/api/control/agent/sessions/${ags}/messages`, { bearer: true, json: { content: prompt }, timeoutMs: 120_000 });
 log(`task message: HTTP ${r.status}`);
-const end = await turn(ags, 15 * 60_000);
+let end = await turn(ags, 15 * 60_000);
+// One turn is not the whole answer: a context note can be answered first, and sub-Agents report back in later turns.
+// Settled = the conversation and every task of its tree idle, with no new message, for SETTLE_SECONDS.
+const SETTLE = Number(process.env.SETTLE_SECONDS || 60);
+async function settle(maxMs) {
+  const start = Date.now();
+  let quietSince = Date.now(); let seen = "";
+  while (Date.now() - start < maxMs) {
+    const s = await status(ags);
+    const m = await http("GET", `/api/control/agent/sessions/${ags}/ui-messages`);
+    const parts = (Array.isArray(m.data?.data) ? m.data.data : m.data?.data?.messages ?? []).flatMap((x) => (Array.isArray(x.parts) ? x.parts : []));
+    // Sub-Agents: every dispatched key collected (task_collect) before the turn counts as finished.
+    const spawned = new Set(); const collected = new Set();
+    for (const p of parts) {
+      const name = String(p.toolName ?? p.type ?? "");
+      if (/task_spawn/u.test(name)) for (const t of Array.isArray(p.input?.tasks) ? p.input.tasks : []) spawned.add(t.key);
+      if (/task_collect/u.test(name) && p.input?.key) collected.add(p.input.key);
+    }
+    const waiting = [...spawned].filter((k) => !collected.has(k));
+    const now = `${s}|${waiting.join(",")}|${parts.length}`;
+    if (now !== seen) { log(`settle: ${s}; parts ${parts.length}; sub-Agents not collected: ${waiting.join(", ") || "none"}`); seen = now; quietSince = Date.now(); }
+    if (!["running", "starting", "queued"].includes(s) && !waiting.length && Date.now() - quietSince > SETTLE * 1000) return s;
+    await sleep(10_000);
+  }
+  return "timeout";
+}
+end = await settle(25 * 60_000);
 log(`task turn: ${end}`);
 r = await http("GET", `/api/control/agent/sessions/${ags}/ui-messages`);
 const msgs = Array.isArray(r.data?.data) ? r.data.data : Array.isArray(r.data?.data?.messages) ? r.data.data.messages : [];

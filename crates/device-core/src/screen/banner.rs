@@ -1,7 +1,7 @@
-//! 「正在被控制」 (LINKED-DEVICES.md §17, minimal): while a conversation looks at or acts on the screen,
+//! 「正在被控制」 (LINKED-DEVICES.md §17, minimal): while a conversation's call to a local MCP server runs,
 //! a small always-on-top bar at the top of the primary display says so and what was done last. It lets
 //! clicks through, never takes focus, and is left out of screenshots (display affinity), so the AI
-//! neither sees nor clicks it. It hides itself a while after the last action.
+//! neither sees nor clicks it. It hides itself a while after the last call.
 
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Mutex, Once};
@@ -23,7 +23,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 use crate::util::now_ms;
 
-/// How long the bar stays after the last screen action.
+/// How long the bar stays after the last call.
 const SHOW_MS: i64 = 20_000;
 const WIDTH: i32 = 560;
 const HEIGHT: i32 = 30;
@@ -51,20 +51,6 @@ pub fn note(text: &str) {
             InvalidateRect(hwnd as HWND, std::ptr::null(), 1);
         }
     }
-}
-
-/// The bar's rectangle in physical pixels, when it is showing (actions never land on it).
-pub fn area() -> Option<super::Rect> {
-    if !SHOWN.load(Ordering::SeqCst) {
-        return None;
-    }
-    let primary = super::win::displays().into_iter().find(|d| d.primary)?;
-    Some(super::Rect {
-        x: primary.rect.x + (primary.rect.width - WIDTH as i64) / 2,
-        y: primary.rect.y,
-        width: WIDTH as i64,
-        height: HEIGHT as i64,
-    })
 }
 
 unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
