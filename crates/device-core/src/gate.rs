@@ -137,7 +137,7 @@ fn lexical(raw: &str) -> PathBuf {
 }
 
 /// The real location: the nearest existing ancestor resolved (links followed), then the rest.
-fn real_location(path: &Path) -> Result<PathBuf, DeviceError> {
+pub(crate) fn real_location(path: &Path) -> Result<PathBuf, DeviceError> {
     let mut existing = path.to_path_buf();
     let mut rest: Vec<std::ffi::OsString> = Vec::new();
     loop {

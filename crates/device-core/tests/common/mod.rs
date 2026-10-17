@@ -69,11 +69,32 @@ pub fn temp_dir(tag: &str) -> PathBuf {
 }
 
 pub fn device(data: &Path, access: Access, folders: &[&Path], cp: &ControlPlane) -> Device {
+    device_with(data, access, folders, cp, false)
+}
+
+/// The same device with the workspace switch on (M0: `workspace_ensure`/`workspace_list`).
+pub fn device_workspaces(
+    data: &Path,
+    access: Access,
+    folders: &[&Path],
+    cp: &ControlPlane,
+) -> Device {
+    device_with(data, access, folders, cp, true)
+}
+
+fn device_with(
+    data: &Path,
+    access: Access,
+    folders: &[&Path],
+    cp: &ControlPlane,
+    workspaces: bool,
+) -> Device {
     let device = Device::new(Options {
         data_dir: data.to_path_buf(),
         access,
         folders: folders.iter().map(|f| f.display().to_string()).collect(),
         home: data.to_path_buf(),
+        workspaces,
     });
     device.set_identity(Some(Identity {
         key: DeviceKey::generate(),

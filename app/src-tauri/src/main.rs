@@ -34,6 +34,7 @@ fn main() {
         access: cfg.access,
         folders: cfg.folders.clone(),
         home: home_dir(),
+        workspaces: cfg.workspaces,
     }));
     log(&format!(
         "desktop {} starting (web {}, gateway {}, access {})",

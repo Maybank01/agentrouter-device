@@ -14,7 +14,7 @@ use agentrouter_device::config::{Access, Config};
 use agentrouter_device::device::{Device, Options};
 use agentrouter_device::net::{self, Conn, Runtime};
 use agentrouter_device::util::{data_dir, home_dir, log};
-use agentrouter_device::{audit, checkpoint, gate, keystore, link};
+use agentrouter_device::{audit, checkpoint, gate, keystore, link, workspace};
 
 /// Set by Ctrl+C (one handler for the whole run: pairing, then serving).
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
@@ -45,6 +45,11 @@ const USAGE: &str = "AgentRouter 小助手（agentrouter）：把这台电脑链
                                 （文件、Git、终端、代码理解，屏幕打开时加 Windows 操作，也可以装别的），
                                 它们的工具给云端的 AI 用，不再逐条问你；只在「只限这些文件夹」和「完全访问」级别；
                                 断开、Ctrl+C 或 off 时全部停止
+  agentrouter workspace init [--root <路径>] [--yes]
+                                建工作区（默认 %USERPROFILE%\\Workspaces）并打开：AI 的项目都放在这里；
+                                游戏目录只能作只读引用/部署目标，不能当项目
+  agentrouter workspace project add <名字> | list
+                                在工作区里建一个项目（目录在根下面）/ 列出项目和位置
   agentrouter undo [检查点] [--list] [--yes]
                                 撤销 AI 的改动：不写检查点就撤销当前文件夹最近一轮改动；--list 列出检查点
   agentrouter audit verify      检查审计日志有没有被改过
@@ -65,6 +70,7 @@ struct Flags {
     background: bool,
     screen: Option<bool>,
     mcp: Option<bool>,
+    root: Option<String>,
     positional: Vec<String>,
 }
 
@@ -88,6 +94,7 @@ fn parse(args: &[String]) -> Result<Flags, String> {
             "--background" => flags.background = true,
             "--screen" => flags.screen = Some(true),
             "--mcp" => flags.mcp = Some(true),
+            "--root" => flags.root = Some(value("--root")?),
             other if other.starts_with("--") => return Err(format!("不认识的选项：{other}")),
             other => flags.positional.push(other.to_string()),
         }
@@ -156,6 +163,7 @@ pub fn main() {
         "undo" => undo(flags),
         "screen" => cmd_screen(flags),
         "mcp" => cmd_mcp(flags),
+        "workspace" => cmd_workspace(flags),
         "audit" => match audit::verify(&data_dir().join("audit.log")) {
             Ok(n) => {
                 println!("审计日志完好，共 {n} 条。");
@@ -234,6 +242,7 @@ fn serve(foreground: bool, _lock: std::fs::File) -> i32 {
         access: cfg.access,
         folders: cfg.folders.clone(),
         home: home_dir(),
+        workspaces: cfg.workspaces,
     }));
     device.set_foreground(foreground);
     log(&format!(
@@ -440,6 +449,31 @@ fn mcp_text(cfg: &Config) -> String {
     )
 }
 
+/// The workspace line for `status`: switch, root, projects.
+fn workspace_text(cfg: &Config) -> String {
+    let switch = if cfg.workspaces {
+        "开"
+    } else {
+        "关（agentrouter workspace init）"
+    };
+    match workspace::listing(&data_dir(), &home_dir()) {
+        Ok(registry) => format!(
+            "{}（根 {}，{} 个项目）",
+            switch,
+            registry.root,
+            registry.projects.len()
+        ),
+        Err(e) => format!("{}（登记文件有问题：{}）", switch, e.code),
+    }
+}
+
+fn print_device_error(e: &agentrouter_device::protocol::DeviceError) {
+    eprintln!("{}：{}", e.code, e.message);
+    if let Some(next) = &e.next {
+        eprintln!("{next}");
+    }
+}
+
 /// `agentrouter mcp on|off`: let conversations run local MCP servers here (LINKED-DEVICES.md §23).
 fn cmd_mcp(mut flags: Flags) -> i32 {
     let mut cfg = Config::load();
@@ -619,6 +653,7 @@ fn status() -> i32 {
     }
     println!("{}", screen_text(&cfg));
     println!("{}", mcp_text(&cfg));
+    println!("工作区：{}", workspace_text(&cfg));
     let log = data_dir().join("audit.log");
     match audit::verify(&log) {
         Ok(n) => println!("审计日志：{}（{n} 条，完好）", log.display()),
@@ -749,6 +784,138 @@ fn undo(flags: Flags) -> i32 {
         }
         Err(e) => {
             eprintln!("撤销没有完成：{e}");
+            1
+        }
+    }
+}
+
+/// `agentrouter workspace ...`: the workspace root and the project registry (workspace spec §1–3; M0).
+fn cmd_workspace(flags: Flags) -> i32 {
+    let mut cfg = Config::load();
+    let data = data_dir();
+    let home = home_dir();
+    match flags.positional.first().map(String::as_str) {
+        Some("init") => {
+            let before = match workspace::load(&data) {
+                Ok(registry) => registry,
+                Err(e) => {
+                    print_device_error(&e);
+                    return 1;
+                }
+            };
+            if let Some(raw) = flags.root.as_deref()
+                && !before.projects.is_empty()
+                && !before.root.is_empty()
+            {
+                let wanted = std::fs::canonicalize(raw)
+                    .map(|p| gate::display(&p))
+                    .unwrap_or_else(|_| raw.trim().to_string());
+                if !same_folder(&before.root, &wanted) {
+                    eprintln!(
+                        "工作区根已经是 {}；还有 {} 个项目，换根要先迁移项目",
+                        before.root,
+                        before.projects.len()
+                    );
+                    return 1;
+                }
+            }
+            let root_text = flags
+                .root
+                .clone()
+                .unwrap_or_else(|| gate::display(&workspace::default_root(&home)));
+            if !flags.yes
+                && !confirm_in_terminal(&format!(
+                    "在这台电脑上建工作区？\n\n位置：{root_text}\n\nAI 的项目都放在这里；游戏目录只能作只读引用/部署目标，不能当项目。"
+                ))
+            {
+                println!("没有建（没有终端时加 --yes）。");
+                return 1;
+            }
+            let linked = gate::resolve_folders(&cfg.folders);
+            match workspace::ensure_root(&data, &home, flags.root.as_deref(), &linked) {
+                Ok(root) => {
+                    cfg.workspaces = true;
+                    if let Err(e) = cfg.save() {
+                        eprintln!("设置没有保存：{e}");
+                        return 1;
+                    }
+                    audit::Audit::open(&data.join("audit.log")).record(serde_json::json!({
+                        "event": "workspace", "action": "init", "root": gate::display(&root),
+                    }));
+                    println!("工作区：{}（已打开）", gate::display(&root));
+                    println!("项目：agentrouter workspace project add <名字>");
+                    0
+                }
+                Err(e) => {
+                    print_device_error(&e);
+                    1
+                }
+            }
+        }
+        Some("project") => match flags.positional.get(1).map(String::as_str) {
+            Some("add") | Some("create") => {
+                let Some(name) = flags.positional.get(2) else {
+                    eprintln!("要写项目名：agentrouter workspace project add <名字>");
+                    return 2;
+                };
+                if !cfg.workspaces {
+                    eprintln!("工作区没有打开。先运行 agentrouter workspace init。");
+                    return 1;
+                }
+                let linked = gate::resolve_folders(&cfg.folders);
+                match workspace::ensure_project(&data, &home, &linked, name, flags.root.as_deref())
+                {
+                    Ok(ensured) => {
+                        audit::Audit::open(&data.join("audit.log")).record(serde_json::json!({
+                            "event": "workspace", "action": "project", "project": ensured.project,
+                            "slug": ensured.slug, "path": ensured.project_dir, "created": ensured.created,
+                        }));
+                        println!("项目：{}  {}", ensured.project, ensured.project_dir);
+                        if !ensured.created {
+                            println!("（之前就有，路径没变）");
+                        }
+                        println!("worktrees（M1 才创建）：{}", ensured.worktrees_dir);
+                        0
+                    }
+                    Err(e) => {
+                        print_device_error(&e);
+                        1
+                    }
+                }
+            }
+            Some("list") | None => workspace_listing(&cfg),
+            Some(other) => {
+                eprintln!("不认识的 workspace project 子命令：{other}（add|list）");
+                2
+            }
+        },
+        None | Some("status") => workspace_listing(&cfg),
+        Some(other) => {
+            eprintln!("不认识的 workspace 子命令：{other}（init|project）");
+            2
+        }
+    }
+}
+
+fn workspace_listing(cfg: &Config) -> i32 {
+    match workspace::listing(&data_dir(), &home_dir()) {
+        Ok(registry) => {
+            println!("{}", workspace_text(cfg));
+            if registry.projects.is_empty() {
+                println!("项目：还没有（agentrouter workspace project add <名字>）");
+            } else {
+                println!("项目：");
+                for project in &registry.projects {
+                    println!(
+                        "  {}  {}  {}",
+                        project.name, project.path, project.created_at
+                    );
+                }
+            }
+            0
+        }
+        Err(e) => {
+            print_device_error(&e);
             1
         }
     }

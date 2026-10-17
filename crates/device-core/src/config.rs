@@ -121,6 +121,9 @@ pub struct Config {
     /// Local MCP servers (`agentrouter mcp on|off`, LINKED-DEVICES.md §23): the default bundle and the servers the
     /// cloud delivers run here. On by default (owner 2026-10-13: 「就是默认装」); the person can turn it off.
     pub mcp: bool,
+    /// The workspace root + project registry (`agentrouter workspace init`, workspace spec §6.1): off by
+    /// default; only then does the cloud get `workspace_ensure`/`workspace_list`. Init turns it on.
+    pub workspaces: bool,
 }
 
 impl Default for Config {
@@ -138,6 +141,7 @@ impl Default for Config {
             screen: false,
             private_apps: Vec::new(),
             mcp: true,
+            workspaces: false,
         }
     }
 }
