@@ -29,11 +29,13 @@ AgentRouter 的客户端是一层很小的皮：窗口里就是云端网页（�
 
 设备自己不再有文件、命令和屏幕动作（2026-10-14，DEVICE-PROTOCOL §18.4）：只服务 `info`、工作区和 MCP 动作，原来的每个工具由默认一组里的哪个 MCP 工具代替见 Cloud 仓库 `LINKED-DEVICES.md` §23.8。
 
-## 工作区（默认关闭，M0）
+## 工作区（默认关闭，M0/M1）
 
-`agentrouter workspace init` 建工作区（默认 `%USERPROFILE%\Workspaces`，兼容 `C:\Users\<user>\Workspaces`）并打开；`agentrouter workspace project add <名字>` 在工作区里建一个项目（目录在根下），`agentrouter workspace project list` 列出项目和位置。云端通过 `workspace_ensure`/`workspace_list` 用同一份登记（M0 只有根、项目登记和路径校验；git 基线、worktree 在 M1，云端会话绑定在 M2）。
+`agentrouter workspace init` 建工作区（默认 `%USERPROFILE%\Workspaces`，兼容 `C:\Users\<user>\Workspaces`）并打开；`agentrouter workspace project add <名字>` 在工作区里建一个项目（目录在根下）。云端通过 `workspace_ensure`/`workspace_list` 用同一份登记。
 
-硬规则：项目只能在工作区根下面；链接的游戏目录/程序目录只能作只读引用或部署目标，不能当工作区或项目（canonicalize 后双向检查，junction/symlink 逃逸也拒绝）。工作区默认关闭；`agentrouter status` 显示开关、根和项目数。代码 `crates/device-core/src/workspace.rs`，规范见 AgentTeam 的 `workspace-worktree-spec.md`。
+**git 基线与 worktree（M1）**：`workspace project baseline <项目>` 让项目有 git（新项目非破坏性 init + 一个基线提交，默认 `.gitignore`；已有仓库只读用它的 HEAD，不改配置/remote）。`workspace worktree create <项目> <会话 id>` 从基线给会话开 `<项目>/.worktrees/<会话 id>`、分支 `ar/<会话 id>`（幂等；`.worktrees/` 走仓库本地 `info/exclude`）；`worktree list/remove/prune` 列出、移除（默认保留分支）、清理过期目录。`mcp_start` 可带 `cwd`/`project`/`worktree: true` 或 `{{worktree}}`/`{{project}}` 占位符：本机工具（含 `start_process`）就在那个目录里跑，写调用先给会话 worktree 打检查点。云端绑定在 M2。
+
+硬规则：项目只能在工作区根下面；链接的游戏目录/程序目录只能作只读引用或部署目标，不能当工作区或项目（canonicalize 后双向检查，junction/symlink 逃逸也拒绝）；`git init` 只发生在新项目目录。工作区默认关闭；`agentrouter status` 显示开关、根、项目数。代码 `crates/device-core/src/{workspace,worktree}.rs`，规范见 AgentTeam 的 `workspace-worktree-spec.md`。
 
 ## 命令行
 
@@ -41,7 +43,8 @@ AgentRouter 的客户端是一层很小的皮：窗口里就是云端网页（�
 cd D:\work\my-project
 agentrouter link            # 第一次：显示配对码，在网页上确认；之后：把当前文件夹加进来。然后前台运行，Ctrl+C 断开
 agentrouter workspace init  # 建工作区（默认 %USERPROFILE%\Workspaces）并打开
-agentrouter workspace project add <名字> | list
+agentrouter workspace project add <名字> | list | baseline <名字>
+agentrouter workspace worktree create <项目> <会话 id> | list [项目] | remove <项目> <会话 id> | prune <项目>
 agentrouter undo            # 撤销 AI 在当前文件夹最近一轮的改动（--list 看全部检查点）
 agentrouter status | unlink [文件夹] | access <级别> | audit verify
 agentrouter run --background   # 不占终端
@@ -55,4 +58,4 @@ agentrouter run --background   # 不占终端
 
 ## English summary
 
-AgentRouter's desktop client is a thin shell: its window shows the cloud web app (the same pages as in the browser) and adds one thing, a linked-device connector. Since 2026-10-14 the device is only the link (owner: use the off-the-shelf MCP servers installed by default): it relays the cloud conversations' calls to local MCP servers (files, git, DesktopCommander, serena, Windows-MCP with the screen on, or any other) that it starts and supervises here, and has no file, command or screen actions of its own. `app/` is the Tauri 2 shell (tray), `crates/device-core` holds the protocol checks (Ed25519-signed, expiring, replay-protected requests), the local access levels, the MCP host (package digests checked before a start), the per-turn checkpoint before a writing call (`agentrouter undo`), the on-screen bar and a hash-chained audit log, and `crates/connector-cli` is the `agentrouter` command line (`agentrouter link` in a project folder; `agentrouter-device` remains as an alias). There are no inbound ports: the device connects out to the gateway. Builds are unsigned (see `docs/SIGNING.md`); tests run only in GitHub-hosted CI. M0 adds an opt-in workspace root and project registry (`agentrouter workspace init|project`; the signed `workspace_ensure`/`workspace_list` actions with canonical path guards); git baselines and worktrees come in M1. Licensed under Apache-2.0.
+AgentRouter's desktop client is a thin shell: its window shows the cloud web app (the same pages as in the browser) and adds one thing, a linked-device connector. Since 2026-10-14 the device is only the link (owner: use the off-the-shelf MCP servers installed by default): it relays the cloud conversations' calls to local MCP servers (files, git, DesktopCommander, serena, Windows-MCP with the screen on, or any other) that it starts and supervises here, and has no file, command or screen actions of its own. `app/` is the Tauri 2 shell (tray), `crates/device-core` holds the protocol checks (Ed25519-signed, expiring, replay-protected requests), the local access levels, the MCP host (package digests checked before a start), the per-turn checkpoint before a writing call (`agentrouter undo`), the on-screen bar and a hash-chained audit log, and `crates/connector-cli` is the `agentrouter` command line (`agentrouter link` in a project folder; `agentrouter-device` remains as an alias). There are no inbound ports: the device connects out to the gateway. Builds are unsigned (see `docs/SIGNING.md`); tests run only in GitHub-hosted CI. M0 adds an opt-in workspace root and project registry (`agentrouter workspace init|project`; the signed `workspace_ensure`/`workspace_list` actions with canonical path guards); M1 adds the non-destructive git baseline, one git worktree per session under `<project>/.worktrees/<session>` (branch `ar/<session>`, `workspace_worktree_*` actions, `list`/`remove`/`prune`) and the per-session cwd for `mcp_start` (`cwd`/`project`/`worktree: true`, `{{worktree}}`/`{{project}}`), with writing calls checkpointed inside the session worktree. Licensed under Apache-2.0.

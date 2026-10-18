@@ -7,7 +7,7 @@
 //! DEVICE-PROTOCOL.md §18.4); what stays ours is the link, the 「正在操作」 bar, the lock screen / UAC rule,
 //! the per-turn checkpoint before a writing call (`agentrouter undo`) and the audit log.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, RwLock};
@@ -28,7 +28,16 @@ use crate::util::{clip, now_ms};
 const IN_USE_MS: i64 = 20_000;
 
 /// The actions this device understands besides the MCP ones (reported in `hello`).
-pub const ACTIONS: &[&str] = &["info", "workspace_ensure", "workspace_list"];
+pub const ACTIONS: &[&str] = &[
+    "info",
+    "workspace_ensure",
+    "workspace_list",
+    "workspace_baseline",
+    "workspace_worktree_create",
+    "workspace_worktree_list",
+    "workspace_worktree_remove",
+    "workspace_worktree_prune",
+];
 
 type Console = Arc<Mutex<Option<(Sender<String>, i64)>>>;
 /// A line for the person at the terminal (what the cloud just did here).
@@ -351,22 +360,108 @@ impl Device {
                 value["enabled"] = json!(true);
                 Ok(value)
             }
-            "mcp_start" => self.mcp.start(&scope, args, cancel),
+            "workspace_baseline" => {
+                self.require_workspaces()?;
+                let project = args.get("project").and_then(Value::as_str).unwrap_or("");
+                crate::worktree::baseline(&self.data_dir, project)
+            }
+            "workspace_worktree_create" => {
+                self.require_workspaces()?;
+                let project = args.get("project").and_then(Value::as_str).unwrap_or("");
+                let wanted = args
+                    .get("session")
+                    .or_else(|| args.get("sessionId"))
+                    .and_then(Value::as_str)
+                    .unwrap_or(session);
+                crate::worktree::create(&self.data_dir, project, wanted)
+            }
+            "workspace_worktree_list" => {
+                self.require_workspaces()?;
+                let project = args.get("project").and_then(Value::as_str);
+                crate::worktree::list(&self.data_dir, project)
+            }
+            "workspace_worktree_remove" => {
+                self.require_workspaces()?;
+                let project = args.get("project").and_then(Value::as_str).unwrap_or("");
+                let wanted = args
+                    .get("session")
+                    .or_else(|| args.get("sessionId"))
+                    .and_then(Value::as_str)
+                    .unwrap_or(session);
+                let keep_branch = args
+                    .get("keepBranch")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
+                crate::worktree::remove(&self.data_dir, project, wanted, keep_branch)
+            }
+            "workspace_worktree_prune" => {
+                self.require_workspaces()?;
+                let project = args.get("project").and_then(Value::as_str).unwrap_or("");
+                let older = args.get("olderThanHours").and_then(Value::as_u64);
+                let delete_branches = args
+                    .get("deleteBranches")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                crate::worktree::prune(&self.data_dir, project, older, delete_branches)
+            }
+            "mcp_start" => {
+                let wants_workspace = crate::worktree::wants_workspace(args);
+                if wants_workspace && !self.workspaces_enabled() {
+                    return Err(DeviceError::new(
+                        "WORKSPACE_DISABLED",
+                        "这台电脑没有打开工作区，不能按项目/worktree 指定 cwd",
+                    )
+                    .next("请用户在电脑上运行 agentrouter workspace init。"));
+                }
+                let (cwd, pairs) = if self.workspaces_enabled() {
+                    let cwd = crate::worktree::resolve_cwd(&self.data_dir, session, args)?;
+                    let pairs =
+                        crate::worktree::placeholder_pairs(&self.data_dir, session, cwd.as_ref())?;
+                    (cwd, pairs)
+                } else {
+                    (None, Vec::new())
+                };
+                let mut resolved = args.clone();
+                crate::worktree::substitute(&mut resolved, &pairs)?;
+                self.mcp.start(
+                    &scope,
+                    &resolved,
+                    cancel,
+                    cwd.as_ref().map(|c| c.path.as_path()),
+                )
+            }
             "mcp_stop" => self.mcp.stop(args),
             "mcp_list" => self.mcp.list(),
             "mcp_call" => {
-                // A call that may change files takes this turn's checkpoint of every linked folder first
-                // (`agentrouter undo` rolls it back).
+                // A call that may change files takes this turn's checkpoint first: the session's
+                // worktree when it has one, then the linked folders (`agentrouter undo` rolls back).
                 let checkpoint = if args.get("writes").and_then(Value::as_bool) == Some(true) {
                     let turn = turn_of(args);
-                    scope
-                        .folders
-                        .iter()
-                        .filter_map(|f| {
-                            self.checkpoints
-                                .before(session, turn.as_deref(), f, Change::Command)
-                        })
-                        .next()
+                    let worktree = crate::worktree::for_session(&self.data_dir, session)
+                        .ok()
+                        .flatten()
+                        .and_then(|w| {
+                            self.checkpoints.before(
+                                session,
+                                turn.as_deref(),
+                                Path::new(&w.path),
+                                Change::Command,
+                            )
+                        });
+                    worktree.or_else(|| {
+                        scope
+                            .folders
+                            .iter()
+                            .filter_map(|f| {
+                                self.checkpoints.before(
+                                    session,
+                                    turn.as_deref(),
+                                    f,
+                                    Change::Command,
+                                )
+                            })
+                            .next()
+                    })
                 } else {
                     None
                 };
@@ -422,6 +517,20 @@ fn summary(action: &str, args: &Value) -> String {
         // The workspace actions: project name and (on the first call) the root; never a file list.
         "workspace_ensure" => format!("{} {}", s("project"), s("root")),
         "workspace_list" => String::new(),
+        "workspace_baseline" => s("project"),
+        "workspace_worktree_create" => format!(
+            "{} {}",
+            s("project"),
+            args.get("session")
+                .or_else(|| args.get("sessionId"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+        ),
+        "workspace_worktree_list" => s("project"),
+        "workspace_worktree_remove" => format!("{} {}", s("project"), s("session")),
+        "workspace_worktree_prune" => {
+            format!("{} olderThanHours={}", s("project"), s("olderThanHours"))
+        }
         // The file and its digest, never the bytes.
         "mcp_package" => args
             .get("pin")

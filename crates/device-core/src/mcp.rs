@@ -62,6 +62,18 @@ fn error(code: &'static str, message: impl Into<String>) -> DeviceError {
     DeviceError::new(code, message)
 }
 
+/// One server process per (tool name, cwd): the same tool in two session worktrees is two processes.
+fn server_key(name: &str, cwd: &Path) -> String {
+    format!("{name}\u{1}{}", crate::gate::display(cwd))
+}
+
+/// Is this the same directory as the plain path the cloud named (Windows is case-insensitive)?
+fn same_cwd(server_cwd: &Path, raw: &str) -> bool {
+    let shown = PathBuf::from(crate::gate::display(server_cwd));
+    let raw = Path::new(raw);
+    crate::gate::inside(raw, &shown) && crate::gate::inside(&shown, raw)
+}
+
 fn str_arg<'a>(args: &'a Value, key: &str) -> &'a str {
     args.get(key).and_then(Value::as_str).unwrap_or("")
 }
@@ -310,6 +322,7 @@ impl Server {
         let status = self.status.lock().unwrap();
         json!({
             "name": self.spec.name,
+            "cwd": crate::gate::display(&self.cwd),
             "state": status.state.as_str(),
             "hash": self.spec.hash,
             "command": self.spec.shown(),
@@ -554,16 +567,42 @@ impl McpHost {
         }
     }
 
-    fn get(&self, name: &str) -> Option<Arc<Server>> {
-        self.servers.lock().unwrap().get(name).cloned()
+    /// The server a call/log/stop names: by name, and by cwd when the same name runs for more than one
+    /// session worktree (M1 per-session cwd). Ambiguous without a cwd is an explicit error.
+    fn pick(&self, args: &Value) -> Result<Option<Arc<Server>>, DeviceError> {
+        let name = str_arg(args, "name");
+        let cwd = args
+            .get("cwd")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|c| !c.is_empty());
+        let servers = self.servers.lock().unwrap();
+        let mut found: Vec<Arc<Server>> = servers
+            .values()
+            .filter(|s| s.spec.name == name)
+            .filter(|s| cwd.is_none_or(|c| same_cwd(&s.cwd, c)))
+            .cloned()
+            .collect();
+        match found.len() {
+            0 => Ok(None),
+            1 => Ok(found.pop()),
+            _ => Err(error(
+                "MCP_AMBIGUOUS",
+                format!("本机工具 {name} 在多个工作目录里运行"),
+            )
+            .next("用 mcp_list 看 cwd，并在调用里带上 cwd 指定一个。")),
+        }
     }
 
     /// `mcp_start`: run a server (or keep the one running with the same definition) and wait a while for it.
+    /// `cwd` is the workspace directory the server runs in (a project or a session worktree, resolved and
+    /// validated by the caller); without it the first linked folder stays the cwd.
     pub fn start(
         &self,
         scope: &Scope,
         args: &Value,
         cancel: &AtomicBool,
+        cwd: Option<&Path>,
     ) -> Result<Value, DeviceError> {
         self.check(scope)?;
         let mut spec = Spec::parse(args)?.scoped(&scope.folders)?;
@@ -574,9 +613,15 @@ impl McpHost {
             .and_then(Value::as_u64)
             .unwrap_or(WAIT_DEFAULT_MS)
             .min(CALL_MAX_MS);
+        // Same tool name in another directory is another process: the key carries the cwd.
+        let server_cwd = cwd
+            .map(Path::to_path_buf)
+            .or_else(|| scope.folders.first().cloned())
+            .unwrap_or_else(|| self.dir.join(&spec.name));
+        let key = server_key(&spec.name, &server_cwd);
         let server = {
             let mut servers = self.servers.lock().unwrap();
-            match servers.get(&spec.name) {
+            match servers.get(&key) {
                 Some(s)
                     if s.spec == spec
                         && !matches!(
@@ -594,7 +639,7 @@ impl McpHost {
                         )
                         .next("先用 mcp_stop 停掉不用的。"));
                     }
-                    if let Some(old) = servers.remove(&spec.name) {
+                    if let Some(old) = servers.remove(&key) {
                         old.stopping.store(true, Ordering::SeqCst);
                         old.kill();
                     }
@@ -611,15 +656,10 @@ impl McpHost {
                             crate::mcp_pkg::keep_out(folder, name);
                         }
                     }
-                    let cwd = scope
-                        .folders
-                        .first()
-                        .cloned()
-                        .unwrap_or_else(|| dir.clone());
                     let server = Arc::new(Server {
                         spec,
                         dir,
-                        cwd,
+                        cwd: server_cwd,
                         proc: Mutex::new(None),
                         pending: Mutex::new(HashMap::new()),
                         status: Mutex::new(Status {
@@ -642,7 +682,7 @@ impl McpHost {
                     if let Err(e) = launch(&server, &program) {
                         return Err(error("MCP_START_FAILED", format!("没能启动：{e}")));
                     }
-                    servers.insert(server.spec.name.clone(), server.clone());
+                    servers.insert(key, server.clone());
                     server
                 }
             }
@@ -658,13 +698,17 @@ impl McpHost {
     }
 
     pub fn stop(&self, args: &Value) -> Result<Value, DeviceError> {
-        let name = str_arg(args, "name");
-        let Some(server) = self.servers.lock().unwrap().remove(name) else {
+        let name = str_arg(args, "name").to_string();
+        let Some(server) = self.pick(args)? else {
             return Ok(json!({"name": name, "stopped": false}));
         };
         server.stopping.store(true, Ordering::SeqCst);
         server.kill();
         server.set_state(State::Stopped, None);
+        self.servers
+            .lock()
+            .unwrap()
+            .retain(|_, candidate| !Arc::ptr_eq(candidate, &server));
         Ok(json!({"name": name, "stopped": true}))
     }
 
@@ -682,7 +726,7 @@ impl McpHost {
             .and_then(Value::as_u64)
             .unwrap_or(50)
             .min(LOG_LINES as u64) as usize;
-        let Some(server) = self.get(name) else {
+        let Some(server) = self.pick(args)? else {
             return Err(error(
                 "MCP_NOT_RUNNING",
                 format!("本机工具 {name} 没有在运行"),
@@ -690,7 +734,9 @@ impl McpHost {
         };
         let logs = server.logs.lock().unwrap();
         let tail: Vec<&String> = logs.iter().skip(logs.len().saturating_sub(lines)).collect();
-        Ok(json!({"name": name, "lines": tail, "dir": crate::gate::display(&server.dir)}))
+        Ok(
+            json!({"name": name, "cwd": crate::gate::display(&server.cwd), "lines": tail, "dir": crate::gate::display(&server.dir)}),
+        )
     }
 
     /// `mcp_call`: one tool call, forwarded as it is.
@@ -706,7 +752,7 @@ impl McpHost {
         if tool.is_empty() || tool.len() > 128 {
             return Err(error("FAILED", "tool 不能为空"));
         }
-        let Some(server) = self.get(name) else {
+        let Some(server) = self.pick(args)? else {
             return Err(error(
                 "MCP_NOT_RUNNING",
                 format!("本机工具 {name} 没有在运行"),
@@ -1228,7 +1274,12 @@ mod tests {
         };
         let cancel = AtomicBool::new(false);
         let e = host
-            .start(&scope, &json!({"name": "demo", "command": "x"}), &cancel)
+            .start(
+                &scope,
+                &json!({"name": "demo", "command": "x"}),
+                &cancel,
+                None,
+            )
             .unwrap_err();
         assert_eq!(e.code, "MCP_OFF");
         host.set(true);
@@ -1238,7 +1289,7 @@ mod tests {
             deny: vec![],
         };
         assert_eq!(
-            host.start(&ro, &json!({"name": "demo", "command": "x"}), &cancel)
+            host.start(&ro, &json!({"name": "demo", "command": "x"}), &cancel, None)
                 .unwrap_err()
                 .code,
             "DENIED"
@@ -1248,6 +1299,7 @@ mod tests {
                 &scope,
                 &json!({"name": "demo", "command": "surely-not-a-command-xyz"}),
                 &cancel,
+                None,
             )
             .unwrap_err();
         assert_eq!(e.code, "MCP_RUNTIME_MISSING");
