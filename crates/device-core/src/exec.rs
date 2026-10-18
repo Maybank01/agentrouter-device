@@ -231,6 +231,10 @@ fn run_inner(command: &str, cwd: &Path, timeout: Duration) -> Result<Outcome, St
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // A connector started from PowerShell 7 inherits its PSModulePath; a Windows PowerShell 5.1
+    // child must not resolve Microsoft.PowerShell.Utility from PowerShell 7 (Get-FileHash missing).
+    #[cfg(windows)]
+    cmd.env("PSModulePath", crate::util::child_ps_module_path());
     // Its own process group on Unix, so a timeout ends the shell *and* what it started (the shell may
     // exit but leave a child holding the pipes open).
     #[cfg(unix)]

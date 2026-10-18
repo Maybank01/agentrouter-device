@@ -738,6 +738,16 @@ impl McpHost {
         };
         spec.env.retain(|(k, _)| k != "PATH");
         spec.env.push(("PATH".to_string(), joined));
+        // Servers that spawn Windows PowerShell (desktop_commander, …) must not inherit PowerShell 7's
+        // PSModulePath either: 5.1 would lose Microsoft.PowerShell.Utility cmdlets such as Get-FileHash.
+        #[cfg(windows)]
+        {
+            spec.env.retain(|(k, _)| k != "PSModulePath");
+            spec.env.push((
+                "PSModulePath".to_string(),
+                crate::util::child_ps_module_path(),
+            ));
+        }
         let server = {
             let mut servers = self.servers.lock().unwrap();
             match servers.get(&key) {

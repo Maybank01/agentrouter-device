@@ -160,6 +160,13 @@ fn environment_block(overrides: &[(String, PathBuf)]) -> Vec<u16> {
         env.retain(|(k, _)| !k.eq_ignore_ascii_case(&key));
         env.push((key, value.as_os_str().to_owned()));
     }
+    // A PowerShell 5.1 child of a connector started from `pwsh` 7 must not see PowerShell 7's
+    // $PSHOME\Modules first (it would lose Get-FileHash and other Microsoft.PowerShell.Utility cmdlets).
+    env.retain(|(k, _)| !k.eq_ignore_ascii_case("PSModulePath"));
+    env.push((
+        OsString::from("PSModulePath"),
+        OsString::from(crate::util::child_ps_module_path()),
+    ));
     env.sort_by_key(|(key, _)| key.to_ascii_uppercase());
     let mut block: Vec<u16> = Vec::new();
     for (key, value) in &env {
