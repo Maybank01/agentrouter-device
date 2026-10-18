@@ -90,6 +90,7 @@ fn try_lock(path: &Path) -> std::io::Result<Option<FileLock>> {
     use std::os::unix::io::AsRawFd;
     let file = std::fs::OpenOptions::new()
         .create(true)
+        .truncate(false)
         .read(true)
         .write(true)
         .open(path)?;
