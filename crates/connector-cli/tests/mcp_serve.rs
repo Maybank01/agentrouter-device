@@ -500,3 +500,121 @@ fn exec_prefers_powershell_7_when_installed() {
         "expected PowerShell 7 major version in exec output: {text}"
     );
 }
+
+fn config_access(data: &Path, access: &str, unattended: bool) {
+    std::fs::write(
+        data.join("config.json"),
+        json!({"access": access, "unattended": unattended}).to_string(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn full_access_agent_can_register_targets_but_deploy_still_needs_approval() {
+    let data = temp("dt-full-data");
+    let home = temp("dt-full-home");
+    let target = temp("dt-full-target");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::create_dir_all(&target).unwrap();
+    config_access(&data, "full", false);
+    // A denied local approval: registering a target never approves a deployment.
+    let mut client = Client::start_with(
+        &data,
+        &home,
+        Some("ags_test"),
+        &[("AGENTROUTER_CONSENT", "deny")],
+    );
+    let (error, text) = client.tool("workspace_create", json!({"name": "mod"}));
+    assert!(!error, "{text}");
+    let (error, text) = client.tool("worktree_create", json!({"project": "mod"}));
+    assert!(!error, "{text}");
+    let created: Value = serde_json::from_str(&text).unwrap();
+    let worktree = PathBuf::from(created["worktreeDir"].as_str().unwrap());
+    std::fs::create_dir_all(worktree.join("out")).unwrap();
+    std::fs::write(worktree.join("out/mod.dll"), b"new-mod").unwrap();
+    let artifact = worktree.join("out/mod.dll");
+    // Full access: the Agent registers/lists/removes the target itself.
+    let (error, text) = client.tool(
+        "deploy_target_add",
+        json!({"name": "game", "path": target.display().to_string()}),
+    );
+    assert!(!error, "{text}");
+    assert!(
+        text.contains("game") && text.contains("dt-full-target"),
+        "{text}"
+    );
+    let (error, text) = client.tool("deploy_target_list", json!({}));
+    assert!(!error, "{text}");
+    assert!(text.contains("game"), "{text}");
+    // Registration is not a deployment: the L2 approval still decides.
+    let (error, text) = client.tool(
+        "deploy",
+        json!({"project": "mod", "target": "game",
+            "artifacts": [{"source": artifact.display().to_string(), "dest": "mods/mod.dll"}]}),
+    );
+    assert!(error, "{text}");
+    assert!(
+        text.contains("DENIED") || text.contains("没有批准"),
+        "{text}"
+    );
+    assert!(!target.join("mods/mod.dll").exists());
+    let (error, text) = client.tool("deploy_target_remove", json!({"name": "game"}));
+    assert!(!error, "{text}");
+    let (error, text) = client.tool("deploy_target_list", json!({}));
+    assert!(!error, "{text}");
+    assert!(!text.contains("game"), "{text}");
+}
+
+#[test]
+fn folders_access_cannot_register_deploy_targets() {
+    let data = temp("dt-folders-data");
+    let home = temp("dt-folders-home");
+    let target = temp("dt-folders-target");
+    std::fs::create_dir_all(&data).unwrap();
+    config(&data, true, &[]);
+    let mut client = Client::start(&data, &home, Some("ags_test"));
+    let (error, text) = client.tool(
+        "deploy_target_add",
+        json!({"name": "game", "path": target.display().to_string()}),
+    );
+    assert!(error, "{text}");
+    assert!(text.contains("DEPLOY_TARGET_OWNER_ONLY"), "{text}");
+    let (error, text) = client.tool("deploy_target_list", json!({}));
+    assert!(error, "{text}");
+    assert!(text.contains("DEPLOY_TARGET_OWNER_ONLY"), "{text}");
+    let (error, text) = client.tool("deploy_target_remove", json!({"name": "game"}));
+    assert!(error, "{text}");
+    assert!(text.contains("DEPLOY_TARGET_OWNER_ONLY"), "{text}");
+}
+
+#[test]
+fn full_access_target_registration_validates_paths() {
+    let data = temp("dt-valid-data");
+    let home = temp("dt-valid-home");
+    std::fs::create_dir_all(&data).unwrap();
+    config_access(&data, "full", true);
+    let mut client = Client::start(&data, &home, Some("ags_test"));
+    let (error, text) = client.tool("workspace_create", json!({"name": "mod"}));
+    assert!(!error, "{text}");
+    // A directory that does not exist.
+    let missing = data.join("does-not-exist");
+    let (error, text) = client.tool(
+        "deploy_target_add",
+        json!({"name": "missing", "path": missing.display().to_string()}),
+    );
+    assert!(error, "{text}");
+    // The workspace root itself is never a deploy target.
+    let root = home.join("Workspaces");
+    let (error, text) = client.tool(
+        "deploy_target_add",
+        json!({"name": "root", "path": root.display().to_string()}),
+    );
+    assert!(error, "{text}");
+    assert!(text.contains("DENIED") || text.contains("重叠"), "{text}");
+    // The device data folder is never a deploy target either.
+    let (error, text) = client.tool(
+        "deploy_target_add",
+        json!({"name": "data", "path": data.display().to_string()}),
+    );
+    assert!(error, "{text}");
+}

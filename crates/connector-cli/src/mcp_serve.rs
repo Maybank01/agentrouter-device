@@ -90,6 +90,21 @@ fn tools() -> Value {
             json!({"type": "object", "properties": {}, "required": []}),
         ),
         tool(
+            "deploy_target_add",
+            "Register an external deploy target (full access only; in folders mode the owner registers it with the local CLI). Same validation as the CLI: an existing directory outside the workspace root and the device data folder.",
+            json!({"type": "object", "properties": {"name": {"type": "string"}, "path": {"type": "string"}}, "required": ["name", "path"]}),
+        ),
+        tool(
+            "deploy_target_list",
+            "List the registered deploy targets (full access only).",
+            json!({"type": "object", "properties": {}, "required": []}),
+        ),
+        tool(
+            "deploy_target_remove",
+            "Remove a registered deploy target by name (full access only).",
+            json!({"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}),
+        ),
+        tool(
             "deploy",
             "Deploy files from the project/this session's worktree onto a registered external target (for example a game install). Backs up overwritten files, asks the person on this computer, records the deployment and rolls back automatically on failure.",
             json!({
@@ -223,6 +238,20 @@ fn append_audit(entry: Value) {
     {
         let _ = file.write_all(line.as_bytes());
     }
+}
+
+/// Registering/removing deploy targets from the Agent is a full-access capability (owner decision
+/// 2026-10-18). In folders mode the owner keeps doing it with the local CLI.
+fn require_full_access(what: &str) -> Result<(), DeviceError> {
+    let config = Config::load();
+    if config.access == Access::Full {
+        return Ok(());
+    }
+    Err(DeviceError::new(
+        "DEPLOY_TARGET_OWNER_ONLY",
+        format!("{what}只能由所有者在电脑上登记：当前访问级别不是「完全访问」"),
+    )
+    .next("请所有者在这台电脑上运行 agentrouter workspace deploy target add <名字> <目录>；完全访问下才允许云端 AI 自己登记。"))
 }
 
 fn call_tool(tool: &str, args: &Value) -> Result<Value, DeviceError> {
@@ -396,6 +425,42 @@ fn call_tool(tool: &str, args: &Value) -> Result<Value, DeviceError> {
             let targets = deploy::list_targets(&data)?;
             let value = json!({"targets": targets});
             Ok(json!({"content": [{"type": "text", "text": text(&value)}]}))
+        }
+        "deploy_target_add" => {
+            require_full_access("登记部署目标")?;
+            let name = args.get("name").and_then(Value::as_str).unwrap_or("");
+            let path = args.get("path").and_then(Value::as_str).unwrap_or("");
+            if name.trim().is_empty() || path.trim().is_empty() {
+                return Err(DeviceError::new(
+                    "WORKSPACE_INVALID",
+                    "deploy_target_add 需要 name 和 path",
+                ));
+            }
+            let target = deploy::add_target(&data, name, path)?;
+            append_audit(json!({
+                "tool": "deploy_target_add", "name": target.name, "path": target.path,
+            }));
+            Ok(json!({"content": [{"type": "text", "text": text(&json!({"target": target}))}]}))
+        }
+        "deploy_target_list" => {
+            require_full_access("列出部署目标")?;
+            let targets = deploy::list_targets(&data)?;
+            Ok(json!({"content": [{"type": "text", "text": text(&json!({"targets": targets}))}]}))
+        }
+        "deploy_target_remove" => {
+            require_full_access("移除部署目标")?;
+            let name = args.get("name").and_then(Value::as_str).unwrap_or("");
+            if name.trim().is_empty() {
+                return Err(DeviceError::new(
+                    "WORKSPACE_INVALID",
+                    "deploy_target_remove 需要 name",
+                ));
+            }
+            let removed = deploy::remove_target(&data, name)?;
+            append_audit(json!({"tool": "deploy_target_remove", "name": name, "removed": removed}));
+            Ok(
+                json!({"content": [{"type": "text", "text": text(&json!({"name": name, "removed": removed}))}]}),
+            )
         }
         "deploy" => {
             let project = args.get("project").and_then(Value::as_str).unwrap_or("");
