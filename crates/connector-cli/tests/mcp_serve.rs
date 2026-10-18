@@ -469,3 +469,34 @@ fn exec_keeps_windows_powershell_5_cmdlets_with_a_pwsh7_module_path() {
         "{text}"
     );
 }
+
+#[cfg(windows)]
+#[test]
+fn exec_prefers_powershell_7_when_installed() {
+    if agentrouter_device::shell::find_pwsh().is_none() {
+        eprintln!("skipping: PowerShell 7 (pwsh.exe) is not installed on this runner");
+        return;
+    }
+    let data = temp("pwsh7-data");
+    let home = temp("pwsh7-home");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(
+        data.join("config.json"),
+        json!({"access": "folders", "unattended": true}).to_string(),
+    )
+    .unwrap();
+    let mut client = Client::start(&data, &home, Some("ags_test"));
+    let (error, text) = client.tool("workspace_create", json!({"name": "mod"}));
+    assert!(!error, "{text}");
+    let (error, text) = client.tool("worktree_create", json!({"project": "mod"}));
+    assert!(!error, "{text}");
+    let (error, text) = client.tool(
+        "exec",
+        json!({"command": "$PSVersionTable.PSVersion.Major"}),
+    );
+    assert!(!error, "{text}");
+    assert!(
+        text.lines().any(|line| line.trim() == "7"),
+        "expected PowerShell 7 major version in exec output: {text}"
+    );
+}

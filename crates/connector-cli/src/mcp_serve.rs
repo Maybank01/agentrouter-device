@@ -33,7 +33,7 @@ fn tools() -> Value {
     json!([
         tool(
             "exec",
-            "Run a command with the device shell (PowerShell on Windows) in a workspace project or the session's worktree; returns stdout, stderr and the exit code. cwd defaults to this session's worktree.",
+            "Run a command with the device shell (PowerShell 7 when installed, else Windows PowerShell 5.1) in a workspace project or the session's worktree; returns stdout, stderr and the exit code. cwd defaults to this session's worktree.",
             json!({
                 "type": "object",
                 "properties": {
