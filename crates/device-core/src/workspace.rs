@@ -219,6 +219,11 @@ fn real(path: &Path) -> Result<PathBuf, DeviceError> {
     })
 }
 
+/// The plain form people and the registry use (`C:\…`), so a verbatim `\\?\C:\…` path compares equal.
+fn plain(path: &Path) -> PathBuf {
+    PathBuf::from(display(path))
+}
+
 fn strictly_inside(path: &Path, base: &Path) -> bool {
     inside(path, base) && !inside(base, path)
 }
@@ -259,16 +264,19 @@ fn external_linked(linked: &[PathBuf], root: &Path) -> Vec<PathBuf> {
 /// A workspace root may not be nested in, or contain, an external linked folder, and it is never in
 /// the device's own data folder.
 pub fn guard_root(root: &Path, linked: &[PathBuf], data: &Path) -> Result<(), DeviceError> {
-    if inside(root, data) || inside(data, root) {
+    let root = plain(root);
+    let data = plain(data);
+    let linked: Vec<PathBuf> = linked.iter().map(|p| plain(p)).collect();
+    if inside(&root, &data) || inside(&data, &root) {
         return Err(DeviceError::denied(
             "工作区不能放在 AgentRouter 设备程序自己的数据目录里",
         ));
     }
-    for folder in linked {
-        if same(root, folder) {
+    for folder in &linked {
+        if same(&root, folder) {
             continue;
         }
-        if strictly_inside(root, folder) || strictly_inside(folder, root) {
+        if strictly_inside(&root, folder) || strictly_inside(folder, &root) {
             return Err(DeviceError::denied(GAME_DIR_MESSAGE)
                 .next("请换一个工作区位置（默认 %USERPROFILE%\\Workspaces），游戏目录只能作只读引用/部署目标。"));
         }
@@ -283,23 +291,27 @@ pub fn guard_project(
     linked: &[PathBuf],
     data: &Path,
 ) -> Result<(), DeviceError> {
-    if inside(project, data) || inside(data, project) {
+    let project = plain(project);
+    let root = plain(root);
+    let data = plain(data);
+    let linked: Vec<PathBuf> = linked.iter().map(|p| plain(p)).collect();
+    if inside(&project, &data) || inside(&data, &project) {
         return Err(DeviceError::denied(
             "项目目录不能和 AgentRouter 设备程序自己的数据目录重叠",
         ));
     }
     // Any overlap with an external linked folder (a game install, a program folder) is out, including
     // a junction inside the root that resolves to it: it is not a project, it is a read-only reference.
-    for folder in external_linked(linked, root) {
-        if inside(project, &folder) || inside(&folder, project) {
+    for folder in external_linked(&linked, &root) {
+        if inside(&project, &folder) || inside(&folder, &project) {
             return Err(DeviceError::denied(GAME_DIR_MESSAGE)
                 .next("项目只能在工作区里；游戏目录只能作只读引用/部署目标。"));
         }
     }
-    if !strictly_inside(project, root) {
+    if !strictly_inside(&project, &root) {
         return Err(DeviceError::new(
             "WORKSPACE_INVALID",
-            format!("项目目录必须在工作区根下面：{}", display(project)),
+            format!("项目目录必须在工作区根下面：{}", display(&project)),
         ));
     }
     Ok(())
@@ -450,9 +462,10 @@ mod tests {
     use super::*;
 
     fn tmp(tag: &str) -> PathBuf {
-        // Unit tests are the lib target, where Cargo does not set CARGO_TARGET_TMPDIR.
-        let dir = std::env::temp_dir()
-            .join("ar-workspace-unit")
+        // Unit tests are the lib target, where Cargo does not set CARGO_TARGET_TMPDIR; keep the
+        // scratch folders under the build's own target folder (never the system temp one).
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/tmp/ar-workspace-unit")
             .join(format!("{tag}-{}", crate::util::short_id("")));
         std::fs::create_dir_all(&dir).unwrap();
         real(&dir).unwrap()
