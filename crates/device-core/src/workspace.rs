@@ -463,9 +463,17 @@ mod tests {
 
     fn tmp(tag: &str) -> PathBuf {
         // Unit tests are the lib target, where Cargo does not set CARGO_TARGET_TMPDIR; keep the
-        // scratch folders under the build's own target folder (never the system temp one).
-        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../target/tmp/ar-workspace-unit")
+        // scratch folders under the build's own target folder (never the system temp one). The test
+        // binary lives at `<target>/debug/deps/`, so `<target>/tmp` needs no `..` in the path.
+        let exe = std::env::current_exe().unwrap();
+        let target = exe
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+            .expect("target folder");
+        let dir = target
+            .join("tmp")
+            .join("ar-workspace-unit")
             .join(format!("{tag}-{}", crate::util::short_id("")));
         std::fs::create_dir_all(&dir).unwrap();
         real(&dir).unwrap()
