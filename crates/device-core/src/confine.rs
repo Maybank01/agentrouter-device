@@ -166,6 +166,55 @@ impl Confinement {
         );
         Ok(Some(Sandbox { env }))
     }
+
+    /// The same boundary for one command in `folder` (the workspace MCP service's `exec`): label the
+    /// folder Low so the confined command may write there, point TEMP/caches at the Low scratch
+    /// folder, protect the device's own data if it lives inside — and leave the labels of other
+    /// sessions' folders alone (each exec names its own folder, several sessions may run at once).
+    pub fn prepare_command(&self, folder: &Path) -> Result<Option<Sandbox>, DeviceError> {
+        if !cfg!(windows) {
+            return Ok(None);
+        }
+        let _guard = self.lock.lock().unwrap();
+        let fail = |what: &str, path: &Path, e: std::io::Error| {
+            DeviceError::new(
+                "FAILED",
+                format!(
+                    "没能给{what}（{}）设好写入边界，命令没有运行：{e}",
+                    crate::gate::display(path)
+                ),
+            )
+        };
+        let mut record = Record::load(&self.data_dir);
+        let root = scratch_root().ok_or_else(|| {
+            DeviceError::new("FAILED", "找不到这台电脑的用户文件夹，命令没有运行")
+        })?;
+        let tmp = root.join("tmp");
+        for dir in [&tmp, &root.join("cache")] {
+            std::fs::create_dir_all(dir).map_err(|e| fail("临时文件夹", dir, e))?;
+        }
+        if !os::is_low(&root) {
+            os::label_low(&root).map_err(|e| fail("临时文件夹", &root, e))?;
+        }
+        if !os::is_low(folder) {
+            os::label_low(folder).map_err(|e| fail("工作区的命令目录", folder, e))?;
+            record.add_labelled(folder);
+        }
+        if inside(&self.data_dir, folder) && !os::is_protected(&self.data_dir) {
+            os::protect(&self.data_dir).map_err(|e| fail("设备自己的数据", &self.data_dir, e))?;
+            record.add_protected(&self.data_dir);
+        }
+        record.save(&self.data_dir);
+        let cache = root.join("cache");
+        let mut env: Vec<(String, PathBuf)> =
+            vec![("TEMP".into(), tmp.clone()), ("TMP".into(), tmp.clone())];
+        env.extend(
+            CACHES
+                .iter()
+                .map(|(var, dir)| (var.to_string(), cache.join(dir))),
+        );
+        Ok(Some(Sandbox { env }))
+    }
 }
 
 /// Take back the labels this app put on folders that are not in `keep` (a folder unlinked, or the

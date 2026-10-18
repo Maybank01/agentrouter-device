@@ -242,6 +242,7 @@ fn call_tool(tool: &str, args: &Value) -> Result<Value, DeviceError> {
                 .unwrap_or(exec::TIMEOUT_DEFAULT_MS)
                 .clamp(1000, exec::TIMEOUT_MAX_MS);
             let danger = exec::classify(command);
+            let config = Config::load();
             match danger {
                 exec::Danger::Deny(why) => {
                     append_audit(
@@ -251,7 +252,6 @@ fn call_tool(tool: &str, args: &Value) -> Result<Value, DeviceError> {
                         .next("换一种做法；确实需要请在电脑上自己操作。"));
                 }
                 exec::Danger::Ask(why) => {
-                    let config = Config::load();
                     if config.access != Access::Full {
                         let question = format!(
                             "云端 AI 想在这台电脑上运行一条可能危险的操作：{why}\n\n{command}\n\n位置：{}",
@@ -272,8 +272,15 @@ fn call_tool(tool: &str, args: &Value) -> Result<Value, DeviceError> {
                 }
                 exec::Danger::Safe => {}
             }
-            let outcome = exec::run(command, &cwd, Duration::from_millis(timeout))
-                .map_err(|e| DeviceError::new("EXEC_FAILED", e))?;
+            // The OS write boundary under the gate/deny/consent (S2b): at `folders` the exec cwd is
+            // labelled Low and the command runs at low integrity; at `full` the person asked for
+            // unrestricted commands and the boundary is off.
+            let outcome = if config.access == Access::Full {
+                exec::run(command, &cwd, Duration::from_millis(timeout))
+            } else {
+                exec::run_confined(command, &cwd, Duration::from_millis(timeout), &data)
+            }
+            .map_err(|e| DeviceError::new("EXEC_FAILED", e))?;
             append_audit(json!({
                 "tool": "exec", "cwd": display(&cwd), "command": command,
                 "exitCode": outcome.exit_code, "timedOut": outcome.timed_out,
