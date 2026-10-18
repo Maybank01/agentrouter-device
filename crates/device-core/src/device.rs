@@ -530,6 +530,14 @@ fn summary(action: &str, args: &Value) -> String {
                     arguments.get("cwd").and_then(Value::as_str).unwrap_or(""),
                     clip(command, 800)
                 )
+            } else if tool == "deploy_target_add" || tool == "deploy_target_remove" {
+                format!(
+                    "{}.{} name={} path={}",
+                    s("name"),
+                    tool,
+                    arguments.get("name").and_then(Value::as_str).unwrap_or(""),
+                    arguments.get("path").and_then(Value::as_str).unwrap_or("")
+                )
             } else if tool == "deploy" || tool == "deploy_rollback" {
                 let files = arguments
                     .get("artifacts")
