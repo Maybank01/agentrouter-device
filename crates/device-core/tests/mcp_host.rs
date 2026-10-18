@@ -84,7 +84,7 @@ fn a_stdio_server_starts_answers_restarts_and_stops() {
         "name": "fake", "command": python, "args": ["-u", "-c", SERVER],
         "env": {"FAKE_KEY": "very-secret-1"}, "secretEnv": ["FAKE_KEY"], "hash": "h1", "waitMs": 20000,
     });
-    let started = host.start(&scope, &start, &cancel).unwrap();
+    let started = host.start(&scope, &start, &cancel, None).unwrap();
     assert_eq!(started["state"], "ready", "{started}");
     assert_eq!(started["tools"].as_array().unwrap().len(), 2);
     assert!(!started.to_string().contains("very-secret-1"));

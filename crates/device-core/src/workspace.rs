@@ -1,9 +1,9 @@
-//! The workspace root, the project registry and the path guards (workspace spec §1–3; M0 of the
-//! device side). Every agent wakes up in one workspace root: the person picks a project name, never
-//! a path; the root is created (idempotently) by this device, and a project is a directory under it.
+//! The workspace root, the project registry and the path guards (workspace spec §1–3). Every agent
+//! wakes up in one workspace root: the person picks a project name, never a path; the root is created
+//! (idempotently) by this device, and a project is a directory under it.
 //!
-//! This module owns M0 only: root + project registry + canonical path guards. Git baseline and
-//! worktrees are M1; the cloud binding fields are M2.
+//! This module owns the root, the project registry and the path guards; git baselines and worktrees
+//! live in `worktree.rs` (M1), the cloud binding fields are M2.
 //!
 //! Path rules (hard):
 //! - root and project paths are real paths (`canonicalize`, links followed), so a junction or a
@@ -42,7 +42,8 @@ pub struct Project {
     pub path: String,
     /// Reserved for M1: `<project>/.worktrees`.
     pub worktrees_dir: String,
-    /// A project created from a git repository (M1 makes new ones).
+    /// `hasGit`: the project is a git repository (created by the baseline in `worktree.rs`, or already
+    /// there: an existing repository is used read-only, never re-initialized).
     #[serde(default)]
     pub has_git: bool,
     pub created_at: String,
@@ -199,7 +200,7 @@ fn verbatim(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
-fn create_dir(path: &Path) -> Result<(), DeviceError> {
+pub(crate) fn create_dir(path: &Path) -> Result<(), DeviceError> {
     std::fs::create_dir_all(verbatim(path)).map_err(|e| {
         DeviceError::new(
             "WORKSPACE_FAILED",
@@ -210,7 +211,7 @@ fn create_dir(path: &Path) -> Result<(), DeviceError> {
 }
 
 /// The real (canonical) form of a path that exists; links and junctions are resolved here.
-fn real(path: &Path) -> Result<PathBuf, DeviceError> {
+pub(crate) fn real(path: &Path) -> Result<PathBuf, DeviceError> {
     std::fs::canonicalize(verbatim(path)).map_err(|e| {
         DeviceError::new(
             "WORKSPACE_FAILED",
@@ -392,19 +393,6 @@ pub fn ensure_project(
         return Err(root_conflict(&registry));
     }
     registry.root = shown_root;
-    if let Some(existing) = registry.projects.iter().find(|p| p.slug == slug).cloned() {
-        let project_real = real(Path::new(&existing.path))?;
-        guard_project(&project_real, &root_real, linked, data)?;
-        return Ok(Ensured {
-            root: display(&root_real),
-            project: existing.name,
-            slug: existing.slug,
-            project_dir: display(&project_real),
-            worktrees_dir: existing.worktrees_dir,
-            created: false,
-        });
-    }
-    registry.root = display(&root_real);
     if let Some(existing) = registry.projects.iter().find(|p| p.slug == slug).cloned() {
         let project_real = real(Path::new(&existing.path))?;
         guard_project(&project_real, &root_real, linked, data)?;

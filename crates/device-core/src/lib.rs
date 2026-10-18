@@ -21,3 +21,4 @@ pub mod protocol;
 pub mod screen;
 pub mod util;
 pub mod workspace;
+pub mod worktree;

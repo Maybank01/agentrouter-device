@@ -14,7 +14,7 @@ use agentrouter_device::config::{Access, Config};
 use agentrouter_device::device::{Device, Options};
 use agentrouter_device::net::{self, Conn, Runtime};
 use agentrouter_device::util::{data_dir, home_dir, log};
-use agentrouter_device::{audit, checkpoint, gate, keystore, link, workspace};
+use agentrouter_device::{audit, checkpoint, gate, keystore, link, workspace, worktree};
 
 /// Set by Ctrl+C (one handler for the whole run: pairing, then serving).
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
@@ -48,8 +48,12 @@ const USAGE: &str = "AgentRouter 小助手（agentrouter）：把这台电脑链
   agentrouter workspace init [--root <路径>] [--yes]
                                 建工作区（默认 %USERPROFILE%\\Workspaces）并打开：AI 的项目都放在这里；
                                 游戏目录只能作只读引用/部署目标，不能当项目
-  agentrouter workspace project add <名字> | list
-                                在工作区里建一个项目（目录在根下面）/ 列出项目和位置
+  agentrouter workspace project add <名字> | list | baseline <名字>
+                                在工作区里建项目（目录在根下）/ 列出 / 建 git 基线
+  agentrouter workspace worktree create <项目> <会话 id> | list [项目]
+  agentrouter workspace worktree remove <项目> <会话 id> [--delete-branch]
+  agentrouter workspace worktree prune <项目> [--older-hours N] [--delete-branch]
+                                每个会话一个 git worktree；移除默认保留分支（改动记录）
   agentrouter undo [检查点] [--list] [--yes]
                                 撤销 AI 的改动：不写检查点就撤销当前文件夹最近一轮改动；--list 列出检查点
   agentrouter audit verify      检查审计日志有没有被改过
@@ -71,6 +75,8 @@ struct Flags {
     screen: Option<bool>,
     mcp: Option<bool>,
     root: Option<String>,
+    delete_branch: bool,
+    older_hours: Option<u64>,
     positional: Vec<String>,
 }
 
@@ -95,6 +101,14 @@ fn parse(args: &[String]) -> Result<Flags, String> {
             "--screen" => flags.screen = Some(true),
             "--mcp" => flags.mcp = Some(true),
             "--root" => flags.root = Some(value("--root")?),
+            "--delete-branch" => flags.delete_branch = true,
+            "--older-hours" => {
+                let v = value("--older-hours")?;
+                flags.older_hours = Some(
+                    v.parse::<u64>()
+                        .map_err(|_| format!("--older-hours 要写小时数：{v}"))?,
+                );
+            }
             other if other.starts_with("--") => return Err(format!("不认识的选项：{other}")),
             other => flags.positional.push(other.to_string()),
         }
@@ -874,7 +888,7 @@ fn cmd_workspace(flags: Flags) -> i32 {
                         if !ensured.created {
                             println!("（之前就有，路径没变）");
                         }
-                        println!("worktrees（M1 才创建）：{}", ensured.worktrees_dir);
+                        println!("worktrees：{}", ensured.worktrees_dir);
                         0
                     }
                     Err(e) => {
@@ -884,14 +898,176 @@ fn cmd_workspace(flags: Flags) -> i32 {
                 }
             }
             Some("list") | None => workspace_listing(&cfg),
+            Some("baseline") => {
+                let Some(name) = flags.positional.get(2) else {
+                    eprintln!("要写项目名：agentrouter workspace project baseline <名字>");
+                    return 2;
+                };
+                if !cfg.workspaces {
+                    eprintln!("工作区没有打开。先运行 agentrouter workspace init。");
+                    return 1;
+                }
+                match worktree::baseline(&data, name) {
+                    Ok(value) => {
+                        println!(
+                            "基线：{}（{}）{}",
+                            value["project"].as_str().unwrap_or(name),
+                            value["commit"].as_str().unwrap_or(""),
+                            if value["created"] == true {
+                                " · 新建仓库"
+                            } else {
+                                " · 已有仓库，只读使用"
+                            }
+                        );
+                        0
+                    }
+                    Err(e) => {
+                        print_device_error(&e);
+                        1
+                    }
+                }
+            }
             Some(other) => {
-                eprintln!("不认识的 workspace project 子命令：{other}（add|list）");
+                eprintln!("不认识的 workspace project 子命令：{other}（add|list|baseline）");
                 2
             }
         },
+        Some("worktree") => {
+            if !cfg.workspaces {
+                eprintln!("工作区没有打开。先运行 agentrouter workspace init。");
+                return 1;
+            }
+            match flags.positional.get(1).map(String::as_str) {
+                Some("create") => {
+                    let (Some(project), Some(session)) =
+                        (flags.positional.get(2), flags.positional.get(3))
+                    else {
+                        eprintln!("用法：agentrouter workspace worktree create <项目> <会话 id>");
+                        return 2;
+                    };
+                    match worktree::create(&data, project, session) {
+                        Ok(value) => {
+                            println!(
+                                "worktree：{}（分支 {}，base {}）{}",
+                                value["worktreeDir"].as_str().unwrap_or(""),
+                                value["branch"].as_str().unwrap_or(""),
+                                value["baseCommit"].as_str().unwrap_or(""),
+                                if value["reused"] == true {
+                                    " · 复用"
+                                } else {
+                                    ""
+                                }
+                            );
+                            audit::Audit::open(&data.join("audit.log")).record(serde_json::json!({
+                                "event": "workspace", "action": "worktree",
+                                "worktreeDir": value["worktreeDir"], "session": value["session"],
+                            }));
+                            0
+                        }
+                        Err(e) => {
+                            print_device_error(&e);
+                            1
+                        }
+                    }
+                }
+                Some("list") | None => {
+                    let project = flags.positional.get(2).map(String::as_str);
+                    match worktree::list(&data, project) {
+                        Ok(value) => {
+                            let list = value["worktrees"].as_array().cloned().unwrap_or_default();
+                            if list.is_empty() {
+                                println!("worktree：还没有");
+                            }
+                            for entry in list {
+                                println!(
+                                    "  {}  {}  {}  {}{}",
+                                    entry["project"].as_str().unwrap_or(""),
+                                    entry["session"].as_str().unwrap_or(""),
+                                    entry["path"].as_str().unwrap_or(""),
+                                    entry["branch"].as_str().unwrap_or(""),
+                                    if entry["exists"] == true {
+                                        ""
+                                    } else {
+                                        "（目录不在）"
+                                    }
+                                );
+                            }
+                            0
+                        }
+                        Err(e) => {
+                            print_device_error(&e);
+                            1
+                        }
+                    }
+                }
+                Some("remove") => {
+                    let (Some(project), Some(session)) =
+                        (flags.positional.get(2), flags.positional.get(3))
+                    else {
+                        eprintln!("用法：agentrouter workspace worktree remove <项目> <会话 id>");
+                        return 2;
+                    };
+                    match worktree::remove(&data, project, session, !flags.delete_branch) {
+                        Ok(value) => {
+                            println!(
+                                "worktree {}：{}（分支{}保留）",
+                                value["session"].as_str().unwrap_or(session),
+                                if value["removed"] == true {
+                                    "已移除"
+                                } else {
+                                    "本来就不存在"
+                                },
+                                if value["branchKept"] == true {
+                                    ""
+                                } else {
+                                    "不"
+                                }
+                            );
+                            0
+                        }
+                        Err(e) => {
+                            print_device_error(&e);
+                            1
+                        }
+                    }
+                }
+                Some("prune") => {
+                    let Some(project) = flags.positional.get(2) else {
+                        eprintln!(
+                            "用法：agentrouter workspace worktree prune <项目> [--older-hours N]"
+                        );
+                        return 2;
+                    };
+                    match worktree::prune(&data, project, flags.older_hours, flags.delete_branch) {
+                        Ok(value) => {
+                            println!(
+                                "清理：移除 {} 个，保留 {} 个，删除分支 {} 个",
+                                value["removed"].as_array().map(Vec::len).unwrap_or(0),
+                                value["kept"].as_u64().unwrap_or(0),
+                                value["deletedBranches"]
+                                    .as_array()
+                                    .map(Vec::len)
+                                    .unwrap_or(0)
+                            );
+                            0
+                        }
+                        Err(e) => {
+                            print_device_error(&e);
+                            1
+                        }
+                    }
+                }
+                Some(other) => {
+                    eprintln!(
+                        "不认识的 workspace worktree 子命令：{other}（create|list|remove|prune）"
+                    );
+                    2
+                }
+            }
+        }
         None | Some("status") => workspace_listing(&cfg),
         Some(other) => {
-            eprintln!("不认识的 workspace 子命令：{other}（init|project）");
+            eprintln!("不认识的 workspace 子命令：{other}（init|project|worktree）");
             2
         }
     }
@@ -911,6 +1087,10 @@ fn workspace_listing(cfg: &Config) -> i32 {
                         project.name, project.path, project.created_at
                     );
                 }
+            }
+            if let Ok(value) = worktree::list(&data_dir(), None) {
+                let count = value["worktrees"].as_array().map(Vec::len).unwrap_or(0);
+                println!("worktree：{count} 个（agentrouter workspace worktree list）");
             }
             0
         }
