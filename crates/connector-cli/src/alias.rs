@@ -2,7 +2,13 @@
 
 #[path = "cli.rs"]
 mod cli;
+#[path = "mcp_serve.rs"]
+mod mcp_serve;
 
 fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("mcp-serve") {
+        std::process::exit(mcp_serve::run(&args[1..]));
+    }
     cli::main()
 }

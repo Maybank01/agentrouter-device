@@ -11,6 +11,7 @@ pub mod config;
 pub mod confine;
 pub mod consent;
 pub mod device;
+pub mod exec;
 pub mod gate;
 pub mod keystore;
 pub mod link;

@@ -211,7 +211,7 @@ pub(crate) fn create_dir(path: &Path) -> Result<(), DeviceError> {
 }
 
 /// The real (canonical) form of a path that exists; links and junctions are resolved here.
-pub(crate) fn real(path: &Path) -> Result<PathBuf, DeviceError> {
+pub fn real(path: &Path) -> Result<PathBuf, DeviceError> {
     std::fs::canonicalize(verbatim(path)).map_err(|e| {
         DeviceError::new(
             "WORKSPACE_FAILED",

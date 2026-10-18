@@ -14,7 +14,7 @@ use agentrouter_device::config::{Access, Config};
 use agentrouter_device::device::{Device, Options};
 use agentrouter_device::net::{self, Conn, Runtime};
 use agentrouter_device::util::{data_dir, home_dir, log};
-use agentrouter_device::{audit, checkpoint, gate, keystore, link, workspace, worktree};
+use agentrouter_device::{audit, checkpoint, gate, keystore, link, mcp, workspace, worktree};
 
 /// Set by Ctrl+C (one handler for the whole run: pairing, then serving).
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
@@ -250,6 +250,11 @@ fn serve(foreground: bool, _lock: std::fs::File) -> i32 {
     if !keystore::is_linked() {
         println!("这台电脑还没有链接。在项目文件夹里运行 agentrouter link。");
         return 1;
+    }
+    // The workspace MCP service is installed by the cloud as `command: "agentrouter"`; the shim makes
+    // that name resolve to this exact binary (see `mcp::install_self_shim`).
+    if let Err(e) = mcp::install_self_shim(&data_dir()) {
+        log(&format!("could not write the agentrouter shim: {e}"));
     }
     let device = Arc::new(Device::new(Options {
         data_dir: data_dir(),

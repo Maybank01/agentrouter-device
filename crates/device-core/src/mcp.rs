@@ -58,6 +58,67 @@ const NAME_MAX: usize = 24;
 
 pub const NEXT_MCP_OFF: &str = "这台电脑没有打开本机工具（MCP）。请用户在这台电脑上运行 agentrouter mcp on（或 agentrouter link --mcp）后再试。";
 
+/// The command name the cloud installs to run the device's own workspace MCP service.
+pub const BUILTIN_COMMAND: &str = "agentrouter";
+/// The arguments that make it the workspace service (`mcp-serve workspace`).
+pub(crate) fn is_builtin(spec: &Spec) -> bool {
+    spec.command == BUILTIN_COMMAND
+        && spec.args.first().map(String::as_str) == Some("mcp-serve")
+        && spec.args.get(1).map(String::as_str) == Some("workspace")
+}
+
+/// Write a shim named like the connector into `<data>/bin` (`agentrouter.cmd` on Windows, a `sh`
+/// script elsewhere), so a cloud definition `command: "agentrouter"` resolves to this exact binary.
+pub fn install_self_shim(data_dir: &Path) -> std::io::Result<PathBuf> {
+    let bin = data_dir.join("bin");
+    std::fs::create_dir_all(&bin)?;
+    let exe = std::env::current_exe()?;
+    #[cfg(windows)]
+    let path = {
+        let path = bin.join("agentrouter.cmd");
+        std::fs::write(&path, format!("@echo off\r\n\"{}\" %*\r\n", exe.display()))?;
+        path
+    };
+    #[cfg(not(windows))]
+    let path = {
+        use std::os::unix::fs::PermissionsExt;
+        let path = bin.join("agentrouter");
+        std::fs::write(
+            &path,
+            format!("#!/bin/sh\nexec \"{}\" \"$@\"\n", exe.display()),
+        )?;
+        let mut permissions = std::fs::metadata(&path)?.permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&path, permissions)?;
+        path
+    };
+    Ok(path)
+}
+
+/// The device's own program for `command`, looked up in a directory (the shim folder) after PATH.
+fn resolve_in(dir: &Path, command: &str) -> Option<PathBuf> {
+    let extensions: Vec<String> = if cfg!(windows) {
+        ["", ".exe", ".cmd", ".bat", ".com"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    } else {
+        vec![String::new()]
+    };
+    for ext in extensions {
+        let candidate = dir.join(format!("{command}{ext}"));
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// The private folder a builtin server runs in (never a user folder).
+fn dir_for_builtin(data_dir: &Path, name: &str) -> PathBuf {
+    data_dir.join("mcp").join(name)
+}
+
 fn error(code: &'static str, message: impl Into<String>) -> DeviceError {
     DeviceError::new(code, message)
 }
@@ -87,7 +148,7 @@ fn valid_name(name: &str) -> bool {
 
 /// What the cloud asked to run.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Spec {
+pub(crate) struct Spec {
     name: String,
     command: String,
     args: Vec<String>,
@@ -287,6 +348,8 @@ struct Proc {
 
 struct Server {
     spec: Spec,
+    /// The session whose builtin service this is (a builtin runs one process per session).
+    session: Option<String>,
     dir: PathBuf,
     /// Where it runs: the first linked folder (servers that work on "the current project"), else its own folder.
     cwd: PathBuf,
@@ -497,6 +560,7 @@ fn missing_runtime(command: &str) -> DeviceError {
 
 pub struct McpHost {
     enabled: AtomicBool,
+    data_dir: PathBuf,
     dir: PathBuf,
     packages: Packages,
     servers: Arc<Mutex<HashMap<String, Arc<Server>>>>,
@@ -506,6 +570,7 @@ impl McpHost {
     pub fn new(data_dir: &Path) -> McpHost {
         McpHost {
             enabled: AtomicBool::new(false),
+            data_dir: data_dir.to_path_buf(),
             dir: data_dir.join("mcp"),
             // Beside the servers' folders, not in them (a server may be called anything).
             packages: Packages::new(data_dir.join("mcp-packages")),
@@ -567,9 +632,15 @@ impl McpHost {
         }
     }
 
+    /// The program for a `mcp_start` command: PATH first, then the device's own shim folder
+    /// (`<data>/bin/agentrouter.cmd`), which is how `command: "agentrouter"` reaches this binary.
+    fn program_for(&self, command: &str) -> Option<PathBuf> {
+        resolve_command(command).or_else(|| resolve_in(&self.data_dir.join("bin"), command))
+    }
+
     /// The server a call/log/stop names: by name, and by cwd when the same name runs for more than one
     /// session worktree (M1 per-session cwd). Ambiguous without a cwd is an explicit error.
-    fn pick(&self, args: &Value) -> Result<Option<Arc<Server>>, DeviceError> {
+    fn pick(&self, args: &Value, session: &str) -> Result<Option<Arc<Server>>, DeviceError> {
         let name = str_arg(args, "name");
         let cwd = args
             .get("cwd")
@@ -583,6 +654,10 @@ impl McpHost {
             .filter(|s| cwd.is_none_or(|c| same_cwd(&s.cwd, c)))
             .cloned()
             .collect();
+        // A builtin service runs one process per conversation: this request's own one wins.
+        if found.len() > 1 {
+            found.retain(|s| s.session.as_deref().is_none_or(|s| s == session));
+        }
         match found.len() {
             0 => Ok(None),
             1 => Ok(found.pop()),
@@ -596,10 +671,12 @@ impl McpHost {
 
     /// `mcp_start`: run a server (or keep the one running with the same definition) and wait a while for it.
     /// `cwd` is the workspace directory the server runs in (a project or a session worktree, resolved and
-    /// validated by the caller); without it the first linked folder stays the cwd.
+    /// validated by the caller); without it the first linked folder stays the cwd. `session` names the
+    /// conversation: the device's builtin workspace service runs one process per session.
     pub fn start(
         &self,
         scope: &Scope,
+        session: &str,
         args: &Value,
         cancel: &AtomicBool,
         cwd: Option<&Path>,
@@ -608,17 +685,59 @@ impl McpHost {
         let mut spec = Spec::parse(args)?.scoped(&scope.folders)?;
         // A catalog package runs only as the checked file (MCP_PACKAGE_NEEDED: the cloud sends it first).
         self.packages.apply(spec.pin.as_ref(), &mut spec.args)?;
+        let builtin = is_builtin(&spec);
         let wait = args
             .get("waitMs")
             .and_then(Value::as_u64)
             .unwrap_or(WAIT_DEFAULT_MS)
             .min(CALL_MAX_MS);
-        // Same tool name in another directory is another process: the key carries the cwd.
+        // Where it runs: an explicit workspace cwd, else the first linked folder; a builtin service
+        // never runs in a user folder for safety (it is a device program, not a user tool).
         let server_cwd = cwd
             .map(Path::to_path_buf)
-            .or_else(|| scope.folders.first().cloned())
-            .unwrap_or_else(|| self.dir.join(&spec.name));
-        let key = server_key(&spec.name, &server_cwd);
+            .or_else(|| {
+                if builtin {
+                    None
+                } else {
+                    scope.folders.first().cloned()
+                }
+            })
+            .unwrap_or_else(|| dir_for_builtin(&self.data_dir, &spec.name));
+        // Same tool name in another directory/session is another process: the key carries it.
+        let key = if builtin {
+            format!("{}\u{1}builtin:{session}", spec.name)
+        } else {
+            server_key(&spec.name, &server_cwd)
+        };
+        if builtin {
+            // The workspace tool needs to know who is calling it and where the device data lives.
+            spec.env.retain(|(k, _)| {
+                !matches!(
+                    k.as_str(),
+                    "AGENTROUTER_DEVICE_HOME" | "AGENTROUTER_SESSION"
+                )
+            });
+            spec.env.push((
+                "AGENTROUTER_DEVICE_HOME".to_string(),
+                crate::gate::display(&self.data_dir),
+            ));
+            spec.env
+                .push(("AGENTROUTER_SESSION".to_string(), session.to_string()));
+        }
+        // The device's own shim folder goes first on PATH: a cloud definition `command: "agentrouter"`
+        // resolves to this exact binary, and a server's own child commands can call it too.
+        let bin = self.data_dir.join("bin");
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let old = path.to_string_lossy();
+        let joined = if old.is_empty() {
+            bin.display().to_string()
+        } else if cfg!(windows) {
+            format!("{};{}", bin.display(), old)
+        } else {
+            format!("{}:{}", bin.display(), old)
+        };
+        spec.env.retain(|(k, _)| k != "PATH");
+        spec.env.push(("PATH".to_string(), joined));
         let server = {
             let mut servers = self.servers.lock().unwrap();
             match servers.get(&key) {
@@ -643,8 +762,14 @@ impl McpHost {
                         old.stopping.store(true, Ordering::SeqCst);
                         old.kill();
                     }
-                    let program = resolve_command(&spec.command)
-                        .ok_or_else(|| missing_runtime(&spec.command))?;
+                    let program = if builtin {
+                        std::env::current_exe().map_err(|e| {
+                            error("MCP_START_FAILED", format!("找不到连接器自己的程序：{e}"))
+                        })?
+                    } else {
+                        self.program_for(&spec.command)
+                            .ok_or_else(|| missing_runtime(&spec.command))?
+                    };
                     let dir = self.dir.join(&spec.name);
                     let _ = std::fs::create_dir_all(&dir);
                     // Its data folder in the linked folders it works on stays out of the person's git.
@@ -658,6 +783,7 @@ impl McpHost {
                     }
                     let server = Arc::new(Server {
                         spec,
+                        session: builtin.then(|| session.to_string()),
                         dir,
                         cwd: server_cwd,
                         proc: Mutex::new(None),
@@ -697,9 +823,9 @@ impl McpHost {
         self.packages.store(args)
     }
 
-    pub fn stop(&self, args: &Value) -> Result<Value, DeviceError> {
+    pub fn stop(&self, session: &str, args: &Value) -> Result<Value, DeviceError> {
         let name = str_arg(args, "name").to_string();
-        let Some(server) = self.pick(args)? else {
+        let Some(server) = self.pick(args, session)? else {
             return Ok(json!({"name": name, "stopped": false}));
         };
         server.stopping.store(true, Ordering::SeqCst);
@@ -719,14 +845,14 @@ impl McpHost {
         Ok(json!({"enabled": self.enabled(), "servers": list}))
     }
 
-    pub fn logs(&self, args: &Value) -> Result<Value, DeviceError> {
+    pub fn logs(&self, session: &str, args: &Value) -> Result<Value, DeviceError> {
         let name = str_arg(args, "name");
         let lines = args
             .get("lines")
             .and_then(Value::as_u64)
             .unwrap_or(50)
             .min(LOG_LINES as u64) as usize;
-        let Some(server) = self.pick(args)? else {
+        let Some(server) = self.pick(args, session)? else {
             return Err(error(
                 "MCP_NOT_RUNNING",
                 format!("本机工具 {name} 没有在运行"),
@@ -743,6 +869,7 @@ impl McpHost {
     pub fn call(
         &self,
         scope: &Scope,
+        session: &str,
         args: &Value,
         cancel: &AtomicBool,
     ) -> Result<Value, DeviceError> {
@@ -752,7 +879,7 @@ impl McpHost {
         if tool.is_empty() || tool.len() > 128 {
             return Err(error("FAILED", "tool 不能为空"));
         }
-        let Some(server) = self.pick(args)? else {
+        let Some(server) = self.pick(args, session)? else {
             return Err(error(
                 "MCP_NOT_RUNNING",
                 format!("本机工具 {name} 没有在运行"),
@@ -1276,6 +1403,7 @@ mod tests {
         let e = host
             .start(
                 &scope,
+                "s1",
                 &json!({"name": "demo", "command": "x"}),
                 &cancel,
                 None,
@@ -1289,19 +1417,53 @@ mod tests {
             deny: vec![],
         };
         assert_eq!(
-            host.start(&ro, &json!({"name": "demo", "command": "x"}), &cancel, None)
-                .unwrap_err()
-                .code,
+            host.start(
+                &ro,
+                "s1",
+                &json!({"name": "demo", "command": "x"}),
+                &cancel,
+                None
+            )
+            .unwrap_err()
+            .code,
             "DENIED"
         );
         let e = host
             .start(
                 &scope,
+                "s1",
                 &json!({"name": "demo", "command": "surely-not-a-command-xyz"}),
                 &cancel,
                 None,
             )
             .unwrap_err();
         assert_eq!(e.code, "MCP_RUNTIME_MISSING");
+    }
+
+    #[test]
+    fn the_workspace_service_is_a_recognised_builtin_with_a_shim() {
+        let exe = std::env::current_exe().unwrap();
+        let target = exe
+            .parent()
+            .and_then(std::path::Path::parent)
+            .and_then(std::path::Path::parent)
+            .expect("target folder");
+        let data = target
+            .join("tmp")
+            .join(format!("mcp-shim-{}", crate::util::short_id("")));
+        std::fs::create_dir_all(&data).unwrap();
+        install_self_shim(&data).unwrap();
+        let host = McpHost::new(&data);
+        assert!(host.program_for("agentrouter").is_some());
+        let spec = Spec::parse(&json!({
+            "name": "workspace", "command": "agentrouter",
+            "args": ["mcp-serve", "workspace"],
+        }))
+        .unwrap();
+        assert!(is_builtin(&spec));
+        let other =
+            Spec::parse(&json!({"name": "other", "command": "agentrouter", "args": ["status"]}))
+                .unwrap();
+        assert!(!is_builtin(&other));
     }
 }

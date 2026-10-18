@@ -84,7 +84,7 @@ fn a_stdio_server_starts_answers_restarts_and_stops() {
         "name": "fake", "command": python, "args": ["-u", "-c", SERVER],
         "env": {"FAKE_KEY": "very-secret-1"}, "secretEnv": ["FAKE_KEY"], "hash": "h1", "waitMs": 20000,
     });
-    let started = host.start(&scope, &start, &cancel, None).unwrap();
+    let started = host.start(&scope, "s1", &start, &cancel, None).unwrap();
     assert_eq!(started["state"], "ready", "{started}");
     assert_eq!(started["tools"].as_array().unwrap().len(), 2);
     assert!(!started.to_string().contains("very-secret-1"));
@@ -92,6 +92,7 @@ fn a_stdio_server_starts_answers_restarts_and_stops() {
     let call = |tool: &str| {
         host.call(
             &scope,
+            "s1",
             &json!({"name": "fake", "tool": tool, "arguments": {"text": "hi"}, "hash": "h1", "timeoutMs": 10000}),
             &cancel,
         )
@@ -111,11 +112,16 @@ fn a_stdio_server_starts_answers_restarts_and_stops() {
 
     // Unknown server, then stop.
     let missing = host
-        .call(&scope, &json!({"name": "nope", "tool": "echo"}), &cancel)
+        .call(
+            &scope,
+            "s1",
+            &json!({"name": "nope", "tool": "echo"}),
+            &cancel,
+        )
         .unwrap_err();
     assert_eq!(missing.code, "MCP_NOT_RUNNING");
     assert_eq!(
-        host.stop(&json!({"name": "fake"})).unwrap()["stopped"],
+        host.stop("s1", &json!({"name": "fake"})).unwrap()["stopped"],
         true
     );
     assert!(
