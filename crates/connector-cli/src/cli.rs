@@ -15,7 +15,7 @@ use agentrouter_device::device::{Device, Options};
 use agentrouter_device::net::{self, Conn, Runtime};
 use agentrouter_device::util::{data_dir, home_dir, log};
 use agentrouter_device::{
-    audit, checkpoint, deploy, gate, keystore, link, mcp, workspace, worktree,
+    audit, checkpoint, deploy, gate, keystore, link, local_agent, mcp, workspace, worktree,
 };
 
 /// Set by Ctrl+C (one handler for the whole run: pairing, then serving).
@@ -180,6 +180,7 @@ pub fn main() {
         "screen" => cmd_screen(flags),
         "mcp" => cmd_mcp(flags),
         "workspace" => cmd_workspace(flags),
+        "agent" => cmd_agent(flags),
         "audit" => match audit::verify(&data_dir().join("audit.log")) {
             Ok(n) => {
                 println!("审计日志完好，共 {n} 条。");
@@ -928,6 +929,31 @@ fn cmd_deploy(flags: &Flags) -> i32 {
         }
         _ => {
             println!("{usage}");
+            1
+        }
+    }
+}
+
+/// `agentrouter agent list`: locally registered Agents (`lag_`) and their sessions (`lses_`), recorded
+/// the first time a local Agent used `agentrouter mcp-serve local`.
+fn cmd_agent(flags: Flags) -> i32 {
+    let data = data_dir();
+    match flags.positional.get(1).map(String::as_str) {
+        Some("list") | None => match local_agent::list(&data) {
+            Ok(value) => {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&value).unwrap_or_default()
+                );
+                0
+            }
+            Err(e) => {
+                print_device_error(&e);
+                1
+            }
+        },
+        _ => {
+            println!("用法：agentrouter agent list");
             1
         }
     }

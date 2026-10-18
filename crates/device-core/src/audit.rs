@@ -5,6 +5,7 @@
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 
@@ -31,8 +32,25 @@ impl Audit {
         &self.path
     }
 
-    /// Append one entry (an object); `at`, `prev` and `hash` are added here.
+    /// Append one entry (an object); `at`, `prev` and `hash` are added here. The chain is read and
+    /// written under a cross-process lock, so the connector and a local Agent's MCP service can both
+    /// append without breaking it.
     pub fn record(&mut self, entry: Value) {
+        let chain_lock = match crate::lockfile::acquire(
+            &self.path.with_extension("lock"),
+            Duration::from_secs(5),
+        ) {
+            Ok(lock) => Some(lock),
+            Err(e) => {
+                crate::util::log(&format!(
+                    "audit lock unavailable, appending anyway: {} {}",
+                    e.code, e.message
+                ));
+                None
+            }
+        };
+        // Another process may have appended since this handle was opened.
+        self.last = last_hash(&self.path).unwrap_or_else(|| GENESIS.to_string());
         let mut map = match entry {
             Value::Object(map) => map,
             other => {
@@ -61,7 +79,13 @@ impl Audit {
             }
             Err(e) => crate::util::log(&format!("audit log not writable: {e}")),
         }
+        drop(chain_lock);
     }
+}
+
+/// Append one entry with a fresh handle (a local Agent MCP service keeps no long-lived chain).
+pub fn append(path: &Path, entry: Value) {
+    Audit::open(path).record(entry);
 }
 
 fn last_hash(path: &Path) -> Option<String> {
@@ -127,6 +151,31 @@ mod tests {
             .replace("dir", "del");
         std::fs::write(&path, text).unwrap();
         assert_eq!(verify(&path).unwrap_err().0, 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn concurrent_appends_keep_one_chain() {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/test-tmp")
+            .join(format!("ar-audit-concurrent-{}", crate::util::short_id("")));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("audit.log");
+        // Two independent handles (like the connector and a local Agent MCP service) appending at once.
+        let mut handles = Vec::new();
+        for worker in 0..2 {
+            let path = path.clone();
+            handles.push(std::thread::spawn(move || {
+                let mut audit = Audit::open(&path);
+                for i in 0..10 {
+                    audit.record(json!({"action": "test", "worker": worker, "i": i}));
+                }
+            }));
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        assert_eq!(verify(&path), Ok(20));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

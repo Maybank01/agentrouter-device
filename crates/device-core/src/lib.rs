@@ -18,6 +18,8 @@ pub mod exec;
 pub mod gate;
 pub mod keystore;
 pub mod link;
+pub mod local_agent;
+pub mod lockfile;
 pub mod mcp;
 pub mod mcp_pkg;
 pub mod net;

@@ -500,3 +500,209 @@ fn exec_prefers_powershell_7_when_installed() {
         "expected PowerShell 7 major version in exec output: {text}"
     );
 }
+
+impl Client {
+    /// The local Agent entry: `agentrouter mcp-serve local` with a self-reported identity.
+    fn start_local(
+        data: &Path,
+        home: &Path,
+        agent: Option<&str>,
+        local_session: Option<&str>,
+        envs: &[(&str, &str)],
+    ) -> Client {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_agentrouter"));
+        cmd.arg("mcp-serve")
+            .arg("local")
+            .env("AGENTROUTER_DEVICE_HOME", data)
+            .env("USERPROFILE", home)
+            .env("HOME", home)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        if let Some(agent) = agent {
+            cmd.env("AGENTROUTER_LOCAL_AGENT", agent);
+        }
+        if let Some(session) = local_session {
+            cmd.env("AGENTROUTER_LOCAL_SESSION", session);
+        }
+        for (key, value) in envs {
+            cmd.env(key, value);
+        }
+        let mut child = cmd.spawn().expect("spawn the local MCP service");
+        let stdin = child.stdin.take().unwrap();
+        let out = BufReader::new(child.stdout.take().unwrap());
+        let mut client = Client {
+            child,
+            stdin,
+            out,
+            next: 1,
+        };
+        let init = client.request("initialize", json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}}));
+        assert_eq!(
+            init["result"]["serverInfo"]["name"],
+            "agentrouter-workspace"
+        );
+        client
+    }
+}
+
+#[test]
+fn local_entry_registers_identity_and_exposes_the_workspace_tools() {
+    let data = temp("local-data");
+    let home = temp("local-home");
+    std::fs::create_dir_all(&data).unwrap();
+    config_access(&data, "full", true);
+    let mut client = Client::start_local(&data, &home, Some("dsh"), Some("conv-1"), &[]);
+    let answer = client.request("tools/list", json!({}));
+    let names: Vec<&str> = answer["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect();
+    for expected in [
+        "exec",
+        "workspace_create",
+        "worktree_create",
+        "deploy",
+        "deploy_targets",
+    ] {
+        assert!(names.contains(&expected), "missing {expected}: {names:?}");
+    }
+    let (error, text) = client.tool("workspace_create", json!({"name": "mod"}));
+    assert!(!error, "{text}");
+    let (error, text) = client.tool("worktree_create", json!({"project": "mod"}));
+    assert!(!error, "{text}");
+    let created: Value = serde_json::from_str(&text).unwrap();
+    let worktree = created["worktreeDir"].as_str().unwrap().to_string();
+    assert!(worktree.contains("lses_conv-1"), "{worktree}");
+    let (error, text) = client.tool("exec", json!({"command": "echo ok"}));
+    assert!(!error, "{text}");
+    // The full-access deploy_target_* tools (PR #36) are part of the same call_tool dispatch; they
+    // appear here automatically once that PR is merged. Until then the local entry exposes the
+    // workspace tools already on main (including the read-only deploy_targets/deploy).
+    // The registry lists the first-seen pair.
+    let registry = std::fs::read_to_string(data.join("local-agents.json")).unwrap();
+    assert!(
+        registry.contains("lag_dsh") && registry.contains("lses_conv-1"),
+        "{registry}"
+    );
+    // Both audit surfaces carry the caller; the connector chain stays valid.
+    let mcp_audit = std::fs::read_to_string(data.join("mcp-audit.log")).unwrap();
+    assert!(
+        mcp_audit.contains("\"caller\"") && mcp_audit.contains("lag_dsh"),
+        "{mcp_audit}"
+    );
+    assert!(mcp_audit.contains("lses_conv-1"), "{mcp_audit}");
+    let audit = std::fs::read_to_string(data.join("audit.log")).unwrap();
+    assert!(
+        audit.contains("local_mcp_call") && audit.contains("lag_dsh"),
+        "{audit}"
+    );
+    assert_eq!(
+        agentrouter_device::audit::verify(&data.join("audit.log")),
+        Ok(4)
+    );
+    // `agentrouter agent list` shows it.
+    let output = Command::new(env!("CARGO_BIN_EXE_agentrouter"))
+        .args(["agent", "list"])
+        .env("AGENTROUTER_DEVICE_HOME", &data)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("lag_dsh") && stdout.contains("lses_conv-1"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn two_local_sessions_are_isolated_and_the_project_lock_serialises_exec() {
+    let data = temp("local-two-data");
+    let home = temp("local-two-home");
+    std::fs::create_dir_all(&data).unwrap();
+    config(&data, true, &[]);
+    let mut first = Client::start_local(&data, &home, Some("dsh"), Some("session-a"), &[]);
+    let mut second = Client::start_local(&data, &home, Some("dsh"), Some("session-b"), &[]);
+    let (error, text) = first.tool("workspace_create", json!({"name": "mod"}));
+    assert!(!error, "{text}");
+    let (error, text) = first.tool("worktree_create", json!({"project": "mod"}));
+    assert!(!error, "{text}");
+    let a: Value = serde_json::from_str(&text).unwrap();
+    let (error, text) = second.tool("worktree_create", json!({"project": "mod"}));
+    assert!(!error, "{text}");
+    let b: Value = serde_json::from_str(&text).unwrap();
+    assert_ne!(a["worktreeDir"], b["worktreeDir"]);
+    assert!(
+        a["worktreeDir"]
+            .as_str()
+            .unwrap()
+            .contains("lses_session-a")
+    );
+    assert!(
+        b["worktreeDir"]
+            .as_str()
+            .unwrap()
+            .contains("lses_session-b")
+    );
+    let print_cwd = if cfg!(windows) {
+        "(Get-Location).Path"
+    } else {
+        "pwd"
+    };
+    let (_, text) = first.tool("exec", json!({"command": print_cwd}));
+    assert!(text.contains("lses_session-a"), "{text}");
+    let (_, text) = second.tool("exec", json!({"command": print_cwd}));
+    assert!(text.contains("lses_session-b"), "{text}");
+    // Hold the project lock from the test process: the next exec must report LOCAL_SESSION_BUSY.
+    let lock_path = data.join("locks").join("project-mod.lock");
+    let held = agentrouter_device::lockfile::acquire(&lock_path, std::time::Duration::from_secs(1))
+        .unwrap();
+    let mut short_wait = Client::start_local(
+        &data,
+        &home,
+        Some("dsh"),
+        Some("session-a"),
+        &[("AGENTROUTER_LOCK_TIMEOUT_MS", "100")],
+    );
+    let (error, text) = short_wait.tool("exec", json!({"command": "echo busy"}));
+    assert!(error, "{text}");
+    assert!(text.contains("LOCAL_SESSION_BUSY"), "{text}");
+    drop(held);
+    let (error, text) = short_wait.tool("exec", json!({"command": "echo free"}));
+    assert!(!error, "{text}");
+}
+
+#[test]
+fn local_mode_without_environment_still_works() {
+    let data = temp("local-none-data");
+    let home = temp("local-none-home");
+    std::fs::create_dir_all(&data).unwrap();
+    config(&data, true, &[]);
+    let mut client = Client::start_local(&data, &home, None, None, &[]);
+    let (error, text) = client.tool("workspace_create", json!({"name": "mod"}));
+    assert!(!error, "{text}");
+    let (error, text) = client.tool("worktree_create", json!({"project": "mod"}));
+    assert!(!error, "{text}");
+    let created: Value = serde_json::from_str(&text).unwrap();
+    assert!(
+        created["worktreeDir"]
+            .as_str()
+            .unwrap()
+            .contains("lses_default"),
+        "{created}"
+    );
+    let mcp_audit = std::fs::read_to_string(data.join("mcp-audit.log")).unwrap();
+    assert!(
+        mcp_audit.contains("lag_local") && mcp_audit.contains("lses_default"),
+        "{mcp_audit}"
+    );
+}
+
+fn config_access(data: &Path, access: &str, unattended: bool) {
+    std::fs::write(
+        data.join("config.json"),
+        json!({"access": access, "unattended": unattended}).to_string(),
+    )
+    .unwrap();
+}

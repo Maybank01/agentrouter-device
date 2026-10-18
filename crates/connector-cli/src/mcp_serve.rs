@@ -12,21 +12,51 @@
 
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use serde_json::{Value, json};
 
 use agentrouter_device::config::{Access, Config};
-use agentrouter_device::deploy;
-use agentrouter_device::exec;
-use agentrouter_device::gate::{display, resolve_folders};
+use agentrouter_device::gate::{display, inside, resolve_folders};
 use agentrouter_device::protocol::DeviceError;
 use agentrouter_device::util::{data_dir, home_dir, iso_now};
-use agentrouter_device::{consent, workspace, worktree};
+use agentrouter_device::{
+    audit, consent, deploy, exec, local_agent, lockfile, workspace, worktree,
+};
 
 const SERVER_NAME: &str = "agentrouter-workspace";
 const PROTOCOL: &str = "2025-06-18";
+
+/// Set when the process was started as `mcp-serve local`: the self-reported local Agent identity.
+static LOCAL_IDENTITY: OnceLock<local_agent::Identity> = OnceLock::new();
+
+fn local_identity() -> Option<&'static local_agent::Identity> {
+    LOCAL_IDENTITY.get()
+}
+
+/// The caller shown in local approval dialogs/errors and audit entries.
+fn caller_label() -> String {
+    match local_identity() {
+        Some(identity) => format!(
+            "本地 Agent {}（会话 {}）",
+            identity.agent_name, identity.session_id
+        ),
+        None => "云端 Agent".to_string(),
+    }
+}
+
+/// Prefix an approval question with the local caller (the consent dialog then names who asks).
+fn question_with_caller(question: &str) -> String {
+    match local_identity() {
+        Some(identity) => format!(
+            "[本地 Agent {}（会话 {}）]\n\n{question}",
+            identity.agent_name, identity.session_id
+        ),
+        None => question.to_string(),
+    }
+}
 
 /// One MCP tool: name, description, JSON input schema.
 fn tools() -> Value {
@@ -136,6 +166,11 @@ fn data() -> PathBuf {
 }
 
 fn session() -> String {
+    // A local Agent's conversation is its own `lses_` isolation unit; the cloud path keeps using the
+    // session the connector injected.
+    if let Some(identity) = local_identity() {
+        return identity.session_id.clone();
+    }
     std::env::var("AGENTROUTER_SESSION").unwrap_or_default()
 }
 
@@ -211,11 +246,11 @@ fn exec_cwd(args: &Value) -> Result<PathBuf, DeviceError> {
 fn append_audit(entry: Value) {
     let dir = data();
     let _ = std::fs::create_dir_all(&dir);
-    let line = format!(
-        "{}\n",
-        serde_json::to_string(&json!({"at": iso_now(), "session": session(), "entry": entry}))
-            .unwrap_or_default()
-    );
+    let mut value = json!({"at": iso_now(), "session": session(), "entry": entry});
+    if let Some(identity) = local_identity() {
+        value["caller"] = identity.caller();
+    }
+    let line = format!("{}\n", serde_json::to_string(&value).unwrap_or_default());
     if let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -223,6 +258,32 @@ fn append_audit(entry: Value) {
     {
         let _ = file.write_all(line.as_bytes());
     }
+}
+
+/// Serialize execs of the same project across local sessions/processes (owner: one project at a time).
+fn local_exec_lock(data: &Path, cwd: &Path) -> Result<Option<lockfile::FileLock>, DeviceError> {
+    if local_identity().is_none() {
+        return Ok(None);
+    }
+    let registry = workspace::load(data)?;
+    for project in &registry.projects {
+        let real = workspace::real(Path::new(&project.path))?;
+        if inside(cwd, &real) || inside(cwd, Path::new(&project.path)) {
+            let path = data
+                .join("locks")
+                .join(format!("project-{}.lock", local_agent::slug(&project.slug)));
+            let timeout = std::env::var("AGENTROUTER_LOCK_TIMEOUT_MS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(30_000)
+                .clamp(100, 600_000);
+            return Ok(Some(lockfile::acquire(
+                &path,
+                Duration::from_millis(timeout),
+            )?));
+        }
+    }
+    Ok(None)
 }
 
 fn call_tool(tool: &str, args: &Value) -> Result<Value, DeviceError> {
@@ -248,22 +309,28 @@ fn call_tool(tool: &str, args: &Value) -> Result<Value, DeviceError> {
                     append_audit(
                         json!({"tool": "exec", "cwd": display(&cwd), "command": command, "denied": why}),
                     );
-                    return Err(DeviceError::denied(format!("这条命令被拒绝：{why}"))
-                        .next("换一种做法；确实需要请在电脑上自己操作。"));
+                    return Err(DeviceError::denied(format!(
+                        "{}：这条命令被拒绝：{why}",
+                        caller_label()
+                    ))
+                    .next("换一种做法；确实需要请在电脑上自己操作。"));
                 }
                 exec::Danger::Ask(why) => {
                     if config.access != Access::Full {
                         let question = format!(
-                            "云端 AI 想在这台电脑上运行一条可能危险的操作：{why}\n\n{command}\n\n位置：{}",
+                            "想在这台电脑上运行一条可能危险的操作：{why}\n\n{command}\n\n位置：{}",
                             display(&cwd)
                         );
-                        let ok = approved(&question);
+                        let ok = approved(&question_with_caller(&question));
                         if !ok {
                             append_audit(
                                 json!({"tool": "exec", "cwd": display(&cwd), "command": command, "denied": why, "reason": "no consent"}),
                             );
-                            return Err(DeviceError::denied("用户没有确认这条命令，已取消")
-                                .next("不要原样重试；换个不需要确认的做法。"));
+                            return Err(DeviceError::denied(format!(
+                                "{}没有确认这条命令，已取消",
+                                caller_label()
+                            ))
+                            .next("不要原样重试；换个不需要确认的做法。"));
                         }
                         append_audit(
                             json!({"tool": "exec", "cwd": display(&cwd), "command": command, "approved": why}),
@@ -272,6 +339,8 @@ fn call_tool(tool: &str, args: &Value) -> Result<Value, DeviceError> {
                 }
                 exec::Danger::Safe => {}
             }
+            // Local sessions of the same project are serialized; the lock is held for the command.
+            let _project_lock = local_exec_lock(&data, &cwd)?;
             // The OS write boundary under the gate/deny/consent (S2b): at `folders` the exec cwd is
             // labelled Low and the command runs at low integrity; at `full` the person asked for
             // unrestricted commands and the boundary is off.
@@ -403,12 +472,15 @@ fn call_tool(tool: &str, args: &Value) -> Result<Value, DeviceError> {
             let message = args.get("message").and_then(Value::as_str).unwrap_or("");
             let artifacts = args.get("artifacts").cloned().unwrap_or(Value::Null);
             let planned = deploy::plan(&data, &session, project, &artifacts, target, message)?;
-            if !approved(&deploy::approval_text(&planned)) {
+            if !approved(&question_with_caller(&deploy::approval_text(&planned))) {
                 append_audit(
                     json!({"tool": "deploy", "target": planned.target.name, "denied": "no consent"}),
                 );
-                return Err(DeviceError::denied("用户没有批准这次部署，已取消")
-                    .next("不要原样重试；把要部署的内容和原因告诉用户，等他们自己批准。"));
+                return Err(DeviceError::denied(format!(
+                    "{}没有批准这次部署，已取消",
+                    caller_label()
+                ))
+                .next("不要原样重试；把要部署的内容和原因告诉用户，等他们自己批准。"));
             }
             let summary = deploy::apply(&data, &planned)?;
             append_audit(json!({
@@ -425,8 +497,11 @@ fn call_tool(tool: &str, args: &Value) -> Result<Value, DeviceError> {
         "deploy_rollback" => {
             let id = args.get("id").and_then(Value::as_str).unwrap_or("");
             let question = deploy::rollback_text(&data, id)?;
-            if !approved(&question) {
-                return Err(DeviceError::denied("用户没有批准这次回滚，已取消"));
+            if !approved(&question_with_caller(&question)) {
+                return Err(DeviceError::denied(format!(
+                    "{}没有批准这次回滚，已取消",
+                    caller_label()
+                )));
             }
             let summary = deploy::rollback_apply(&data, id)?;
             append_audit(json!({"tool": "deploy_rollback", "id": id, "target": summary["target"]}));
@@ -460,7 +535,26 @@ fn handle(line: &str) -> Option<Value> {
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| json!({}));
-            match call_tool(name, &arguments) {
+            let result = call_tool(name, &arguments);
+            // A locally launched service also appends to the connector's hash-chained audit log, with
+            // the caller (lag/lses); audit.rs locks the chain across processes.
+            if let Some(identity) = local_identity() {
+                let (outcome, error) = match &result {
+                    Ok(_) => ("ok", None),
+                    Err(error) => ("error", Some(error.code)),
+                };
+                audit::append(
+                    &data().join("audit.log"),
+                    json!({
+                        "action": "local_mcp_call",
+                        "caller": identity.caller(),
+                        "tool": name,
+                        "outcome": outcome,
+                        "error": error,
+                    }),
+                );
+            }
+            match result {
                 Ok(value) => value,
                 Err(error) => failure(&error),
             }
@@ -477,10 +571,36 @@ fn handle(line: &str) -> Option<Value> {
 }
 
 /// Serve the workspace tools on stdio until stdin closes. Returns the process exit code.
+///
+/// `mcp-serve workspace` is the cloud-installed service (unchanged); `mcp-serve local` is the local
+/// Agent entry: same tools, but the caller is a locally registered `lag_`/`lses_` identity read from
+/// the launch environment, and every audit entry/dialog names it.
 pub fn run(args: &[String]) -> i32 {
-    if args.first().map(String::as_str) != Some("workspace") || args.len() > 1 {
-        eprintln!("用法：agentrouter mcp-serve workspace（由云端以本机工具方式启动）");
-        return 2;
+    let mode = match (args.first().map(String::as_str), args.len()) {
+        (Some("workspace"), 1) => "workspace",
+        (Some("local"), 1) => "local",
+        _ => {
+            eprintln!("用法：agentrouter mcp-serve local|workspace（stdio MCP 服务）");
+            return 2;
+        }
+    };
+    if mode == "local" {
+        let identity = local_agent::Identity::from_env();
+        let data = data();
+        if let Err(error) = local_agent::register(&data, &identity) {
+            eprintln!("本地 Agent 登记失败：{} {}", error.code, error.message);
+            return 2;
+        }
+        let _ = LOCAL_IDENTITY.set(identity);
+        append_audit(json!({"tool": "local_agent_seen"}));
+        audit::append(
+            &data.join("audit.log"),
+            json!({
+                "action": "local_agent_seen",
+                "caller": local_identity().map(|identity| identity.caller()),
+            }),
+        );
+        // The local entry never adopts a cloud identity: only the local env values are used.
     }
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
