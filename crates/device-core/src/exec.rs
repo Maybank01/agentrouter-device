@@ -170,6 +170,22 @@ fn read_stream(mut stream: impl Read + Send + 'static) -> std::thread::JoinHandl
     })
 }
 
+/// End the command and everything it started (the shell may have exited already).
+fn kill_tree(child: &mut std::process::Child) {
+    #[cfg(windows)]
+    {
+        let _ = child.kill();
+    }
+    #[cfg(unix)]
+    {
+        // SAFETY: the pid belongs to the process group we created for this command.
+        unsafe {
+            libc::kill(-(child.id() as i32), libc::SIGKILL);
+        }
+        let _ = child.kill();
+    }
+}
+
 /// Run `command` with the device's shell in `cwd`. `timeout` kills the process tree (Windows job) or
 /// the child (elsewhere); the output is capped. The caller validates `cwd` first.
 pub fn run(command: &str, cwd: &Path, timeout: Duration) -> Result<Outcome, String> {
@@ -187,6 +203,21 @@ pub fn run(command: &str, cwd: &Path, timeout: Duration) -> Result<Outcome, Stri
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // Its own process group on Unix, so a timeout ends the shell *and* what it started (the shell may
+    // exit but leave a child holding the pipes open).
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: pre_exec runs in the child after fork; it only sets the child's process group.
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setpgid(0, 0) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
     let started = Instant::now();
     let mut child = cmd
         .spawn()
@@ -223,12 +254,20 @@ pub fn run(command: &str, cwd: &Path, timeout: Duration) -> Result<Outcome, Stri
         }
         if Instant::now() >= deadline {
             timed_out = true;
-            let _ = child.kill();
+            kill_tree(&mut child);
             let _ = child.wait();
             break None;
         }
         std::thread::sleep(Duration::from_millis(20));
     };
+    // Nothing a finished command left behind may keep the pipes open and hang the readers.
+    #[cfg(unix)]
+    {
+        // SAFETY: a pid we spawned in its own process group; ESRCH when the group is already gone.
+        unsafe {
+            libc::kill(-(child.id() as i32), libc::SIGKILL);
+        }
+    }
     #[cfg(windows)]
     drop(job);
     let stdout_bytes = out_reader.and_then(|r| r.join().ok()).unwrap_or_default();
