@@ -18,6 +18,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use agentrouter_device::config::{Access, Config};
+use agentrouter_device::deploy;
 use agentrouter_device::exec;
 use agentrouter_device::gate::{display, resolve_folders};
 use agentrouter_device::protocol::DeviceError;
@@ -83,6 +84,44 @@ fn tools() -> Value {
             "Remove stale worktree directories of a project (older than older_hours, default 72).",
             json!({"type": "object", "properties": {"project": {"type": "string"}, "older_hours": {"type": "integer"}, "delete_branches": {"type": "boolean"}}, "required": ["project"]}),
         ),
+        tool(
+            "deploy_targets",
+            "List the registered external deploy targets on this computer (name and directory).",
+            json!({"type": "object", "properties": {}, "required": []}),
+        ),
+        tool(
+            "deploy",
+            "Deploy files from the project/this session's worktree onto a registered external target (for example a game install). Backs up overwritten files, asks the person on this computer, records the deployment and rolls back automatically on failure.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string"},
+                    "target": {"type": "string", "description": "A registered deploy target name (deploy_targets)."},
+                    "artifacts": {
+                        "type": "array",
+                        "items": {
+                            "oneOf": [
+                                {"type": "string"},
+                                {"type": "object", "properties": {"source": {"type": "string"}, "dest": {"type": "string"}}, "required": ["source", "dest"]}
+                            ]
+                        },
+                        "description": "Files to deploy: source inside the workspace, dest a relative path under the target."
+                    },
+                    "message": {"type": "string"}
+                },
+                "required": ["project", "target", "artifacts"]
+            }),
+        ),
+        tool(
+            "deploy_list",
+            "List recent deployments (id, target, files, status).",
+            json!({"type": "object", "properties": {"limit": {"type": "integer"}}, "required": []}),
+        ),
+        tool(
+            "deploy_rollback",
+            "Roll a deployment back: restore the backed-up target files (or remove the files it added). Asks the person on this computer first.",
+            json!({"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}),
+        ),
     ])
 }
 
@@ -115,6 +154,23 @@ fn failure(error: &DeviceError) -> Value {
         body.push_str(next);
     }
     json!({"content": [{"type": "text", "text": body}], "isError": true})
+}
+
+/// Local approval: an unattended machine's operator pre-approved (config), the environment can force
+/// a result for headless tests (`AGENTROUTER_CONSENT=allow|deny`), otherwise the person is asked here.
+fn approved(question: &str) -> bool {
+    let config = Config::load();
+    if config.unattended {
+        return true;
+    }
+    match std::env::var("AGENTROUTER_CONSENT").as_deref() {
+        Ok("allow") => true,
+        Ok("deny") => false,
+        _ => {
+            let cancel = AtomicBool::new(false);
+            consent::question(consent::TITLE, question, &cancel)
+        }
+    }
 }
 
 /// The directory an exec runs in: explicit (a registered project/worktree), else the session's
@@ -201,8 +257,7 @@ fn call_tool(tool: &str, args: &Value) -> Result<Value, DeviceError> {
                             "云端 AI 想在这台电脑上运行一条可能危险的操作：{why}\n\n{command}\n\n位置：{}",
                             display(&cwd)
                         );
-                        let cancel = AtomicBool::new(false);
-                        let ok = consent::question(consent::TITLE, &question, &cancel);
+                        let ok = approved(&question);
                         if !ok {
                             append_audit(
                                 json!({"tool": "exec", "cwd": display(&cwd), "command": command, "denied": why, "reason": "no consent"}),
@@ -329,6 +384,46 @@ fn call_tool(tool: &str, args: &Value) -> Result<Value, DeviceError> {
             let pruned = worktree::prune(&data, project, older, delete_branches)?;
             append_audit(json!({"tool": "worktree_prune", "project": project}));
             Ok(json!({"content": [{"type": "text", "text": text(&pruned)}]}))
+        }
+        "deploy_targets" => {
+            let targets = deploy::list_targets(&data)?;
+            let value = json!({"targets": targets});
+            Ok(json!({"content": [{"type": "text", "text": text(&value)}]}))
+        }
+        "deploy" => {
+            let project = args.get("project").and_then(Value::as_str).unwrap_or("");
+            let target = args.get("target").and_then(Value::as_str).unwrap_or("");
+            let message = args.get("message").and_then(Value::as_str).unwrap_or("");
+            let artifacts = args.get("artifacts").cloned().unwrap_or(Value::Null);
+            let planned = deploy::plan(&data, &session, project, &artifacts, target, message)?;
+            if !approved(&deploy::approval_text(&planned)) {
+                append_audit(
+                    json!({"tool": "deploy", "target": planned.target.name, "denied": "no consent"}),
+                );
+                return Err(DeviceError::denied("用户没有批准这次部署，已取消")
+                    .next("不要原样重试；把要部署的内容和原因告诉用户，等他们自己批准。"));
+            }
+            let summary = deploy::apply(&data, &planned)?;
+            append_audit(json!({
+                "tool": "deploy", "id": summary["id"], "target": summary["target"],
+                "files": summary["files"], "project": summary["project"], "message": summary["message"],
+            }));
+            Ok(json!({"content": [{"type": "text", "text": text(&summary)}]}))
+        }
+        "deploy_list" => {
+            let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(20) as usize;
+            let value = json!({"deployments": deploy::list(&data, limit)});
+            Ok(json!({"content": [{"type": "text", "text": text(&value)}]}))
+        }
+        "deploy_rollback" => {
+            let id = args.get("id").and_then(Value::as_str).unwrap_or("");
+            let question = deploy::rollback_text(&data, id)?;
+            if !approved(&question) {
+                return Err(DeviceError::denied("用户没有批准这次回滚，已取消"));
+            }
+            let summary = deploy::rollback_apply(&data, id)?;
+            append_audit(json!({"tool": "deploy_rollback", "id": id, "target": summary["target"]}));
+            Ok(json!({"content": [{"type": "text", "text": text(&summary)}]}))
         }
         other => Err(DeviceError::new(
             "UNKNOWN_TOOL",

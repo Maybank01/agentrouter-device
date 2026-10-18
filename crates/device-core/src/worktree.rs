@@ -250,7 +250,7 @@ fn same_path(a: &str, b: &Path) -> bool {
     inside(a, b) && inside(b, a)
 }
 
-fn project_of(registry: &Registry, raw: &str) -> Result<workspace::Project, DeviceError> {
+pub fn project_of(registry: &Registry, raw: &str) -> Result<workspace::Project, DeviceError> {
     let key = raw.trim();
     if key.is_empty() {
         return Err(DeviceError::new(

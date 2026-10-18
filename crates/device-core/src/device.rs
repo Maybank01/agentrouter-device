@@ -514,23 +514,41 @@ fn summary(action: &str, args: &Value) -> String {
                 .unwrap_or_default()
         ),
         "mcp_call" => {
-            // The builtin workspace service's exec is the ssh-like half: its command line and cwd are
+            // The builtin workspace service's exec and deploy are the ssh-like half: their target is
             // the audit record (clipped; the MCP server also keeps its own per-call log).
             let arguments = args.get("arguments").cloned().unwrap_or(Value::Null);
             let command = arguments
                 .get("command")
                 .and_then(Value::as_str)
                 .unwrap_or("");
-            if s("tool") == "exec" && !command.is_empty() {
+            let tool = s("tool");
+            if tool == "exec" && !command.is_empty() {
                 format!(
                     "{}.{} cwd={} command={}",
                     s("name"),
-                    s("tool"),
+                    tool,
                     arguments.get("cwd").and_then(Value::as_str).unwrap_or(""),
                     clip(command, 800)
                 )
+            } else if tool == "deploy" || tool == "deploy_rollback" {
+                let files = arguments
+                    .get("artifacts")
+                    .and_then(Value::as_array)
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                format!(
+                    "{}.{} target={} files={} id={}",
+                    s("name"),
+                    tool,
+                    arguments
+                        .get("target")
+                        .and_then(Value::as_str)
+                        .unwrap_or(""),
+                    files,
+                    arguments.get("id").and_then(Value::as_str).unwrap_or("")
+                )
             } else {
-                format!("{}.{}", s("name"), s("tool"))
+                format!("{}.{}", s("name"), tool)
             }
         }
         "mcp_stop" | "mcp_logs" => s("name"),
