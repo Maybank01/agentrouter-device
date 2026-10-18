@@ -14,7 +14,9 @@ use agentrouter_device::config::{Access, Config};
 use agentrouter_device::device::{Device, Options};
 use agentrouter_device::net::{self, Conn, Runtime};
 use agentrouter_device::util::{data_dir, home_dir, log};
-use agentrouter_device::{audit, checkpoint, gate, keystore, link, mcp, workspace, worktree};
+use agentrouter_device::{
+    audit, checkpoint, deploy, gate, keystore, link, mcp, workspace, worktree,
+};
 
 /// Set by Ctrl+C (one handler for the whole run: pairing, then serving).
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
@@ -809,7 +811,132 @@ fn undo(flags: Flags) -> i32 {
 }
 
 /// `agentrouter workspace ...`: the workspace root and the project registry (workspace spec §1–3; M0).
+/// `agentrouter workspace deploy ...`: the owner's side of S2a — register a target once with a local
+/// confirmation; the AI can deploy/rollback through the workspace MCP service, never register.
+fn cmd_deploy(flags: &Flags) -> i32 {
+    let data = data_dir();
+    let usage = "用法：agentrouter workspace deploy target add <名字> <目录> | target list | target remove <名字> | list | rollback <id>";
+    let arg = |i: usize| flags.positional.get(i).map(String::as_str).unwrap_or("");
+    match (arg(1), arg(2)) {
+        ("target", "add") => {
+            let name = arg(3);
+            let path = arg(4);
+            if name.is_empty() || path.is_empty() {
+                println!("{usage}");
+                return 1;
+            }
+            if !flags.yes
+                && !confirm_in_terminal(&format!(
+                    "把目录登记成部署目标？\n\n名字：{name}\n目录：{path}\n\n云端 AI 只能把文件部署到这里（先备份、本机批准、失败回滚）；目录本身不会被当工作区。"
+                ))
+            {
+                println!("没有登记（没有终端时加 --yes）。");
+                return 1;
+            }
+            match deploy::add_target(&data, name, path) {
+                Ok(target) => {
+                    println!("部署目标：{} → {}", target.name, target.path);
+                    0
+                }
+                Err(e) => {
+                    print_device_error(&e);
+                    1
+                }
+            }
+        }
+        ("target", "list") => match deploy::list_targets(&data) {
+            Ok(targets) => {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({"targets": targets}))
+                        .unwrap_or_default()
+                );
+                0
+            }
+            Err(e) => {
+                print_device_error(&e);
+                1
+            }
+        },
+        ("target", "remove") => {
+            let name = arg(3);
+            if name.is_empty() {
+                println!("{usage}");
+                return 1;
+            }
+            match deploy::remove_target(&data, name) {
+                Ok(removed) => {
+                    println!(
+                        "{}",
+                        if removed {
+                            "已删除"
+                        } else {
+                            "没有这个目标"
+                        }
+                    );
+                    0
+                }
+                Err(e) => {
+                    print_device_error(&e);
+                    1
+                }
+            }
+        }
+        ("list", _) => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "deployments": deploy::list(&data, 50),
+                }))
+                .unwrap_or_default()
+            );
+            0
+        }
+        ("rollback", _) => {
+            let id = arg(2);
+            if id.is_empty() {
+                println!("{usage}");
+                return 1;
+            }
+            if !flags.yes {
+                match deploy::rollback_text(&data, id) {
+                    Ok(text) => {
+                        if !confirm_in_terminal(&text) {
+                            println!("没有回滚（没有终端时加 --yes）。");
+                            return 1;
+                        }
+                    }
+                    Err(e) => {
+                        print_device_error(&e);
+                        return 1;
+                    }
+                }
+            }
+            match deploy::rollback_apply(&data, id) {
+                Ok(summary) => {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&summary).unwrap_or_default()
+                    );
+                    0
+                }
+                Err(e) => {
+                    print_device_error(&e);
+                    1
+                }
+            }
+        }
+        _ => {
+            println!("{usage}");
+            1
+        }
+    }
+}
+
 fn cmd_workspace(flags: Flags) -> i32 {
+    if flags.positional.first().map(String::as_str) == Some("deploy") {
+        return cmd_deploy(&flags);
+    }
     let mut cfg = Config::load();
     let data = data_dir();
     let home = home_dir();

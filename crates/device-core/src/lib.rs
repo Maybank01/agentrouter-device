@@ -10,6 +10,7 @@ pub mod checkpoint;
 pub mod config;
 pub mod confine;
 pub mod consent;
+pub mod deploy;
 pub mod device;
 pub mod exec;
 pub mod gate;

@@ -16,6 +16,15 @@ struct Client {
 
 impl Client {
     fn start(data: &Path, home: &Path, session: Option<&str>) -> Client {
+        Self::start_with(data, home, session, &[])
+    }
+
+    fn start_with(
+        data: &Path,
+        home: &Path,
+        session: Option<&str>,
+        envs: &[(&str, &str)],
+    ) -> Client {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_agentrouter"));
         cmd.arg("mcp-serve")
             .arg("workspace")
@@ -27,6 +36,9 @@ impl Client {
             .stderr(Stdio::null());
         if let Some(session) = session {
             cmd.env("AGENTROUTER_SESSION", session);
+        }
+        for (key, value) in envs {
+            cmd.env(key, value);
         }
         let mut child = cmd.spawn().expect("spawn the workspace MCP service");
         let stdin = child.stdin.take().unwrap();
@@ -218,4 +230,151 @@ fn worktree_create_needs_a_session() {
     let (error, text) = client.tool("worktree_create", json!({"project": "mod"}));
     assert!(error, "{text}");
     assert!(text.contains("WORKSPACE_SESSION_INVALID"), "{text}");
+}
+
+fn config(data: &Path, unattended: bool, folders: &[&Path]) {
+    std::fs::write(
+        data.join("config.json"),
+        serde_json::to_string(&json!({
+            "access": "folders", "unattended": unattended,
+            "folders": folders.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
+fn write_artifact(client: &mut Client, worktree: &Path) -> PathBuf {
+    let command = if cfg!(windows) {
+        "Set-Content -Path out.txt -Value new-mod"
+    } else {
+        "echo new-mod > out.txt"
+    };
+    let (error, text) = client.tool("exec", json!({"command": command}));
+    assert!(!error, "{text}");
+    worktree.join("out.txt")
+}
+
+#[test]
+fn deploy_backs_up_lists_and_rolls_back() {
+    let data = temp("dep-data");
+    let home = temp("dep-home");
+    let target = temp("dep-target");
+    std::fs::create_dir_all(target.join("mods")).unwrap();
+    std::fs::write(target.join("mods/out.txt"), b"old-mod").unwrap();
+    std::fs::create_dir_all(&data).unwrap();
+    config(&data, true, &[]);
+    agentrouter_device::deploy::add_target(&data, "game", target.to_str().unwrap()).unwrap();
+    let mut client = Client::start(&data, &home, Some("ags_test"));
+    let (error, text) = client.tool("workspace_create", json!({"name": "mod"}));
+    assert!(!error, "{text}");
+    let (error, text) = client.tool("worktree_create", json!({"project": "mod"}));
+    assert!(!error, "{text}");
+    let created: Value = serde_json::from_str(&text).unwrap();
+    let worktree = PathBuf::from(created["worktreeDir"].as_str().unwrap());
+    let artifact = write_artifact(&mut client, &worktree);
+    // The registered target is visible to the Agent.
+    let (error, text) = client.tool("deploy_targets", json!({}));
+    assert!(!error, "{text}");
+    assert!(
+        text.contains("game") && text.contains("ar-mcp-dep-target"),
+        "{text}"
+    );
+    // Deploy: backed up, recorded, target replaced.
+    let (error, text) = client.tool(
+        "deploy",
+        json!({
+            "project": "mod", "target": "game", "message": "first mod",
+            "artifacts": [{"source": artifact.display().to_string(), "dest": "mods/out.txt"}],
+        }),
+    );
+    assert!(!error, "{text}");
+    let summary: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(summary["status"], "applied");
+    let id = summary["id"].as_str().unwrap().to_string();
+    assert!(
+        std::fs::read_to_string(target.join("mods/out.txt"))
+            .unwrap()
+            .contains("new-mod")
+    );
+    let backup = data
+        .join("deployments")
+        .join(&id)
+        .join("backup/mods/out.txt");
+    assert_eq!(std::fs::read_to_string(&backup).unwrap(), "old-mod");
+    // Listed, then rolled back.
+    let (error, text) = client.tool("deploy_list", json!({}));
+    assert!(!error, "{text}");
+    assert!(text.contains(&id) && text.contains("applied"), "{text}");
+    let (error, text) = client.tool("deploy_rollback", json!({"id": id}));
+    assert!(!error, "{text}");
+    assert_eq!(
+        std::fs::read_to_string(target.join("mods/out.txt")).unwrap(),
+        "old-mod"
+    );
+    let (error, text) = client.tool("deploy_list", json!({}));
+    assert!(!error, "{text}");
+    assert!(text.contains("rolled_back"), "{text}");
+    // The connector-side audit would carry the target; the service-side log has the entry.
+    let audit = std::fs::read_to_string(data.join("mcp-audit.log")).unwrap();
+    assert!(
+        audit.contains("\"tool\":\"deploy\"") && audit.contains("\"tool\":\"deploy_rollback\""),
+        "{audit}"
+    );
+}
+
+#[test]
+fn deploy_refuses_unknown_targets_outside_artifacts_and_denied_consent() {
+    let data = temp("dep-refuse-data");
+    let home = temp("dep-refuse-home");
+    let target = temp("dep-refuse-target");
+    std::fs::write(target.join("old.bin"), b"old").unwrap();
+    std::fs::create_dir_all(&data).unwrap();
+    config(&data, true, &[]);
+    agentrouter_device::deploy::add_target(&data, "game", target.to_str().unwrap()).unwrap();
+    let mut client = Client::start(&data, &home, Some("ags_test"));
+    client.tool("workspace_create", json!({"name": "mod"}));
+    client.tool("worktree_create", json!({"project": "mod"}));
+    let (error, text) = client.tool(
+        "deploy",
+        json!({"project": "mod", "target": "nope", "artifacts": [{"source": "out.txt", "dest": "out.txt"}]}),
+    );
+    assert!(error, "{text}");
+    assert!(text.contains("DEPLOY_TARGET_UNKNOWN"), "{text}");
+    // An artifact outside the workspace is refused.
+    let outside = temp("dep-outside");
+    std::fs::write(outside.join("x.bin"), b"x").unwrap();
+    let (error, text) = client.tool(
+        "deploy",
+        json!({"project": "mod", "target": "game", "artifacts": [{"source": outside.join("x.bin").display().to_string(), "dest": "x.bin"}]}),
+    );
+    assert!(error, "{text}");
+    assert!(
+        text.contains("DEPLOY_ARTIFACT_INVALID") || text.contains("DENIED"),
+        "{text}"
+    );
+    // Denied local approval.
+    config(&data, false, &[]);
+    let mut denied = Client::start_with(
+        &data,
+        &home,
+        Some("ags_test"),
+        &[("AGENTROUTER_CONSENT", "deny")],
+    );
+    denied.tool("workspace_create", json!({"name": "mod"}));
+    let (error, text) = denied.tool("worktree_create", json!({"project": "mod"}));
+    assert!(!error, "{text}");
+    let created: Value = serde_json::from_str(&text).unwrap();
+    let worktree = PathBuf::from(created["worktreeDir"].as_str().unwrap());
+    let artifact = write_artifact(&mut denied, &worktree);
+    let (error, text) = denied.tool(
+        "deploy",
+        json!({"project": "mod", "target": "game", "artifacts": [{"source": artifact.display().to_string(), "dest": "x.bin"}]}),
+    );
+    assert!(error, "{text}");
+    assert!(
+        text.contains("DENIED") || text.contains("没有批准"),
+        "{text}"
+    );
+    assert_eq!(std::fs::read(target.join("old.bin")).unwrap(), b"old");
 }
