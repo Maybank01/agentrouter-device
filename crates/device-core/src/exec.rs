@@ -207,7 +207,13 @@ pub fn run_confined(
         .map_err(|e| format!("{}: {}", e.code, e.message))?;
     #[cfg(windows)]
     if let Some(sandbox) = sandbox.as_ref() {
-        return crate::confined::run(command, cwd, timeout, sandbox);
+        return crate::confined::run(
+            command,
+            cwd,
+            timeout,
+            sandbox,
+            &crate::shell::default_shell(),
+        );
     }
     #[cfg(not(windows))]
     let _ = sandbox;
@@ -217,12 +223,16 @@ pub fn run_confined(
 /// Run `command` with the device's shell in `cwd`. `timeout` kills the process tree (Windows job) or
 /// the child (elsewhere); the output is capped. The caller validates `cwd` first.
 fn run_inner(command: &str, cwd: &Path, timeout: Duration) -> Result<Outcome, String> {
-    let mut cmd = if cfg!(windows) {
-        let mut c = Command::new("powershell");
-        c.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"])
-            .arg(command);
+    #[cfg(windows)]
+    let shell = crate::shell::default_shell();
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = Command::new(&shell.program);
+        c.args(shell.args(command));
         c
-    } else {
+    };
+    #[cfg(not(windows))]
+    let mut cmd = {
         let mut c = Command::new("/bin/sh");
         c.arg("-lc").arg(command);
         c
@@ -231,10 +241,13 @@ fn run_inner(command: &str, cwd: &Path, timeout: Duration) -> Result<Outcome, St
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    // A connector started from PowerShell 7 inherits its PSModulePath; a Windows PowerShell 5.1
+    // A connector started from PowerShell 7 inherits its PSModulePath; a *Windows PowerShell 5.1*
     // child must not resolve Microsoft.PowerShell.Utility from PowerShell 7 (Get-FileHash missing).
+    // When `pwsh` itself is the selected shell, its environment is left alone for module discovery.
     #[cfg(windows)]
-    cmd.env("PSModulePath", crate::util::child_ps_module_path());
+    if !shell.is_pwsh() {
+        cmd.env("PSModulePath", crate::util::child_ps_module_path());
+    }
     // Its own process group on Unix, so a timeout ends the shell *and* what it started (the shell may
     // exit but leave a child holding the pipes open).
     #[cfg(unix)]

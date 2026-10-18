@@ -36,22 +36,9 @@ use crate::exec::Outcome;
 
 const STREAM_CAP: usize = 256 << 10;
 
+/// The device's shell (PowerShell 7 when installed, else Windows PowerShell 5.1) — see shell.rs.
 fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(Some(0)).collect()
-}
-
-/// The device's PowerShell, as the old built-in command tool found it.
-fn powershell() -> PathBuf {
-    std::env::var_os("SystemRoot")
-        .map(PathBuf::from)
-        .map(|root| {
-            root.join("System32")
-                .join("WindowsPowerShell")
-                .join("v1.0")
-                .join("powershell.exe")
-        })
-        .filter(|p| p.is_file())
-        .unwrap_or_else(|| PathBuf::from("powershell.exe"))
 }
 
 fn owned(handle: HANDLE) -> OwnedHandle {
@@ -152,21 +139,24 @@ fn quote_arg(arg: &str, out: &mut String) {
 }
 
 /// The environment block of the confined shell: our environment, then the sandbox overrides, sorted
-/// as `NAME=value\0…\0\0`.
-fn environment_block(overrides: &[(String, PathBuf)]) -> Vec<u16> {
+/// as `NAME=value\0…\0\0`. For the Windows PowerShell 5.1 fallback, PSModulePath is sanitized (#32);
+/// for PowerShell 7 the inherited value is kept so its module discovery is not disturbed.
+fn environment_block(overrides: &[(String, PathBuf)], sanitize_ps: bool) -> Vec<u16> {
     let mut env: Vec<(OsString, OsString)> = std::env::vars_os().collect();
     for (key, value) in overrides {
         let key = OsString::from(key);
         env.retain(|(k, _)| !k.eq_ignore_ascii_case(&key));
         env.push((key, value.as_os_str().to_owned()));
     }
-    // A PowerShell 5.1 child of a connector started from `pwsh` 7 must not see PowerShell 7's
-    // $PSHOME\Modules first (it would lose Get-FileHash and other Microsoft.PowerShell.Utility cmdlets).
-    env.retain(|(k, _)| !k.eq_ignore_ascii_case("PSModulePath"));
-    env.push((
-        OsString::from("PSModulePath"),
-        OsString::from(crate::util::child_ps_module_path()),
-    ));
+    if sanitize_ps {
+        // A Windows PowerShell 5.1 child of a connector started from `pwsh` 7 must not see PowerShell
+        // 7's $PSHOME\Modules first (it would lose Get-FileHash and other Utility cmdlets, #32).
+        env.retain(|(k, _)| !k.eq_ignore_ascii_case("PSModulePath"));
+        env.push((
+            OsString::from("PSModulePath"),
+            OsString::from(crate::util::child_ps_module_path()),
+        ));
+    }
     env.sort_by_key(|(key, _)| key.to_ascii_uppercase());
     let mut block: Vec<u16> = Vec::new();
     for (key, value) in &env {
@@ -203,13 +193,14 @@ impl Drop for Job {
     }
 }
 
-/// Run `command` with the device's PowerShell at low integrity in `cwd` (labelled Low already), with
-/// the sandbox's TEMP/caches, and a timeout that kills the whole job.
+/// Run `command` with the device's shell (PowerShell 7 when installed, else 5.1) at low integrity in
+/// `cwd` (labelled Low already), with the sandbox's TEMP/caches and a timeout that kills the whole job.
 pub fn run(
     command: &str,
     cwd: &Path,
     timeout: Duration,
     sandbox: &crate::confine::Sandbox,
+    shell: &crate::shell::Shell,
 ) -> Result<Outcome, String> {
     let started = Instant::now();
     let token = low_integrity_token().map_err(|e| format!("建不了低完整性 token：{e}"))?;
@@ -264,23 +255,17 @@ pub fn run(
         let (stdout_ours, stdout_theirs) = pipe(true).map_err(|e| format!("建不了管道：{e}"))?;
         let (stderr_ours, stderr_theirs) = pipe(true).map_err(|e| format!("建不了管道：{e}"))?;
 
-        let program = powershell();
+        let program = &shell.program;
         let mut line = String::new();
         quote_arg(&program.to_string_lossy(), &mut line);
-        for arg in [
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            command,
-        ] {
+        for arg in shell.args(command) {
             line.push(' ');
-            quote_arg(arg, &mut line);
+            quote_arg(&arg, &mut line);
         }
         let app = wide(&program.to_string_lossy());
         let mut line = wide(&line);
         let dir = wide(&crate::gate::display(cwd));
-        let block = environment_block(&sandbox.env);
+        let block = environment_block(&sandbox.env, !shell.is_pwsh());
         let mut si: STARTUPINFOW = std::mem::zeroed();
         si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
         si.dwFlags = STARTF_USESTDHANDLES;
