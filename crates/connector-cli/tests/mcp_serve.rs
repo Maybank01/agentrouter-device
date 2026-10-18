@@ -38,7 +38,10 @@ impl Client {
             next: 1,
         };
         let init = client.request("initialize", json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}}));
-        assert_eq!(init["serverInfo"]["name"], "agentrouter-workspace");
+        assert_eq!(
+            init["result"]["serverInfo"]["name"],
+            "agentrouter-workspace"
+        );
         client
     }
 
