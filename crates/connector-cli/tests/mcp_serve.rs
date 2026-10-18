@@ -427,3 +427,45 @@ fn confined_exec_writes_inside_but_not_outside_on_windows() {
         let _ = outside;
     }
 }
+
+#[cfg(windows)]
+#[test]
+fn exec_keeps_windows_powershell_5_cmdlets_with_a_pwsh7_module_path() {
+    let data = temp("ps51-data");
+    let home = temp("ps51-home");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(
+        data.join("config.json"),
+        json!({"access": "folders", "unattended": true}).to_string(),
+    )
+    .unwrap();
+    // What a connector started from `pwsh` 7 inherits: PowerShell 7's own $PSHOME\Modules shadows
+    // Microsoft.PowerShell.Utility for a Windows PowerShell 5.1 child.
+    let polluted = r"C:\Users\maybe\Documents\PowerShell\Modules;C:\Program Files\PowerShell\Modules;c:\program files\powershell\7\Modules;C:\Program Files\WindowsPowerShell\Modules;C:\WINDOWS\system32\WindowsPowerShell\v1.0\Modules";
+    let mut client = Client::start_with(
+        &data,
+        &home,
+        Some("ags_test"),
+        &[("PSModulePath", polluted)],
+    );
+    let (error, text) = client.tool("workspace_create", json!({"name": "mod"}));
+    assert!(!error, "{text}");
+    let (error, text) = client.tool("worktree_create", json!({"project": "mod"}));
+    assert!(!error, "{text}");
+    let (error, text) = client.tool(
+        "exec",
+        json!({"command": "powershell.exe -NoProfile -Command \"if (Get-Command Get-FileHash -ErrorAction SilentlyContinue) { 'FOUND' } else { 'MISSING' }\""}),
+    );
+    assert!(!error, "{text}");
+    assert!(text.contains("FOUND"), "{text}");
+    let (error, text) = client.tool(
+        "exec",
+        json!({"command": "powershell.exe -NoProfile -Command \"Get-FileHash C:\\Windows\\win.ini -Algorithm SHA256 | Select-Object -ExpandProperty Hash\""}),
+    );
+    assert!(!error, "{text}");
+    assert!(
+        text.to_ascii_uppercase()
+            .contains("6B3D6E268DCB76E175A7DB3D9E031349AB2C32654C7E57581A851E64DD6214AB"),
+        "{text}"
+    );
+}

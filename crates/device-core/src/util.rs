@@ -189,6 +189,60 @@ pub fn app_kind() -> &'static str {
     APP_KIND.get().copied().unwrap_or("cli")
 }
 
+/// `PSModulePath` for a child process that may start Windows PowerShell 5.1: PowerShell 7's
+/// `$PSHOME\Modules` entry must not shadow the 5.1 module. When the connector was started from
+/// `pwsh` (7), inherited children otherwise resolve `Microsoft.PowerShell.Utility` to the
+/// incompatible PowerShell 7 copy first and lose cmdlets such as `Get-FileHash` ("CommandNotFound").
+/// Keep the Windows PowerShell paths first, drop PowerShell 7 installation entries, keep the rest.
+pub fn sanitized_ps_module_path(current: Option<&str>) -> String {
+    fn push(entries: &mut Vec<String>, value: &str) {
+        let value = value.trim();
+        if value.is_empty() || value.contains('\0') {
+            return;
+        }
+        if entries.iter().any(|e| e.eq_ignore_ascii_case(value)) {
+            return;
+        }
+        entries.push(value.to_string());
+    }
+    fn powershell7(entry: &str) -> bool {
+        let normalized = entry.trim().to_ascii_lowercase().replace('/', "\\");
+        normalized.contains("\\powershell\\7\\")
+    }
+    let mut entries: Vec<String> = Vec::new();
+    let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
+    let program_files =
+        std::env::var("ProgramFiles").unwrap_or_else(|_| "C:\\Program Files".into());
+    let user_profile = std::env::var("USERPROFILE").unwrap_or_default();
+    push(
+        &mut entries,
+        &format!("{system_root}\\System32\\WindowsPowerShell\\v1.0\\Modules"),
+    );
+    push(
+        &mut entries,
+        &format!("{program_files}\\WindowsPowerShell\\Modules"),
+    );
+    if !user_profile.is_empty() {
+        push(
+            &mut entries,
+            &format!("{user_profile}\\Documents\\WindowsPowerShell\\Modules"),
+        );
+    }
+    if let Some(current) = current {
+        for entry in current.split(';') {
+            if !powershell7(entry) {
+                push(&mut entries, entry);
+            }
+        }
+    }
+    entries.join(";")
+}
+
+/// The environment value a child command gets on Windows (empty/absent stays as-is elsewhere).
+pub fn child_ps_module_path() -> String {
+    sanitized_ps_module_path(std::env::var("PSModulePath").ok().as_deref())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,5 +257,30 @@ mod tests {
     fn hex_and_b64url() {
         assert_eq!(hex(&[0, 15, 255]), "000fff");
         assert_eq!(b64url_decode(&b64url(b"hello")).unwrap(), b"hello");
+    }
+
+    #[test]
+    fn a_powershell7_module_path_is_not_passed_to_children() {
+        let polluted = concat!(
+            r"C:\Users\x\Documents\PowerShell\Modules;",
+            r"C:\Program Files\PowerShell\Modules;",
+            r"c:\program files\powershell\7\Modules;",
+            r"C:\Program Files\WindowsPowerShell\Modules;",
+            r"C:\WINDOWS\system32\WindowsPowerShell\v1.0\Modules"
+        );
+        let clean = sanitized_ps_module_path(Some(polluted));
+        assert!(
+            !clean.to_ascii_lowercase().contains("\\powershell\\7\\"),
+            "{clean}"
+        );
+        assert!(
+            clean
+                .to_ascii_lowercase()
+                .contains("windowspowershell\\v1.0\\modules"),
+            "{clean}"
+        );
+        // Idempotent, and it does not invent PowerShell 7 paths.
+        assert_eq!(clean, sanitized_ps_module_path(Some(&clean)));
+        assert!(!sanitized_ps_module_path(Some(&clean)).contains("PowerShell\\7"));
     }
 }
