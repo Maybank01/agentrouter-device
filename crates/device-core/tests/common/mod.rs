@@ -69,11 +69,44 @@ pub fn temp_dir(tag: &str) -> PathBuf {
 }
 
 pub fn device(data: &Path, access: Access, folders: &[&Path], cp: &ControlPlane) -> Device {
+    device_with(data, access, folders, cp, false)
+}
+
+/// The same device with the workspace switch on (M0: `workspace_ensure`/`workspace_list`).
+pub fn device_workspaces(
+    data: &Path,
+    access: Access,
+    folders: &[&Path],
+    cp: &ControlPlane,
+) -> Device {
+    device_with(data, access, folders, cp, true)
+}
+
+fn device_with(
+    data: &Path,
+    access: Access,
+    folders: &[&Path],
+    cp: &ControlPlane,
+    workspaces: bool,
+) -> Device {
+    // A home of its own, beside (never inside) the device data folder: the default workspace root is
+    // `<home>/Workspaces`, and a workspace may not overlap the device data (workspace.rs guards).
+    let home = data
+        .parent()
+        .map(|parent| {
+            parent.join(format!(
+                "ar-device-home-{}",
+                agentrouter_device::util::short_id("")
+            ))
+        })
+        .unwrap_or_else(|| data.to_path_buf());
+    std::fs::create_dir_all(&home).unwrap();
     let device = Device::new(Options {
         data_dir: data.to_path_buf(),
         access,
         folders: folders.iter().map(|f| f.display().to_string()).collect(),
-        home: data.to_path_buf(),
+        home,
+        workspaces,
     });
     device.set_identity(Some(Identity {
         key: DeviceKey::generate(),

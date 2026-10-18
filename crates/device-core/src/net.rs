@@ -576,12 +576,14 @@ pub fn watch_config(rt: Arc<Runtime>) {
         rt.device.set_screen(fresh.screen);
         let mcp_changed = fresh.mcp != cfg.mcp;
         rt.device.set_mcp(fresh.mcp);
+        let workspaces_changed = fresh.workspaces != cfg.workspaces;
+        rt.device.set_workspaces(fresh.workspaces);
         *cfg = fresh;
         if level_changed {
             rt.device.set_access(cfg.access, &cfg.folders);
         }
         drop(cfg);
-        if level_changed || gateway_changed || screen_changed || mcp_changed {
+        if level_changed || gateway_changed || screen_changed || mcp_changed || workspaces_changed {
             rt.reconnect.store(true, Ordering::SeqCst);
         }
     }

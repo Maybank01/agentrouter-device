@@ -115,6 +115,8 @@ fn info_reports_the_local_choices_and_only_the_mcp_actions() {
         actions,
         [
             "info",
+            "workspace_ensure",
+            "workspace_list",
             "mcp_start",
             "mcp_stop",
             "mcp_list",
@@ -123,6 +125,8 @@ fn info_reports_the_local_choices_and_only_the_mcp_actions() {
             "mcp_package"
         ]
     );
+    // The workspace capability is its own switch, off on a device that never ran `workspace init`.
+    assert_eq!(v["device"]["workspaces"], false);
 }
 
 #[test]

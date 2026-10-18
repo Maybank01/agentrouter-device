@@ -28,7 +28,7 @@ use crate::util::{clip, now_ms};
 const IN_USE_MS: i64 = 20_000;
 
 /// The actions this device understands besides the MCP ones (reported in `hello`).
-pub const ACTIONS: &[&str] = &["info"];
+pub const ACTIONS: &[&str] = &["info", "workspace_ensure", "workspace_list"];
 
 type Console = Arc<Mutex<Option<(Sender<String>, i64)>>>;
 /// A line for the person at the terminal (what the cloud just did here).
@@ -46,6 +46,9 @@ pub struct Device {
     echo: Arc<Mutex<Option<Echo>>>,
     home: PathBuf,
     data_dir: PathBuf,
+    /// The workspace switch (`agentrouter workspace init`): the cloud may create the workspace root and
+    /// projects here (`workspace_ensure`). Off by default (workspace spec §6.1).
+    workspaces: RwLock<bool>,
     /// The screen switch (`agentrouter screen on`): Windows UI servers join the default bundle; the bar and the
     /// secure-desktop check (screen.rs).
     pub screen: Screen,
@@ -57,6 +60,7 @@ pub struct Options {
     pub access: Access,
     pub folders: Vec<String>,
     pub home: PathBuf,
+    pub workspaces: bool,
 }
 
 fn emit_to(console: &Console, kind: &str, session: &str, text: &str) {
@@ -110,6 +114,7 @@ impl Device {
             home: options.home,
             mcp: McpHost::new(&options.data_dir),
             data_dir: options.data_dir,
+            workspaces: RwLock::new(options.workspaces),
             screen: Screen::default(),
         }
     }
@@ -154,6 +159,15 @@ impl Device {
     /// Local MCP servers (`agentrouter mcp on`): run the servers the cloud installs here.
     pub fn set_mcp(&self, on: bool) {
         self.mcp.set(on);
+    }
+
+    /// The workspace switch (`agentrouter workspace init`).
+    pub fn set_workspaces(&self, on: bool) {
+        *self.workspaces.write().unwrap() = on;
+    }
+
+    pub fn workspaces_enabled(&self) -> bool {
+        *self.workspaces.read().unwrap()
     }
 
     /// The actions this device serves: `info` and the MCP host.
@@ -209,6 +223,7 @@ impl Device {
             "actions": self.actions(),
             "screen": self.screen.enabled(),
             "mcp": self.mcp.enabled(),
+            "workspaces": self.workspaces_enabled(),
             "mcpServers": self.mcp.summary(),
             "checkpoints": true,
             "foreground": self.foreground.load(Ordering::SeqCst),
@@ -307,6 +322,35 @@ impl Device {
         let scope = self.scope.read().unwrap().clone();
         match action {
             "info" => Ok(json!({"device": self.info(), "jobs": [], "approvals": []})),
+            "workspace_ensure" => {
+                self.require_workspaces()?;
+                let project = args.get("project").and_then(Value::as_str).unwrap_or("");
+                if project.trim().is_empty() {
+                    return Err(DeviceError::new(
+                        "WORKSPACE_INVALID",
+                        "要写项目名：workspace_ensure 带 project（如 mod-arena）",
+                    ));
+                }
+                let root = args.get("root").and_then(Value::as_str);
+                let ensured = crate::workspace::ensure_project(
+                    &self.data_dir,
+                    &self.home,
+                    &scope.folders,
+                    project,
+                    root,
+                )?;
+                serde_json::to_value(ensured)
+                    .map_err(|e| DeviceError::new("WORKSPACE_FAILED", format!("结果写不出来：{e}")))
+            }
+            "workspace_list" => {
+                self.require_workspaces()?;
+                let registry = crate::workspace::listing(&self.data_dir, &self.home)?;
+                let mut value = serde_json::to_value(registry).map_err(|e| {
+                    DeviceError::new("WORKSPACE_FAILED", format!("结果写不出来：{e}"))
+                })?;
+                value["enabled"] = json!(true);
+                Ok(value)
+            }
             "mcp_start" => self.mcp.start(&scope, args, cancel),
             "mcp_stop" => self.mcp.stop(args),
             "mcp_list" => self.mcp.list(),
@@ -337,6 +381,17 @@ impl Device {
                 .next("This computer is reached through its local MCP servers (device_mcp_list).")),
         }
     }
+
+    fn require_workspaces(&self) -> Result<(), DeviceError> {
+        if self.workspaces_enabled() {
+            Ok(())
+        } else {
+            Err(
+                DeviceError::new("WORKSPACE_DISABLED", "这台电脑没有打开工作区")
+                    .next("请用户在这台电脑上运行 agentrouter workspace init（工作区默认关闭）。"),
+            )
+        }
+    }
 }
 
 /// A short description of a request for the audit log (never file contents or secrets).
@@ -364,6 +419,9 @@ fn summary(action: &str, args: &Value) -> String {
         ),
         "mcp_call" => format!("{}.{}", s("name"), s("tool")),
         "mcp_stop" | "mcp_logs" => s("name"),
+        // The workspace actions: project name and (on the first call) the root; never a file list.
+        "workspace_ensure" => format!("{} {}", s("project"), s("root")),
+        "workspace_list" => String::new(),
         // The file and its digest, never the bytes.
         "mcp_package" => args
             .get("pin")
