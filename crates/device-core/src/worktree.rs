@@ -339,18 +339,31 @@ pub struct Base {
     pub created: bool,
 }
 
+/// Same location in the plain display form (never compares verbatim `\\?\` with plain paths).
+fn same_plain(a: &Path, b: &Path) -> bool {
+    let a = PathBuf::from(display(a));
+    let b = PathBuf::from(display(b));
+    inside(&a, &b) && inside(&b, &a)
+}
+
 /// Make sure the project is a git repository with a HEAD, without touching what the person already
-/// has: no repository ⇒ `git init` + one baseline commit; existing repository ⇒ its HEAD is used as
-/// the base commit and nothing is re-initialized, staged or committed.
+/// has: no repository of its own ⇒ `git init` + one baseline commit; a repository at the project
+/// directory itself ⇒ its HEAD is used as the base commit and nothing is re-initialized, staged or
+/// committed. A project that merely sits inside some unrelated parent repository (a checkout that
+/// contains the workspace root, for example) is not that repository's project: it gets its own repo.
 pub fn ensure_baseline(data: &Path, project: &workspace::Project) -> Result<Base, DeviceError> {
     let dir = workspace::real(Path::new(&project.path))?;
-    if let Some(top) = git_probe(&dir, &["rev-parse", "--show-toplevel"]) {
-        let repo = PathBuf::from(top.trim());
-        let repo = if repo.is_absolute() {
-            repo
+    let own_repo = git_probe(&dir, &["rev-parse", "--show-toplevel"]).and_then(|top| {
+        let top = PathBuf::from(top.trim());
+        let top = if top.is_absolute() {
+            top
         } else {
-            dir.join(repo)
+            dir.join(top)
         };
+        let real_top = workspace::real(&top).ok()?;
+        same_plain(&real_top, &dir).then_some(real_top)
+    });
+    if let Some(repo) = own_repo {
         let head = git_probe(&dir, &["rev-parse", "--verify", "HEAD"])
             .filter(|h| !h.trim().is_empty())
             .map(|h| h.trim().to_string());
