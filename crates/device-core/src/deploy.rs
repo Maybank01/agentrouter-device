@@ -126,7 +126,14 @@ pub fn add_target(data: &Path, raw_name: &str, raw_path: &str) -> Result<Target,
             format!("部署目标不是目录：{}", display(&real)),
         ));
     }
-    if inside(&real, data) || inside(data, &real) {
+    // `data` comes in as a plain path from config/env while `real` is canonical/verbatim; compare
+    // against the real data folder too, or a plain path would slip past the overlap guard.
+    let data_real = workspace::real(data).unwrap_or_else(|_| data.to_path_buf());
+    if inside(&real, data)
+        || inside(data, &real)
+        || inside(&real, &data_real)
+        || inside(&data_real, &real)
+    {
         return Err(DeviceError::denied("部署目标不能和设备自己的数据目录重叠"));
     }
     let registry = workspace::load(data)?;
@@ -994,5 +1001,17 @@ mod tests {
                 .code,
             "DENIED"
         );
+    }
+
+    #[test]
+    fn the_data_folder_guard_survives_a_plain_data_path() {
+        let data = tmp("plain-data");
+        let plain = std::path::PathBuf::from(display(&data));
+        let target = tmp("plain-target");
+        // A separate directory is fine even when the data path was passed in plain form…
+        add_target(&plain, "ok", target.to_str().unwrap()).unwrap();
+        // …and the data folder itself is still refused through the plain path.
+        let error = add_target(&plain, "bad", &display(&data)).unwrap_err();
+        assert_eq!(error.code, "DENIED", "{error:?}");
     }
 }
