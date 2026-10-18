@@ -324,6 +324,7 @@ fn mcp_start_runs_in_the_session_worktree() {
     let cp = ControlPlane::new();
     let data = temp_dir("m1-cwd");
     let d = device_workspaces(&data, Access::Folders, &[], &cp);
+    d.set_mcp(true);
     ensure_project(&d, &cp, "Mod Arena");
     let created = worktree_create(&d, &cp, "mod-arena", "ags_test");
     let worktree_dir = created["worktreeDir"].as_str().unwrap().to_string();
