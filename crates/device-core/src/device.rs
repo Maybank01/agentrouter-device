@@ -425,12 +425,13 @@ impl Device {
                 crate::worktree::substitute(&mut resolved, &pairs)?;
                 self.mcp.start(
                     &scope,
+                    session,
                     &resolved,
                     cancel,
                     cwd.as_ref().map(|c| c.path.as_path()),
                 )
             }
-            "mcp_stop" => self.mcp.stop(args),
+            "mcp_stop" => self.mcp.stop(session, args),
             "mcp_list" => self.mcp.list(),
             "mcp_call" => {
                 // A call that may change files takes this turn's checkpoint first: the session's
@@ -466,10 +467,10 @@ impl Device {
                     None
                 };
                 self.mcp
-                    .call(&scope, args, cancel)
+                    .call(&scope, session, args, cancel)
                     .map(|v| with_checkpoint(v, checkpoint))
             }
-            "mcp_logs" => self.mcp.logs(args),
+            "mcp_logs" => self.mcp.logs(session, args),
             "mcp_package" => self.mcp.package(&scope, args),
             // The device's own file, command and screen actions are gone (DEVICE-PROTOCOL.md §18.4).
             _ => Err(DeviceError::new("UNKNOWN_ACTION", "unknown action")
@@ -512,7 +513,26 @@ fn summary(action: &str, args: &Value) -> String {
                     .join(" "))
                 .unwrap_or_default()
         ),
-        "mcp_call" => format!("{}.{}", s("name"), s("tool")),
+        "mcp_call" => {
+            // The builtin workspace service's exec is the ssh-like half: its command line and cwd are
+            // the audit record (clipped; the MCP server also keeps its own per-call log).
+            let arguments = args.get("arguments").cloned().unwrap_or(Value::Null);
+            let command = arguments
+                .get("command")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if s("tool") == "exec" && !command.is_empty() {
+                format!(
+                    "{}.{} cwd={} command={}",
+                    s("name"),
+                    s("tool"),
+                    arguments.get("cwd").and_then(Value::as_str).unwrap_or(""),
+                    clip(command, 800)
+                )
+            } else {
+                format!("{}.{}", s("name"), s("tool"))
+            }
+        }
         "mcp_stop" | "mcp_logs" => s("name"),
         // The workspace actions: project name and (on the first call) the root; never a file list.
         "workspace_ensure" => format!("{} {}", s("project"), s("root")),
