@@ -9,6 +9,8 @@ pub mod audit;
 pub mod checkpoint;
 pub mod config;
 pub mod confine;
+#[cfg(windows)]
+pub mod confined;
 pub mod consent;
 pub mod deploy;
 pub mod device;

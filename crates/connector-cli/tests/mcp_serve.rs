@@ -378,3 +378,52 @@ fn deploy_refuses_unknown_targets_outside_artifacts_and_denied_consent() {
     );
     assert_eq!(std::fs::read(target.join("old.bin")).unwrap(), b"old");
 }
+
+#[test]
+fn confined_exec_writes_inside_but_not_outside_on_windows() {
+    let data = temp("conf-data");
+    let home = temp("conf-home");
+    let outside = temp("conf-outside");
+    std::fs::create_dir_all(&data).unwrap();
+    config(&data, true, &[]);
+    let mut client = Client::start(&data, &home, Some("ags_test"));
+    let (error, text) = client.tool("workspace_create", json!({"name": "mod"}));
+    assert!(!error, "{text}");
+    let (error, text) = client.tool("worktree_create", json!({"project": "mod"}));
+    assert!(!error, "{text}");
+    let created: Value = serde_json::from_str(&text).unwrap();
+    let worktree = PathBuf::from(created["worktreeDir"].as_str().unwrap());
+    // Writing inside the worktree keeps working under the boundary.
+    let inside_cmd = if cfg!(windows) {
+        "Set-Content -Path inside.txt -Value ok"
+    } else {
+        "echo ok > inside.txt"
+    };
+    let (error, text) = client.tool("exec", json!({"command": inside_cmd}));
+    assert!(!error, "{text}");
+    assert!(worktree.join("inside.txt").is_file(), "{text}");
+    // The command still runs at all (echo), so a refusal is about the path, not the shell.
+    let (error, text) = client.tool("exec", json!({"command": "echo ok"}));
+    assert!(!error, "{text}");
+    assert!(text.contains("exit_code: 0"), "{text}");
+    #[cfg(windows)]
+    {
+        assert!(agentrouter_device::confine::labelled(&worktree));
+        let escape = outside.join("escape.txt");
+        let cmd = format!(
+            "$ErrorActionPreference='Stop'; Set-Content -Path '{}' -Value bad",
+            escape.display()
+        );
+        let (error, text) = client.tool("exec", json!({"command": cmd}));
+        assert!(
+            !escape.exists(),
+            "low-integrity exec wrote outside the workspace: {text}"
+        );
+        assert!(error, "the refused write should fail the command: {text}");
+    }
+    #[cfg(not(windows))]
+    {
+        // Unix: no portable OS write boundary yet (documented); the gate/deny/audit still apply.
+        let _ = outside;
+    }
+}

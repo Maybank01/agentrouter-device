@@ -186,9 +186,37 @@ fn kill_tree(child: &mut std::process::Child) {
     }
 }
 
+/// Unconfined run (access level `full`: the person explicitly asked for unrestricted commands).
+pub fn run(command: &str, cwd: &Path, timeout: Duration) -> Result<Outcome, String> {
+    run_inner(command, cwd, timeout)
+}
+
+/// Confined run for the workspace MCP service (access level `folders`, S2b): the exec cwd is labelled
+/// Low by confine.rs and, on Windows, the command runs in a low-integrity restricted token with a Low
+/// TEMP/caches. On Unix there is no portable OS write boundary yet (documented in README): the gate,
+/// deny/consent, audit and process group are what apply.
+pub fn run_confined(
+    command: &str,
+    cwd: &Path,
+    timeout: Duration,
+    data_dir: &Path,
+) -> Result<Outcome, String> {
+    let confinement = crate::confine::Confinement::new(data_dir);
+    let sandbox = confinement
+        .prepare_command(cwd)
+        .map_err(|e| format!("{}: {}", e.code, e.message))?;
+    #[cfg(windows)]
+    if let Some(sandbox) = sandbox.as_ref() {
+        return crate::confined::run(command, cwd, timeout, sandbox);
+    }
+    #[cfg(not(windows))]
+    let _ = sandbox;
+    run_inner(command, cwd, timeout)
+}
+
 /// Run `command` with the device's shell in `cwd`. `timeout` kills the process tree (Windows job) or
 /// the child (elsewhere); the output is capped. The caller validates `cwd` first.
-pub fn run(command: &str, cwd: &Path, timeout: Duration) -> Result<Outcome, String> {
+fn run_inner(command: &str, cwd: &Path, timeout: Duration) -> Result<Outcome, String> {
     let mut cmd = if cfg!(windows) {
         let mut c = Command::new("powershell");
         c.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"])
@@ -208,11 +236,17 @@ pub fn run(command: &str, cwd: &Path, timeout: Duration) -> Result<Outcome, Stri
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        // SAFETY: pre_exec runs in the child after fork; it only sets the child's process group.
+        // SAFETY: pre_exec runs in the child after fork; it only sets the child's process group and,
+        // on Linux, turns off setuid/setgid escalation (`PR_SET_NO_NEW_PRIVS`; no filesystem boundary
+        // without a sandbox helper).
         unsafe {
             cmd.pre_exec(|| {
                 if libc::setpgid(0, 0) != 0 {
                     return Err(std::io::Error::last_os_error());
+                }
+                #[cfg(target_os = "linux")]
+                {
+                    libc::prctl(38, 1, 0, 0, 0);
                 }
                 Ok(())
             });
