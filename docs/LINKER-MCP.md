@@ -1,6 +1,6 @@
 # Linker + MCP aggregation — the one device chain (console mode)
 
-Status: **design, for owner review** (2026-10-19, issue #40). Nothing here is implemented yet; the
+Status: **design, owner-reviewed** (2026-10-19, issue #40; owner answers in §12). Nothing here is implemented yet; the
 phased tasks at the end are filed as `agent-ready` issues. This document supersedes the device-action
 parts of Cloud `docs/product/workspace-v1/DEVICE-PROTOCOL.md` (§5, §13, §18) and `LINKED-DEVICES.md`
 (§23) once Phase 3 lands; until then live behaviour follows those documents.
@@ -27,6 +27,16 @@ Read as:
 It does not change the 2026-10-18 decision (the client is a pure remote MCP client); it removes what grew
 around it since (signed device actions, built-in workspace/exec/deploy/worktree tools, three consent
 stores, the M2a device-project registry).
+
+Owner answers to the open questions, 2026-10-19 (details in §12):
+
+> Q1 「屏幕操作可以先关掉」 · Q2 「需要设计一下或者找一下合理的开源项目。主要是我怕DS设计的架构有问题」 ·
+> Q3 「分享码功能也先移除，只做本地和云端个人账户的链接」 · Q4 「可以」 · Q5 「可以」 · Q6 「可以」
+
+- Screen tools are **off** (now on today's chain too, not only in console mode).
+- Share codes are **removed**: a link connects a folder to the person's **own** cloud account only.
+- Local Agents and cloud↔local Agent messaging are **pending a separate communication design**; nothing
+  in this document builds on them.
 
 ## 1. Why: the structural causes this replaces
 
@@ -166,9 +176,15 @@ with `readOnlyHint: true`. Servers keep running across a reconnect.
 | Conversation ("session") | MCP session bound to `ags_…` by the signed `initialize` | Aggregator memory; ends on `close` or 120 s after link loss |
 | Control plane | Pinned signing key (`kid`) | Device config |
 
-Local Agents (`mcp-serve local`, #37/#38) are not part of console mode; see open question Q2.
-Cross-Agent messaging (`dispatch-contract` `external_agent`, `ext_…` on a device) is future work and
-rides the same link as another MCP session kind; it gets no second channel.
+A link belongs to exactly one person's own cloud account (the paired device's owner). There are no
+share codes and no links into another person's account (Q3).
+
+**Pending the communication design (Q2):** the local-Agent entry (`mcp-serve local`, `lag_`/`lses_`,
+#37/#38) and any cloud↔local Agent messaging. The owner asked for a proper design (or a mature open
+source project) before anything is built here, because the current architecture is not trusted. Until
+that design is decided: no task builds on `dispatch/v1` `external_agent` or `ext_…` sessions, no task
+extends `mcp-serve local`, and the deletion task (#49) leaves `mcp-serve local` and the modules only it
+needs in place rather than deciding its fate.
 
 ## 5. Consent — decided on the device only
 
@@ -228,7 +244,9 @@ call answers `SANDBOX_UNAVAILABLE` with a `next` that tells the person what to r
 - **macOS:** Seatbelt profile generated per link; no setup step.
 - **Linux:** needs `bwrap` and unprivileged user namespaces (Ubuntu 24.04+ AppArmor may block them; the
   `next` says how to allow it).
-- Screen (Windows-MCP) cannot be confined to a folder and is **off** in console mode (Q1).
+- Screen (Windows-MCP) cannot be confined to a folder and is **off** (owner Q1 「屏幕操作可以先关掉」):
+  not in the catalog, `screen on` / `--screen` removed. A separately started screen mode can be designed
+  later; it is not planned.
 
 ## 7. Audit and undo
 
@@ -274,7 +292,7 @@ AgentRouter · 链接这个文件夹
 Commands after the change: `link [--read-only] [--yes-servers]`, `undo [--list]`,
 `audit [verify]`, `sandbox setup|status|remove`, `status`, `logout` (unpair this computer).
 Removed: `workspace …`, `deploy …`, `access …`, `mcp on|off`, `screen on|off`, `run --background`,
-`agent list`, `mcp-serve …`.
+`agent list`, `mcp-serve workspace`. (`mcp-serve local` is pending the communication design, §4.)
 
 Default servers (catalog bundle, pinned): `files` (`@modelcontextprotocol/server-filesystem` on the
 folder), `git` (`mcp-server-git` on the folder), `shell` (DesktopCommander, confined), `serena`.
@@ -289,12 +307,15 @@ those count as custom and need the local `y`.
 - The signed device action set and its dispatcher: `protocol.rs` request v1/v2 strings and actions,
   `device.rs` action routing, `info`/`mcp_*`/`workspace_*`/`worktree_*` actions (→ MCP + `_meta`).
 - Home-grown MCP client `mcp.rs` (≈1.5k lines) → `rmcp` client; `mcp_pkg.rs` folds into `link__package_put`.
-- Built-in servers: `connector-cli/src/mcp_serve.rs` (`mcp-serve workspace`, `mcp-serve local`) and
-  `exec.rs`, `shell.rs`, `deploy.rs`, `workspace.rs`, `worktree.rs`, `local_agent.rs`, `lockfile.rs`.
+- Built-in servers: `mcp-serve workspace` in `connector-cli/src/mcp_serve.rs` and `exec.rs`, `shell.rs`,
+  `deploy.rs` (S2a deploy targets, owner Q5 「可以」), `workspace.rs`, `worktree.rs`, `lockfile.rs`.
+  `mcp-serve local` and `local_agent.rs` (plus whatever only they need) stay until the communication
+  design decides (§4, Q2).
 - Confinement S2b: `confine.rs`, `confined.rs` (with a one-time cleanup that removes the Low labels it
   recorded in `confined.json`).
 - `AGENTROUTER_CONSENT`, access levels `confirm`/`full` (only folder and read-only remain), native
-  consent dialogs in `consent.rs` (terminal `y/N` replaces them), `screen.rs` + `screen/` (Q1).
+  consent dialogs in `consent.rs` (terminal `y/N` replaces them), `screen.rs` + `screen/` (Q1, turned
+  off earlier by #51).
 - In-repo checkpoint refs (`refs/agentrouter/cp/*` in the person's repo) → shadow repo.
 - `e2e/device-m1-driver.mjs` → the new E2E (Phase 4). `app/` frozen (out of CI/release), not deleted.
 
@@ -316,8 +337,12 @@ those count as custom and need the local `y`.
   replaced by the device audit + `audit_head` + `platform_tool_calls`.
 - Docs: DEVICE-PROTOCOL §5, §13, §18 and LINKED-DEVICES §23 shrink to a pointer to this document.
 
-Shares (分享码, DEVICE-PROTOCOL §11–§17, flag `CONTROL_PLANE_DEVICE_SHARES`) are a separate product
-path on the old protocol: open question Q3.
+- Shares (分享码, DEVICE-PROTOCOL §11–§17, flag `CONTROL_PLANE_DEVICE_SHARES`): removed now on the old
+  protocol (owner Q3), not rebased onto the link — `shares.ts`, `share-vectors.json` /
+  `make-share-vectors.mjs`, the share routes and web UI, share routing in platform tools,
+  `linked_device_shares` (migration down), the flag, the stub's share frames, DEVICE-PROTOCOL §11–§17.
+  The device repo carries no share code. Screen: the Windows-MCP catalog entry and `screen.ts` go off
+  now (Q1).
 
 ## 10. Migration
 
@@ -354,21 +379,21 @@ path on the old protocol: open question Q3.
 
 Issues (all `agent-ready`, not started): device 1 #42, 2 #43, 3 #44, 4 #45, 5 #46, 6 #47, 7 #48,
 12 #49, 14 #50; Cloud (Maybank01/agentrouter-cloud) 8 #1997, 9 #1998, 10 #1999, 11 #2000, 13 #2001.
+From the owner answers, independent of the phases and doable now on today's chain: device #51 (screen
+off), Cloud #2005 (screen off: Windows-MCP catalog entry + `screen.ts`), Cloud #2006
+(remove device share codes).
 
 Order: 1–3 first (they close #39 on today's chain), then 4–7 and 8–9 in parallel against the shared test
-vectors, then 10–14. Later, not filed: `external_agent` sessions on the same link.
+vectors, then 10–14. Not filed, pending the communication design (Q2): local Agents on the link and
+cloud↔local Agent messaging.
 
-## 12. Open questions for the owner
+## 12. Owner answers (2026-10-19)
 
-- **Q1 Screen.** Windows-MCP cannot be confined to a folder. Proposal: off in console mode; a later,
-  separately started `agentrouter screen` with its own visible bar.
-- **Q2 Local Agents.** `mcp-serve local` (#37/#38, 2026-10-18) gives local Agents the built-in tools.
-  Proposal: delete it; if local Agents need the folder later, they attach to the same aggregator as a
-  second front (same sandbox, audit, undo), never with tools of their own.
-- **Q3 Shares (分享码).** Keep (rebase onto the link later) or delete with the old protocol?
-- **Q4 Windows setup.** One UAC prompt on the first `link` to create the sandbox account. Acceptable?
-  Without it the link connects but runs no tools.
-- **Q5 Deploy outside the folder.** S2a deploy targets (e.g. a game directory) go away; the person runs
-  `link` in the game directory instead (two links, one conversation). Acceptable?
-- **Q6 Network default.** Servers get only their catalog domains + package mirrors; custom servers
-  registries only. Or open network by default?
+| # | Question | Owner | Result |
+| --- | --- | --- | --- |
+| Q1 | Screen: Windows-MCP cannot be confined to a folder; off in console mode? | 「屏幕操作可以先关掉」 | **Off**, now (device #51, Cloud #2005). A screen mode is not planned |
+| Q2 | Local Agents (`mcp-serve local`, #37/#38) and cloud↔local Agent communication | 「需要设计一下或者找一下合理的开源项目。主要是我怕DS设计的架构有问题」 | **Not decided.** A separate communication design is running. Local-Agent entry and cross-Agent messaging are marked pending (§4); nothing builds on `dispatch/v1` `external_agent` |
+| Q3 | Shares (分享码): keep or delete? | 「分享码功能也先移除，只做本地和云端个人账户的链接」 | **Removed.** Only links between the PC and the person's own cloud account (§4, §9; Cloud #2006) |
+| Q4 | One UAC prompt on the first Windows `link` to create the sandbox account | 「可以」 | Accepted (§6.3) |
+| Q5 | Deploy outside the folder goes away; run `link` in the target folder instead | 「可以」 | Accepted (§9: `deploy.rs` deleted) |
+| Q6 | Network default: catalog domains + package mirrors; custom servers registries only | 「可以」 | Accepted (§6.1) |
