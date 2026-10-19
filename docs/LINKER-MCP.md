@@ -352,6 +352,9 @@ path on the old protocol: open question Q3.
 | 13 | 4 | cloud · `devices` + docs | Delete the old action tools/relays/stub, `v: 1` → `DEVICE_OUTDATED`, DEVICE-PROTOCOL/LINKED-DEVICES pointers |
 | 14 | 4 | device · CI | E2E on GitHub-hosted Windows/macOS/Linux runners: stub gateway + real aggregator + sandbox escape cases (write/delete outside the folder, read `~/.ssh`, plant `.git/hooks`, child-process write, network to a non-listed host) |
 
+Issues (all `agent-ready`, not started): device 1 #42, 2 #43, 3 #44, 4 #45, 5 #46, 6 #47, 7 #48,
+12 #49, 14 #50; Cloud (Maybank01/agentrouter-cloud) 8 #1997, 9 #1998, 10 #1999, 11 #2000, 13 #2001.
+
 Order: 1–3 first (they close #39 on today's chain), then 4–7 and 8–9 in parallel against the shared test
 vectors, then 10–14. Later, not filed: `external_agent` sessions on the same link.
 
