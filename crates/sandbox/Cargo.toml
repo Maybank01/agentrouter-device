@@ -1,0 +1,16 @@
+[package]
+name = "agentrouter-sandbox"
+description = "AgentRouter device: the sandbox launcher. Every local MCP server runs under Anthropic sandbox-runtime (srt), writes confined to the linked folder (docs/LINKER-MCP.md §6)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "agentrouter_sandbox"
+
+[dependencies]
+getrandom = "0.4"
+serde_json.workspace = true
+sha2 = "0.11"
