@@ -521,7 +521,12 @@ fn on_frame(
             }
         }
         "health" => {
-            let _ = tx.send(json!({"id": id, "value": {"ok": true, "jobs": 0}}).to_string());
+            // The heartbeat carries the audit chain head: a log rewritten on the PC stops matching
+            // the head the platform stored (LINKER-MCP §7.1).
+            let head = rt.device.audit_head();
+            let _ = tx.send(
+                json!({"id": id, "value": {"ok": true, "jobs": 0, "auditHead": head}}).to_string(),
+            );
         }
         "events" if frame.get("handle").and_then(Value::as_str) == Some("console") => {
             rt.device.set_console(Some((tx.clone(), id)));
