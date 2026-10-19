@@ -206,21 +206,20 @@ fn failure(error: &DeviceError) -> Value {
     json!({"content": [{"type": "text", "text": body}], "isError": true})
 }
 
-/// Local approval: an unattended machine's operator pre-approved (config), the environment can force
-/// a result for headless tests (`AGENTROUTER_CONSENT=allow|deny`), otherwise the person is asked here.
+/// Local approval, decided only from this machine's own config (written by `link`): an unattended
+/// machine's operator pre-approved (`--unattended`), a headless machine answers no, otherwise the
+/// person is asked here. Never from the environment: the cloud supplies a server's environment, so a
+/// value there would let the cloud approve its own requests (#39, #43).
 fn approved(question: &str) -> bool {
     let config = Config::load();
     if config.unattended {
         return true;
     }
-    match std::env::var("AGENTROUTER_CONSENT").as_deref() {
-        Ok("allow") => true,
-        Ok("deny") => false,
-        _ => {
-            let cancel = AtomicBool::new(false);
-            consent::question(consent::TITLE, question, &cancel)
-        }
+    if config.headless {
+        return false;
     }
+    let cancel = AtomicBool::new(false);
+    consent::question(consent::TITLE, question, &cancel)
 }
 
 /// The directory an exec runs in: explicit (a registered project/worktree), else the session's

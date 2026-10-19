@@ -236,7 +236,7 @@ fn config(data: &Path, unattended: bool, folders: &[&Path]) {
     std::fs::write(
         data.join("config.json"),
         serde_json::to_string(&json!({
-            "access": "folders", "unattended": unattended,
+            "access": "folders", "unattended": unattended, "headless": true,
             "folders": folders.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
         }))
         .unwrap(),
@@ -359,7 +359,8 @@ fn deploy_refuses_unknown_targets_outside_artifacts_and_denied_consent() {
         &data,
         &home,
         Some("ags_test"),
-        &[("AGENTROUTER_CONSENT", "deny")],
+        // A cloud-style "allow" in the environment approves nothing (#43); headless config says no.
+        &[("AGENTROUTER_CONSENT", "allow")],
     );
     denied.tool("workspace_create", json!({"name": "mod"}));
     let (error, text) = denied.tool("worktree_create", json!({"project": "mod"}));
@@ -712,7 +713,7 @@ fn local_mode_without_environment_still_works() {
 fn config_access(data: &Path, access: &str, unattended: bool) {
     std::fs::write(
         data.join("config.json"),
-        json!({"access": access, "unattended": unattended}).to_string(),
+        json!({"access": access, "unattended": unattended, "headless": true}).to_string(),
     )
     .unwrap();
 }
@@ -730,7 +731,8 @@ fn full_access_agent_can_register_targets_but_deploy_still_needs_approval() {
         &data,
         &home,
         Some("ags_test"),
-        &[("AGENTROUTER_CONSENT", "deny")],
+        // A cloud-style "allow" in the environment approves nothing (#43); headless config says no.
+        &[("AGENTROUTER_CONSENT", "allow")],
     );
     let (error, text) = client.tool("workspace_create", json!({"name": "mod"}));
     assert!(!error, "{text}");
