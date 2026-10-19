@@ -58,6 +58,7 @@ const USAGE: &str = "AgentRouter 小助手（agentrouter）：把这台电脑链
                                 每个会话一个 git worktree；移除默认保留分支（改动记录）
   agentrouter undo [检查点] [--list] [--yes]
                                 撤销 AI 的改动：不写检查点就撤销当前文件夹最近一轮改动；--list 列出检查点
+  agentrouter audit [条数]       看最近的审计记录（默认 20 条，含参数；密钥不记）
   agentrouter audit verify      检查审计日志有没有被改过
 
 （agentrouter-device 是同一个程序的旧名字，用法一样。）
@@ -181,16 +182,7 @@ pub fn main() {
         "mcp" => cmd_mcp(flags),
         "workspace" => cmd_workspace(flags),
         "agent" => cmd_agent(flags),
-        "audit" => match audit::verify(&data_dir().join("audit.log")) {
-            Ok(n) => {
-                println!("审计日志完好，共 {n} 条。");
-                0
-            }
-            Err((line, why)) => {
-                println!("审计日志第 {line} 行有问题：{why}");
-                1
-            }
-        },
+        "audit" => cmd_audit(flags),
         "version" | "--version" | "-V" => {
             println!("agentrouter {}", env!("CARGO_PKG_VERSION"));
             0
@@ -682,6 +674,67 @@ fn status() -> i32 {
         Err((line, why)) => println!("审计日志：{}（第 {line} 行有问题：{why}）", log.display()),
     }
     0
+}
+
+/// `agentrouter audit [n]` shows the last entries; `agentrouter audit verify` checks the chain.
+fn cmd_audit(flags: Flags) -> i32 {
+    let log = data_dir().join("audit.log");
+    let verify_only = flags.positional.first().map(String::as_str) == Some("verify");
+    if !verify_only {
+        let n = flags
+            .positional
+            .first()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(20)
+            .clamp(1, 1000);
+        for entry in audit::last_entries(&log, n) {
+            let s = |k: &str| {
+                entry
+                    .get(k)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string()
+            };
+            let what = if s("action").is_empty() {
+                s("event")
+            } else {
+                s("action")
+            };
+            let mut line = format!("{}  {}  {}  {}", s("at"), s("session"), what, s("outcome"));
+            if let Some(ms) = entry.get("ms").and_then(|v| v.as_u64()) {
+                line.push_str(&format!("  {ms}ms"));
+            }
+            if !s("text").is_empty() {
+                line.push_str(&format!("  {}", s("text")));
+            }
+            if let Some(args) = entry.get("args").filter(|a| !a.is_null()) {
+                line.push_str(&format!("  args={}", clip_line(&args.to_string(), 400)));
+            }
+            println!("{line}");
+        }
+    }
+    let head = audit::head(&log);
+    match audit::verify(&log) {
+        Ok(n) => {
+            println!(
+                "审计日志完好，共 {n} 条（链头 {}）。",
+                head["hash"].as_str().unwrap_or("").get(..12).unwrap_or("")
+            );
+            0
+        }
+        Err((line, why)) => {
+            println!("审计日志第 {line} 行有问题：{why}");
+            1
+        }
+    }
+}
+
+fn clip_line(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let head: String = text.chars().take(max).collect();
+    format!("{head}…")
 }
 
 /// `agentrouter undo`: put a folder back to a checkpoint (DEVICE-PROTOCOL.md §5.7).

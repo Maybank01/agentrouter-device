@@ -209,6 +209,11 @@ impl Device {
         self.audit.lock().unwrap().record(entry);
     }
 
+    /// The audit chain head `{seq, hash}` the heartbeat and `hello` report (LINKER-MCP §7.1).
+    pub fn audit_head(&self) -> Value {
+        self.audit.lock().unwrap().head()
+    }
+
     /// The conversation using the device right now (a recent request), if any.
     pub fn in_use_by(&self) -> Option<String> {
         let last = self.last_use.lock().unwrap();
@@ -236,6 +241,7 @@ impl Device {
             "mcpServers": self.mcp.summary(),
             "checkpoints": true,
             "foreground": self.foreground.load(Ordering::SeqCst),
+            "auditHead": self.audit_head(),
         })
     }
 
@@ -278,20 +284,25 @@ impl Device {
                 &mut replay,
             )
         };
+        // Argument-level audit (LINKER-MCP §7.1, #44): what was asked, with secrets blanked.
+        let nonce = request.get("nonce").and_then(Value::as_str).unwrap_or("");
+        let audited_args = crate::audit::redact_args(args);
         let verified = match checked {
             Ok(v) => v,
             Err(e) => {
-                self.record(json!({"session": session_hint, "action": action_hint, "outcome": e.code, "detail": e.message}));
+                self.record(json!({"session": session_hint, "action": action_hint, "nonce": nonce, "args": audited_args, "outcome": e.code, "detail": e.message}));
                 return Err(e);
             }
         };
         *self.last_use.lock().unwrap() = Some((verified.session.clone(), now_ms()));
         let session = verified.session.as_str();
+        let started = std::time::Instant::now();
         let result = self.act(&verified.action, session, args, cancel);
+        let ms = started.elapsed().as_millis() as u64;
         let summary = summary(&verified.action, args);
         match &result {
-            Ok(_) => {
-                self.record(json!({"session": session, "action": verified.action, "text": summary, "outcome": "ok"}));
+            Ok(value) => {
+                self.record(json!({"session": session, "action": verified.action, "text": summary, "nonce": nonce, "args": audited_args, "ms": ms, "outcome": "ok", "result": crate::audit::result_summary(value)}));
                 if verified.action != "info" {
                     self.say(&format!(
                         "{} {} — 完成",
@@ -309,7 +320,7 @@ impl Device {
                         &format!("{}: {}", verified.action, e.message),
                     );
                 }
-                self.record(json!({"session": session, "action": verified.action, "text": summary, "outcome": e.code, "detail": e.message}));
+                self.record(json!({"session": session, "action": verified.action, "text": summary, "nonce": nonce, "args": audited_args, "ms": ms, "outcome": e.code, "detail": e.message}));
                 self.say(&format!(
                     "{} {} — {}",
                     verified.action,

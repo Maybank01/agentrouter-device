@@ -91,6 +91,32 @@ fn signature_checks_come_first() {
 }
 
 #[test]
+fn audit_keeps_arguments_without_secrets_and_reports_its_head() {
+    let cp = ControlPlane::new();
+    let data = temp_dir("audit-args");
+    let folder = temp_dir("audit-args-folder");
+    let d = device(&data, Access::Folders, &[&folder], &cp);
+    call(
+        &d,
+        &cp,
+        "info",
+        json!({"path": "src/a.rs", "apiKey": "sk-do-not-log"}),
+    )
+    .unwrap();
+    let log = std::fs::read_to_string(d.audit_path()).unwrap();
+    let last: serde_json::Value = serde_json::from_str(log.lines().last().unwrap()).unwrap();
+    assert_eq!(last["args"]["path"], "src/a.rs");
+    assert_eq!(last["args"]["apiKey"], "[secret]");
+    assert!(last["result"]["sha256"].as_str().is_some(), "{last}");
+    assert!(!log.contains("sk-do-not-log"), "{log}");
+    // The head the heartbeat reports is the last line of the chain.
+    let head = agentrouter_device::audit::head(&d.audit_path());
+    assert_eq!(head["hash"], last["hash"]);
+    let info = call(&d, &cp, "info", json!({})).unwrap();
+    assert_eq!(info["device"]["auditHead"]["hash"], last["hash"]);
+}
+
+#[test]
 fn info_reports_the_local_choices_and_only_the_mcp_actions() {
     let cp = ControlPlane::new();
     let data = temp_dir("info");
