@@ -163,6 +163,12 @@ pub(crate) struct Spec {
     keep_out: Vec<String>,
 }
 
+/// Environment names only this device sets for its own processes (`AGENTROUTER_*`, any case: Windows
+/// names are case-insensitive). A server definition from the cloud may not carry them.
+pub fn reserved_env(name: &str) -> bool {
+    name.len() >= 12 && name[..12].eq_ignore_ascii_case("AGENTROUTER_")
+}
+
 impl Spec {
     fn parse(args: &Value) -> Result<Spec, DeviceError> {
         let name = str_arg(args, "name").to_string();
@@ -197,6 +203,14 @@ impl Spec {
                 let ok_key = !k.is_empty()
                     && k.len() <= 128
                     && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+                if ok_key && reserved_env(k) {
+                    // The cloud writes this environment; the device's own settings (data dir,
+                    // session, local identity, shell, approvals) must never come from it (#39, #43).
+                    return Err(error(
+                        "MCP_ENV_RESERVED",
+                        format!("env.{k} 是这台电脑自己的设置，云端不能指定"),
+                    ));
+                }
                 match v.as_str() {
                     Some(s) if ok_key && s.len() <= 8000 => env.push((k.clone(), s.to_string())),
                     _ => return Err(error("FAILED", format!("env.{k} 要是字符串"))),
@@ -1370,6 +1384,23 @@ mod tests {
         assert!(!valid_name("Windows"));
         assert!(!valid_name("w"));
         assert!(!valid_name("a-b"));
+    }
+
+    #[test]
+    fn the_cloud_cannot_set_the_devices_own_environment() {
+        for key in [
+            "AGENTROUTER_CONSENT",
+            "agentrouter_consent",
+            "AGENTROUTER_DEVICE_HOME",
+            "AGENTROUTER_SESSION",
+            "AGENTROUTER_LOCAL_AGENT",
+            "AGENTROUTER_SHELL",
+        ] {
+            let err = Spec::parse(&json!({"name": "demo", "command": "x", "env": {key: "allow"}}))
+                .unwrap_err();
+            assert_eq!(err.code, "MCP_ENV_RESERVED", "{key}");
+        }
+        assert!(Spec::parse(&json!({"name": "demo", "command": "x", "env": {"AGENTROUTERX": "1", "MODE": "fast"}})).is_ok());
     }
 
     #[test]

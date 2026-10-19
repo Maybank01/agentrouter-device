@@ -110,6 +110,9 @@ pub struct Config {
     /// Unattended (servers, CI): the machine's operator approved commands up front, at link time, on
     /// this machine. Nothing is asked at run time; everything is still audited.
     pub unattended: bool,
+    /// Nobody sits at this machine (CI, headless test runs): a local question answers "no" at once
+    /// instead of opening a dialog. Only this local file sets it; it can never approve anything.
+    pub headless: bool,
     /// At 「每条都确认」, read-only commands (`git status`, `ls`, `rg`, `cat` …) run without asking
     /// (DEVICE-PROTOCOL.md §5.6). On unless the person turns it off.
     pub readonly_commands: bool,
@@ -137,6 +140,7 @@ impl Default for Config {
             paused: false,
             disconnected: false,
             unattended: false,
+            headless: false,
             readonly_commands: true,
             screen: false,
             private_apps: Vec::new(),
