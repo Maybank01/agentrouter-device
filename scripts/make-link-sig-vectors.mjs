@@ -22,10 +22,13 @@ const linkString = (s) => ["agentrouter-link-request/v3", s.link, s.session, s.m
 const LINK = "lnk_0123456789abcdef0123456789abcdef";
 const NOW = 1760000000000;
 
+// `over.method` signs for another method than the request's (a forged-method case); it is never a field of the signature.
 function signed(method, params, over = {}) {
-  const body = { link: LINK, session: "ags_conv1", method, digest: sha256(canonicalJson(withoutMeta(params))), exp: NOW + 60_000, nonce: "0".repeat(31) + "1", ...over };
-  const sig = sign(null, Buffer.from(linkString(body), "utf8"), key).toString("base64url");
-  return { params: { ...params, _meta: { ...(params._meta ?? {}), "agentrouter.top/sig": { v: 3, kid, ...body, sig } } }, string: linkString(body), canonical: canonicalJson(withoutMeta(params)) };
+  const { method: signedMethod = method, ...rest } = over;
+  const body = { link: LINK, session: "ags_conv1", digest: sha256(canonicalJson(withoutMeta(params))), exp: NOW + 60_000, nonce: "0".repeat(31) + "1", ...rest };
+  const string = linkString({ ...body, method: signedMethod });
+  const sig = sign(null, Buffer.from(string, "utf8"), key).toString("base64url");
+  return { params: { ...params, _meta: { ...(params._meta ?? {}), "agentrouter.top/sig": { v: 3, kid, ...body, sig } } }, string, canonical: canonicalJson(withoutMeta(params)) };
 }
 
 const cases = [];
@@ -36,7 +39,7 @@ add("tools/call with unicode keys, numbers and nested arrays", "tools/call", sig
 add("other _meta keys are not signed", "tools/call", (() => { const b = signed("tools/call", { name: "git__git_status", arguments: { repo_path: "." } }, { nonce: "0".repeat(31) + "3" }); b.params._meta.progressToken = 42; b.params._meta["agentrouter.top/turn"] = "t1"; return b; })(), "ok");
 add("arguments changed after signing", "tools/call", (() => { const b = signed("tools/call", { name: "files__write_file", arguments: { path: "a.txt", content: "x" } }, { nonce: "0".repeat(31) + "4" }); b.params.arguments.path = "../../.ssh/config"; return b; })(), "SIGNATURE_INVALID");
 add("signed for another link", "tools/call", signed("tools/call", { name: "files__read_file", arguments: { path: "a" } }, { link: "lnk_ffffffffffffffffffffffffffffffff", nonce: "0".repeat(31) + "5" }), "WRONG_LINK");
-add("signed for another method", "tools/call", signed("initialize", { name: "files__read_file", arguments: { path: "a" } }, { nonce: "0".repeat(31) + "6" }), "SIGNATURE_INVALID");
+add("signed for another method", "tools/call", signed("tools/call", { name: "files__read_file", arguments: { path: "a" } }, { method: "initialize", nonce: "0".repeat(31) + "6" }), "SIGNATURE_INVALID");
 add("expired", "tools/call", signed("tools/call", { name: "files__read_file", arguments: {} }, { exp: NOW - 1, nonce: "0".repeat(31) + "7" }), "REQUEST_EXPIRED");
 add("lives too long", "tools/call", signed("tools/call", { name: "files__read_file", arguments: {} }, { exp: NOW + 66_000, nonce: "0".repeat(31) + "8" }), "REQUEST_EXPIRED");
 add("replayed nonce (same as case 2)", "tools/call", signed("tools/call", { name: "files__read_file", arguments: {} }, { nonce: "0".repeat(31) + "2" }), "REPLAYED");
