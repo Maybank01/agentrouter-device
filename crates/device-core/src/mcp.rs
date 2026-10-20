@@ -1065,6 +1065,7 @@ fn launch(server: &Arc<Server>, program: &Path) -> Result<(), LaunchError> {
                 folders: &c.folders,
                 network: &c.network,
                 readable: &c.readable,
+                read_only: false,
             })
             .map_err(LaunchError::Sandbox)?,
         None => {

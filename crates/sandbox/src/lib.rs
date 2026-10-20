@@ -101,6 +101,8 @@ pub struct Launch<'a> {
     pub network: &'a [String],
     /// Read-only exceptions inside hidden places (the device's shim folder and checked packages).
     pub readable: &'a [PathBuf],
+    /// `agentrouter link --read-only`: the folders stay readable but not writable (only scratch is).
+    pub read_only: bool,
 }
 
 /// What `agentrouter sandbox status` shows and `hello` reports.
@@ -411,7 +413,11 @@ impl Runtime {
             }
         }
         let scratch = self.scratch(launch.key);
-        let mut allow_write: Vec<String> = writable.iter().map(|f| shown(f)).collect();
+        let mut allow_write: Vec<String> = if launch.read_only {
+            Vec::new()
+        } else {
+            writable.iter().map(|f| shown(f)).collect()
+        };
         allow_write.push(shown(&scratch));
         let mut deny_write = Vec::new();
         for f in &writable {
@@ -777,6 +783,7 @@ mod tests {
             folders: &folders,
             network: &network,
             readable: &[],
+            read_only: false,
         };
         let p = rt.policy(&launch).unwrap();
         let writes: Vec<&str> = p["filesystem"]["allowWrite"]
@@ -801,6 +808,30 @@ mod tests {
     }
 
     #[test]
+    fn read_only_writes_nothing_but_scratch() {
+        let dir = temp("readonly");
+        let (rt, folder) = launch_in(&dir);
+        let folders = vec![folder.clone()];
+        let launch = Launch {
+            key: "files",
+            program: Path::new("node"),
+            args: &[],
+            env: &[],
+            cwd: &folder,
+            folders: &folders,
+            network: &[],
+            readable: &[],
+            read_only: true,
+        };
+        let p = rt.policy(&launch).unwrap();
+        assert_eq!(
+            p["filesystem"]["allowWrite"],
+            json!([shown(&rt.scratch("files"))])
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn home_root_and_the_data_folder_cannot_be_the_folder() {
         let dir = temp("refuse");
         let (rt, _) = launch_in(&dir);
@@ -819,6 +850,7 @@ mod tests {
                 folders: &folders,
                 network: &[],
                 readable: &[],
+                read_only: false,
             };
             assert!(
                 rt.policy(&launch).is_err(),

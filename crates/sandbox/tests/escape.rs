@@ -123,6 +123,7 @@ fn a_confined_process_cannot_touch_anything_outside_the_folder() {
         folders: &folders,
         network: &[],
         readable: &[],
+        read_only: false,
     };
     eprintln!(
         "policy: {}",
