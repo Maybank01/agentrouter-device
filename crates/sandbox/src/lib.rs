@@ -372,6 +372,8 @@ impl Runtime {
                 ));
             }
         }
+        #[cfg(not(windows))]
+        self.probe(&node)?;
         #[cfg(windows)]
         match windows_provisioned(&self.srt_win()) {
             Ok(true) => {}
@@ -384,6 +386,73 @@ impl Runtime {
             node,
             cli: self.cli(),
         })
+    }
+
+    /// One real confined no-op (once per process): the binaries can be present and srt still unable to confine
+    /// (#63: Ubuntu 24.04 restricts unprivileged user namespaces, srt's seccomp helper then fails with
+    /// `setgroups … Permission denied` and every server loops on its handshake).
+    #[cfg(not(windows))]
+    fn probe(&self, node: &Path) -> Result<(), Unavailable> {
+        static PROBE: OnceLock<Result<(), Unavailable>> = OnceLock::new();
+        PROBE
+            .get_or_init(|| {
+                let scratch = self.scratch("\u{1}probe");
+                let _ = std::fs::create_dir_all(&scratch);
+                let policy = json!({
+                    "network": {"allowedDomains": [], "deniedDomains": []},
+                    "filesystem": {"denyRead": [], "allowRead": [shown(&self.package_dir())], "allowWrite": [shown(&scratch)], "denyWrite": []},
+                });
+                let file = self.root().join("policies").join("probe.json");
+                let _ = std::fs::create_dir_all(self.root().join("policies"));
+                std::fs::write(&file, policy.to_string())
+                    .map_err(|e| Unavailable::new(format!("写不了隔离设置：{e}"), NEXT_SETUP))?;
+                let truth = ["/usr/bin/true", "/bin/true"]
+                    .into_iter()
+                    .map(PathBuf::from)
+                    .find(|p| p.is_file())
+                    .unwrap_or_else(|| PathBuf::from("true"));
+                let child = Command::new(node)
+                    .arg(self.cli())
+                    .arg("--settings")
+                    .arg(&file)
+                    .arg("--")
+                    .arg(&truth)
+                    .current_dir(&scratch)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .map_err(|e| Unavailable::new(format!("隔离环境起不来：{e}"), NEXT_SETUP))?;
+                let out = wait_with_timeout(child, std::time::Duration::from_secs(30));
+                match out {
+                    Some(out) if out.status.success() => Ok(()),
+                    Some(out) => {
+                        let text = format!(
+                            "{}{}",
+                            String::from_utf8_lossy(&out.stderr),
+                            String::from_utf8_lossy(&out.stdout)
+                        );
+                        let text = text.trim();
+                        let clipped: String = text.chars().take(300).collect();
+                        let userns = ["setgroups", "user namespace", "uid_map", "Permission denied", "Operation not permitted"]
+                            .iter()
+                            .any(|n| text.contains(n));
+                        if cfg!(target_os = "linux") && userns {
+                            Err(Unavailable::new(
+                                format!("这台电脑不允许隔离环境建用户命名空间（{clipped}）"),
+                                "请用户运行 sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0（长期生效：写进 /etc/sysctl.d/），或者在信任的情况下用 agentrouter link --full。",
+                            ))
+                        } else {
+                            Err(Unavailable::new(
+                                format!("隔离环境试运行失败：{clipped}"),
+                                NEXT_SETUP,
+                            ))
+                        }
+                    }
+                    None => Err(Unavailable::new("隔离环境试运行 30 秒没有结束", NEXT_SETUP)),
+                }
+            })
+            .clone()
     }
 
     /// The scratch folder of one server.
@@ -405,10 +474,17 @@ impl Runtime {
             ("npm_config_cache".to_string(), p("npm")),
             ("UV_CACHE_DIR".to_string(), p("uv")),
             ("UV_PYTHON_INSTALL_DIR".to_string(), p("uv-python")),
+            // uvx installs the tool itself here (#63: `~/.local/share/uv/tools` is read-only in the sandbox).
+            ("UV_TOOL_DIR".to_string(), p("uv-tools")),
+            ("UV_TOOL_BIN_DIR".to_string(), p("uv-bin")),
             ("PIP_CACHE_DIR".to_string(), p("pip")),
         ];
         if !cfg!(windows) {
             env.push(("XDG_CACHE_HOME".to_string(), p("cache")));
+            // A home of its own: servers that keep state in `~` (DesktopCommander's `~/.claude-server-commander`,
+            // #63) can start; the person's real home stays readable (minus the secrets) but not writable. On Windows
+            // the sandbox account has its own profile already.
+            env.push(("HOME".to_string(), p("home")));
         }
         env
     }
@@ -536,6 +612,14 @@ impl Runtime {
                 let _ = std::fs::create_dir_all(v);
             }
         }
+        // With HOME in scratch, git still finds the person's identity (read-only).
+        let gitconfig = home_dir().join(".gitconfig");
+        if !cfg!(windows)
+            && gitconfig.is_file()
+            && !env.iter().any(|(k, _)| k == "GIT_CONFIG_GLOBAL")
+        {
+            env.push(("GIT_CONFIG_GLOBAL".to_string(), shown(&gitconfig)));
+        }
         std::fs::create_dir_all(&scratch).map_err(|e| {
             Unavailable::new(format!("建不了 {}：{e}", shown(&scratch)), NEXT_SETUP)
         })?;
@@ -612,6 +696,28 @@ impl Runtime {
             cmd.env(k, v);
         }
         Ok(cmd)
+    }
+}
+
+/// A child's output, or None (killed) after `timeout`.
+#[cfg(not(windows))]
+fn wait_with_timeout(
+    mut child: std::process::Child,
+    timeout: std::time::Duration,
+) -> Option<std::process::Output> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return child.wait_with_output().ok(),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
     }
 }
 

@@ -69,9 +69,10 @@ impl Harness {
         let agg = Aggregator::new(
             Config {
                 link: LINK.into(),
-                folder: folder.to_path_buf(),
+                folders: vec![folder.to_path_buf()],
                 folder_name: "work".into(),
                 read_only: false,
+                full: false,
                 data_dir: data.clone(),
                 control: control.clone(),
                 yes_servers,
@@ -212,6 +213,7 @@ async fn the_protocol_gate_audit_and_no_unconfined_fallback() {
             "link__server_add",
             "link__server_remove",
             "link__server_logs",
+            "link__folder_add",
             "link__package_put"
         ]
     );

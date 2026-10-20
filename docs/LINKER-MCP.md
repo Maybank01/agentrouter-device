@@ -1,6 +1,6 @@
 # Linker + MCP aggregation — the one device chain (console mode)
 
-Status: **design, owner-reviewed** (2026-10-19, issue #40; owner answers in §12). Nothing here is implemented yet; the
+Status: **design, owner-reviewed** (2026-10-19, issue #40; 2026-10-20 additions §0.1, issue #64; owner answers in §12). Nothing here is implemented yet; the
 phased tasks at the end are filed as `agent-ready` issues. This document supersedes the device-action
 parts of Cloud `docs/product/workspace-v1/DEVICE-PROTOCOL.md` (§5, §13, §18) and `LINKED-DEVICES.md`
 (§23) once Phase 3 lands; until then live behaviour follows those documents.
@@ -37,6 +37,26 @@ Owner answers to the open questions, 2026-10-19 (details in §12):
 - Share codes are **removed**: a link connects a folder to the person's **own** cloud account only.
 - Local Agents and cloud↔local Agent messaging are **pending a separate communication design**; nothing
   in this document builds on them.
+
+### 0.1 Owner decisions 2026-10-20: several folders, real paths, 完全访问, SSH feel
+
+> Folder-picker draft (`.artifacts/brand-draft-anime/folder-picker-20261020.html`): 「这个可以」 ·
+> 「直接展示真实目录可以不。没必要说限制特别死，因为用户是具备开启完全访问的能力的。虚拟目录可能是个伪需求」 ·
+> 「就和Agent使用SSH同样的感觉会更好吧」 (Cloud `docs/product/PRODUCT.md` v1.56)
+
+- **One link, several folders.** `agentrouter link <dir> [<dir>…]`; a folder can be added to a running link with a
+  local `y` (§5). The sandbox's writable set is all listed folders + scratch; outside stays denied in folder mode.
+- **Real paths, no virtual directory layer.** The Agent sees and uses real paths (`D:\work\my-mod`,
+  `D:\Games\Wukong\Mods`); `hello.link.folders` carries them (§3.2). Copy between folders is a plain local
+  operation (`cp`, a build's output path): the bytes never pass through the cloud or the model context.
+- **完全访问 (full access)**, chosen locally only: `agentrouter link --full` (§5, §6.4). Never switchable from the cloud.
+- **SSH feel, MCP underneath.** Each linked computer is like an ssh host named by its link (`台式机`); the Agent runs
+  commands in a real shell with a real cwd and reads/writes files by real path through the device's `host` server
+  (§3.7); folder mode is like a jailed ssh account, 完全访问 like a normal login. Cross-computer (and cloud sandbox ↔
+  computer) transfer is scp-like (`<host>:<path>` → `<host>:<path>`), streamed by the platform outside the model context
+  and audited on both ends. The Agent-facing tools are kernel-neutral and minimal (Cloud `remote_hosts`,
+  `remote_exec`, `remote_read_file`, `remote_write_file`, `remote_copy`).
+- **Several computers in one conversation:** a conversation may bind several links (Cloud `device_link_bindings`).
 
 ## 1. Why: the structural causes this replaces
 
@@ -112,9 +132,17 @@ control  device → gateway  {"op": "hello", "v": 2, "token": "ldt_…", "link":
          device → gateway  {"op": "audit_head", "seq": n, "hash": "<sha256>"}            (§7, every heartbeat)
 ```
 
-`hello.link` = `{folder: "<display name>", os, arch, app: "cli", version, sandbox: "<backend>@<version>"}`.
-The absolute folder path stays on the device unless the person chose to show it; the cloud sees a name
-(`my-mod`) and a stable `lnk_` id derived from device id + canonical path.
+`hello.link` = `{id, folder: "<display name of the first folder>", folders: ["<real absolute path>", …], full,
+os, arch, app: "cli", version, sandbox: "<backend>@<version>" | "", readOnly}`. Running `link` on folders is the
+person's choice to show their real paths (owner 2026-10-20, §0.1); `folders` holds at most 32 paths, the first is
+the link's home (relative paths resolve there). In 完全访问 `full` is `true`, `folders` lists the folders named on the
+command line (checkpointed, §7.2) or the start folder, and `sandbox` is `""` (nothing is confined, §6.4). The `lnk_`
+id is derived from device id + the first folder's canonical path (`full:` + it in 完全访问), so adding a folder keeps
+the id.
+
+```text
+         device → gateway  {"op": "info", "link": {…same fields as hello.link, same id…}}  (the folders changed)
+```
 
 That is the entire custom surface. Everything else is MCP: `initialize`,
 `notifications/initialized`, `tools/list`, `tools/call`, `notifications/tools/list_changed`,
@@ -149,8 +177,35 @@ Unsigned (harmless, read-only shape): `tools/list`, `ping`, notifications. Failu
   or a custom definition — custom ones need the local `y` in §5), `link__server_remove`,
   `link__server_logs`, `link__package_put` (pinned package bytes, digest-checked; replaces
   `mcp_package`). These manage *which* servers run; they are not capabilities.
+- `link__folder_add {path, reason?}`: the Agent asks for another folder; the person answers `y/N` on the computer
+  (§5). On `y` the folder joins the writable set, every running server restarts with the new policy, `info` goes
+  out and the answer lists the folders. Refused: `DENIED_BY_USER`, `FOLDER_INVALID` (missing, a file, the home
+  folder, a drive root, the device data folder). `link__servers` also reports `folders`, `full` and `readOnly`.
 - `tools/list` results are merged across servers and paginated; a server's `list_changed` becomes the
   aggregator's `list_changed`.
+
+### 3.7 The `host` server: the SSH-like surface (owner 2026-10-20)
+
+Every link starts one local server named `host` (`agentrouter mcp-serve host`, the device's own binary; started by the
+console, never by the cloud, so no `y`). It is an ordinary MCP server: confined by the sandbox in folder mode like
+any other (§6), run with the person's rights in 完全访问 (§6.4). The aggregator still has no capabilities.
+
+| Tool | Arguments | Answer (`structuredContent`) |
+| --- | --- | --- |
+| `host__exec` | `command`, `cwd?` (default: the first folder), `timeout_s?` (1–600, default 120) | `exit_code` (null on timeout), `timed_out`, `stdout`, `stderr` (each ≤ 256 KiB, a clip marker inside), `cwd`, `shell`, `ms` |
+| `host__read` | `path`, `offset?`, `length?` (≤ 4 MiB, default whole file up to that), `encoding?` `utf8`/`base64`, `sha256?` | `path` (absolute, real), `size`, `offset`, `length`, `eof`, `encoding`, `data`, `sha256` (whole file, when asked) |
+| `host__write` | `path`, `data`, `encoding?` `utf8`/`base64`, `offset?`, `truncate?` | `path`, `size`, `written` |
+
+- The shell is real: `/bin/sh -lc` on Linux/macOS, PowerShell (`pwsh`, else Windows PowerShell) on Windows; `shell`
+  names it. The command's whole process tree ends on timeout (process group / job object). Paths are real; relative ones resolve against the first folder.
+- `host__write` without `offset` creates or replaces the file (parents created); with `offset` it writes there,
+  after truncating to `offset` when `truncate` is true (chunked transfer: first chunk `offset: 0, truncate: true`).
+- A write the OS refuses answers `isError` with the OS text (the console shows 拦下：在文件夹外).
+- Answers carry the bytes once: `structuredContent` has `data`; the text copy replaces a `data` over 64 KiB with a
+  marker, so a 4 MiB base64 chunk fits the 8 MiB frame. `host__read` without `length` reads at most 4 MiB.
+- Transfer (`remote_copy`, Cloud) is chunks of `host__read`/`host__write` (4 MiB, base64) relayed by the control
+  plane from link to link (or the conversation's cloud sandbox), never through the model; each chunk is one audited
+  call on each computer, the copy ends with `sha256` compared on both sides.
 
 ### 3.5 Errors
 
@@ -188,10 +243,14 @@ needs in place rather than deciding its fate.
 
 ## 5. Consent — decided on the device only
 
-- **Starting `link` in a folder is the consent** for that folder (owner 2026-10-10: folder-scoped full
-  freedom, no prompts, undo as the safety). Inside it the Agent works without questions.
-- **Outside the folder nothing is asked — it is denied** (by the OS, §6). No prompt can widen the
-  boundary at run time; a person who wants another folder runs `link` there.
+- **Starting `link` on folders is the consent** for those folders (owner 2026-10-10: folder-scoped full
+  freedom, no prompts, undo as the safety). Inside them the Agent works without questions.
+- **Outside the folders a call is denied** (by the OS, §6) — except that **a folder can be added with a local `y`**
+  (owner 2026-10-20): the person types `+ <path>` in the link's terminal (typing it is the consent), or the Agent
+  calls `link__folder_add` and the terminal asks `y/N` (120 s, no answer = no; `--yes-servers` does not pre-answer
+  it). Nothing from the cloud can widen the set without that `y`.
+- **完全访问 is chosen on the computer only:** `agentrouter link --full`. There is no tool, frame, flag or env var
+  through which the cloud can turn it on or off; ending it means Ctrl+C and running `link` again without `--full`.
 - **The only local question** is adding a server that is not a pinned catalog entry
   (`link__server_add` with a custom command): the terminal shows the command line and asks `y/N`;
   no answer in 120 s = no. `--yes-servers` on the command line pre-answers it for unattended machines
@@ -199,7 +258,8 @@ needs in place rather than deciding its fate.
 - **Deleted:** `AGENTROUTER_CONSENT`, every consent decision stored or asserted in the cloud for device
   calls (§9). The cloud keeps a **binding** ("this conversation uses `desk:my-mod`"), which is a routing
   choice the person makes in the web UI, not a permission.
-- Read-only mode: `agentrouter link --read-only` makes the folder read-only in the sandbox too.
+- Read-only mode: `agentrouter link --read-only` makes the folders read-only in the sandbox too (not combinable
+  with `--full`).
 
 ## 6. Sandbox — the folder boundary is the OS's
 
@@ -248,6 +308,19 @@ call answers `SANDBOX_UNAVAILABLE` with a `next` that tells the person what to r
   not in the catalog, `screen on` / `--screen` removed. A separately started screen mode can be designed
   later; it is not planned.
 
+### 6.4 完全访问 (`--full`)
+
+The person's own choice to give the Agent a normal login (owner 2026-10-20): the local servers (and the commands they
+run) start **without the sandbox**, as the person's own user, with the network unrestricted. Decision on the secret
+read deny list: **not kept in 完全访问.** Reasons: (1) on Windows the only backend runs servers as a separate sandbox
+account that cannot use the person's rights at all, so "normal rights + deny list" does not exist there; on
+macOS/Linux srt could keep it, but then 完全访问 would mean different things per OS; (2) a deny list enforced by
+reading arguments (not the kernel) is bypassed by any shell command (`cat ~/.ssh/id_ed25519`), so keeping it would
+promise a protection that is not there. The console says it in one line (§8). Kept: argument-level audit (the chain
+head still goes to the cloud on every heartbeat, so a rewritten log is detected), checkpoints (§7.2), the local `y`
+for custom servers, Ctrl+C. Folder mode is unchanged (deny list, OS boundary). A full link works on a computer whose
+sandbox is unavailable (e.g. Ubuntu 24.04 with restricted user namespaces).
+
 ## 7. Audit and undo
 
 ### 7.1 Audit (append-only, argument-level, on the PC)
@@ -275,7 +348,40 @@ disabled (`GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL` empty, `-c core.hooksPath
 and Cline use for checkpoints. `agentrouter undo` restores the last turn (or `--list`). Deletes inside
 the folder are therefore recoverable; deletes outside cannot happen.
 
+**Several folders (2026-10-20):** one shadow repository per folder, keyed by the folder's canonical path
+(`<data>/checkpoints/f-<hash>.git`), so `agentrouter undo` run in any linked folder undoes that folder's last turn,
+whatever link it was linked through. A turn snapshots every linked folder (an unchanged folder costs one tree compare);
+the audit line carries the ids (`folder → id`).
+
+**完全访问:** the folders named on the command line (or the start folder, unless it is the home folder or a drive root)
+are snapshotted as above. Beyond them, a **file journal** keeps the previous content of each file a tool names by path
+before a non-read-only call (`host__write`'s `path`; other servers' `path`/`file_path`/`destination`/`target`
+arguments): files up to 64 MiB are copied to `<data>/checkpoints/journal/<turn>/`, a file that did not exist is
+recorded as absent. `agentrouter undo --journal [turn]` puts them back (and removes the absent ones). What a shell
+command changes outside the snapshotted folders is **not** undoable; the audit holds the command line.
+
 ## 8. Console UX
+
+```text
+PS D:\work> npx @agentrouter-top/cli link D:\work\my-mod D:\Games\Wukong\Mods
+AgentRouter · 链接文件夹
+  文件夹   D:\work\my-mod
+           D:\Games\Wukong\Mods   云端 Agent 只能在这些文件夹里干活
+  账号     这台电脑已链接（台式机）
+  沙箱     Windows 隔离账户（srt@0.0.80）
+已连上。网页对话里选「台式机」就能用。要再加文件夹，在这里输入 + 路径。Ctrl+C 断开。
+12:03:41  改 mod 配置   终端 dotnet build -o D:\Games\Wukong\Mods        ✓ 3.2s
+12:04:02  云端想再用一个文件夹：D:\Assets\textures（换贴图）。同意吗？ (y/N，120 秒内不答就是不同意)
+```
+
+```text
+PS C:\Users\me> agentrouter link --full
+AgentRouter · 完全访问
+  完全访问 云端 Agent 用你的账户权限，能读写这台电脑上的所有文件（包括密钥文件）。只在你信任的对话里用；审计照记，Ctrl+C 随时断开。
+  检查点   C:\Users\me 是主目录，不做文件夹检查点；Agent 写过的文件会先留一份旧版（agentrouter undo --journal）
+```
+
+Before (one folder, 2026-10-19):
 
 ```text
 PS D:\work\my-mod> npx @agentrouter-top/cli link
@@ -289,13 +395,15 @@ AgentRouter · 链接这个文件夹
 12:03:50  改 mod 配置   文件 写入 C:\Users\me\.ssh\config      拦下：在文件夹外
 ```
 
-Commands after the change: `link [--read-only] [--yes-servers]`, `undo [--list]`,
+Commands after the change: `link [<dir>…] [--read-only | --full] [--yes-servers]`, `undo [--list] [--journal]`,
 `audit [verify]`, `sandbox setup|status|remove`, `status`, `logout` (unpair this computer).
 Removed: `workspace …`, `deploy …`, `access …`, `mcp on|off`, `screen on|off`, `run --background`,
 `agent list`, `mcp-serve workspace`. (`mcp-serve local` is pending the communication design, §4.)
 
-Default servers (catalog bundle, pinned): `files` (`@modelcontextprotocol/server-filesystem` on the
-folder), `git` (`mcp-server-git` on the folder), `shell` (DesktopCommander, confined), `serena`.
+Default server (2026-10-20): `host` (§3.7), started by the console with every link. Catalog presets (`files`
+(`@modelcontextprotocol/server-filesystem` on the folders), `git`, `shell` (DesktopCommander), `serena`) are no
+longer installed by default on a link that has `host`; the cloud installs them on demand. Before: `files`, `git`,
+`shell`, `serena` as the bundle.
 Others (`browser`, `bilibili`, …) on demand through `link__server_add`, each with its network
 allow-list. A project may add servers in `.agentrouter/mcp.json` (the common `mcpServers` format);
 those count as custom and need the local `y`.
@@ -398,3 +506,6 @@ cloud↔local Agent messaging.
 | Q5 | Deploy outside the folder goes away; run `link` in the target folder instead | 「可以」 | Accepted (§9: `deploy.rs` deleted) |
 | Q6 | Network default: catalog domains + package mirrors; custom servers registries only | 「可以」 | Accepted (§6.1) |
 | Q7 | May the browser presets reach the whole internet? (2026-10-20) | 「可以开放到完整的互联网」 | Accepted (§6.1): browser presets get the open web; the LAN, loopback, link-local/cloud metadata and the PC's own services stay closed; other servers unchanged |
+| Q8 | Folder picker draft (2026-10-20) | 「这个可以」 | Approved; extended for several folders / several links / 完全访问 badge, re-shown before the web build (Cloud #2154) |
+| Q9 | Several folders and copy between them (2026-10-20) | 「直接展示真实目录可以不。没必要说限制特别死，因为用户是具备开启完全访问的能力的。虚拟目录可能是个伪需求」 | No virtual directory: real paths, several folders per link, 完全访问 by local choice (§0.1, §5, §6.4) |
+| Q10 | How the Agent should feel on a linked computer (2026-10-20) | 「就和Agent使用SSH同样的感觉会更好吧」 | Each link is an ssh-like host: real shell, real paths, scp-like transfer; MCP underneath (§3.7) |

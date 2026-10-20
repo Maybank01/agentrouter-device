@@ -25,6 +25,8 @@ fn info() -> LinkInfo {
         version: "0.1.0".into(),
         sandbox: "srt@0.0.80".into(),
         read_only: false,
+        folders: vec!["/work/my-mod".into()],
+        full: false,
     }
 }
 

@@ -18,7 +18,7 @@ use agentrouter_aggregator::{
     Aggregator, BoxFuture, Config as AggConfig, Feed, Hooks, Outcome, audit_path,
     is_boundary_refusal,
 };
-use agentrouter_checkpoint::Shadow;
+use agentrouter_checkpoint::{Journal, Shadow, folder_key};
 use agentrouter_device::config::Config;
 use agentrouter_device::util::{data_dir, home_dir};
 use agentrouter_device::{audit, keystore, link};
@@ -29,7 +29,11 @@ use serde_json::{Value, json};
 const ASK_FOR: Duration = Duration::from_secs(120);
 
 pub struct LinkOptions {
+    /// The folders to link (none = the current folder).
+    pub dirs: Vec<String>,
     pub read_only: bool,
+    /// 完全访问 (§6.4): chosen here only.
+    pub full: bool,
     pub yes_servers: bool,
     pub gateway: Option<String>,
     pub name: Option<String>,
@@ -126,11 +130,67 @@ fn ask(question: &str) -> bool {
     }
 }
 
-/// What the console does for the aggregator: the feed, the y/N for custom servers, checkpoints.
+/// What the console does for the aggregator: the feed, the y/N questions, checkpoints, the journal, the link info.
 struct Console {
-    shadow: Shadow,
+    data: PathBuf,
+    full: bool,
+    /// One shadow repository per snapshotted folder (§7.2; keyed by the folder, so `undo` in it finds them).
+    shadows: Mutex<Vec<(PathBuf, Shadow)>>,
+    /// 完全访问's file journal and its current turn.
+    journal: Option<Journal>,
+    turn: Mutex<Option<String>>,
+    /// The first folder (relative paths in arguments resolve there).
+    home: PathBuf,
     asking: Arc<tokio::sync::Mutex<()>>,
     no_git_said: AtomicBool,
+    /// The link's info and handle: `info` goes out when the folders change.
+    info: Mutex<LinkInfo>,
+    handle: OnceLock<agentrouter_linker::Handle>,
+}
+
+/// A folder gets shadow-git checkpoints unless it is the home folder, a drive root or AgentRouter's own data
+/// (only possible in 完全访问, where the start folder may be any folder).
+fn snapshottable(folder: &Path, data: &Path) -> bool {
+    agentrouter_aggregator::check_folder(folder, data).is_ok()
+}
+
+impl Console {
+    fn shadow_of(&self, folder: &Path) -> Shadow {
+        Shadow::new(&self.data, &folder_key(folder), folder)
+    }
+
+    fn set_folders(&self, folders: &[PathBuf]) {
+        let mut shadows = self.shadows.lock().unwrap();
+        for f in folders {
+            if !shadows.iter().any(|(g, _)| g == f) && snapshottable(f, &self.data) {
+                shadows.push((f.clone(), self.shadow_of(f)));
+            }
+        }
+        drop(shadows);
+        let mut info = self.info.lock().unwrap();
+        info.folders = folders.iter().map(|f| shown(f)).collect();
+        if let Some(h) = self.handle.get() {
+            h.set_info(info.clone());
+        }
+    }
+
+    /// Paths a call names (its target files), real and absolute.
+    fn named_paths(&self, arguments: &Value) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        for key in ["path", "file_path", "destination", "target"] {
+            if let Some(p) = arguments.get(key).and_then(Value::as_str)
+                && !p.trim().is_empty()
+            {
+                let p = PathBuf::from(p.trim());
+                out.push(if p.is_absolute() {
+                    p
+                } else {
+                    self.home.join(p)
+                });
+            }
+        }
+        out
+    }
 }
 
 fn outcome_text(outcome: &Outcome, ms: u64) -> String {
@@ -207,7 +267,7 @@ impl Hooks for Console {
 
     fn confirm_server(&self, def: &ServerDef) -> BoxFuture<bool> {
         let question = format!(
-            "\n云端想在这台电脑上运行一个不在目录里的本机工具：\n  {}：{}\n它也只能在这个文件夹里干活。同意吗？",
+            "\n云端想在这台电脑上运行一个不在目录里的本机工具：\n  {}：{}\n它和别的本机工具一样受这次链接的限制。同意吗？",
             def.title,
             def.shown()
         );
@@ -220,16 +280,81 @@ impl Hooks for Console {
         })
     }
 
+    fn confirm_folder(&self, path: &str, reason: &str) -> BoxFuture<bool> {
+        let why = if reason.is_empty() {
+            String::new()
+        } else {
+            format!("（{reason}）")
+        };
+        let question = format!("\n云端想再用一个文件夹：{path}{why}。同意吗？");
+        let asking = self.asking.clone();
+        Box::pin(async move {
+            let _one = asking.lock().await;
+            tokio::task::spawn_blocking(move || ask(&question))
+                .await
+                .unwrap_or(false)
+        })
+    }
+
+    fn folders_changed(&self, folders: &[PathBuf]) {
+        self.set_folders(folders);
+        if let Some(last) = folders.last() {
+            line(&format!("{}  加上了文件夹 {}", now(), shown(last)));
+        }
+    }
+
     fn checkpoint(&self, label: &str) -> Option<String> {
-        match self.shadow.snapshot(label) {
-            Ok(cp) => Some(cp.id),
-            Err(e) => {
-                if !e.contains("git") || !self.no_git_said.swap(true, Ordering::SeqCst) {
-                    line(&format!("{}  这一轮没有检查点：{e}", now()));
+        let shadows = self.shadows.lock().unwrap().clone();
+        let mut ids = Vec::new();
+        for (folder, shadow) in &shadows {
+            match shadow.snapshot(label) {
+                Ok(cp) => ids.push(if shadows.len() > 1 {
+                    format!("{}:{}", folder_name(folder), cp.id)
+                } else {
+                    cp.id
+                }),
+                Err(e) => {
+                    if !e.contains("git") || !self.no_git_said.swap(true, Ordering::SeqCst) {
+                        line(&format!(
+                            "{}  {} 这一轮没有检查点：{e}",
+                            now(),
+                            folder_name(folder)
+                        ));
+                    }
                 }
-                None
             }
         }
+        if let Some(journal) = &self.journal {
+            *self.turn.lock().unwrap() = journal.begin(label).ok();
+        }
+        (!ids.is_empty()).then(|| ids.join(","))
+    }
+
+    fn journal(&self, _tool: &str, arguments: &Value) -> Option<String> {
+        let journal = self.journal.as_ref()?;
+        let shadowed: Vec<PathBuf> = self
+            .shadows
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(f, _)| f.clone())
+            .collect();
+        let mut turn = self.turn.lock().unwrap();
+        let mut kept = false;
+        for path in self.named_paths(arguments) {
+            if shadowed.iter().any(|f| path.starts_with(f)) {
+                continue;
+            }
+            if turn.is_none() {
+                *turn = journal.begin("").ok();
+            }
+            let Some(id) = turn.as_deref() else { break };
+            match journal.keep(id, &path) {
+                Ok(k) => kept |= k,
+                Err(e) => line(&format!("{}  {e}", now())),
+            }
+        }
+        kept.then(|| format!("journal:{}", turn.as_deref().unwrap_or("")))
     }
 }
 
@@ -255,16 +380,48 @@ fn project_servers(folder: &Path) -> Vec<Value> {
         .unwrap_or_default()
 }
 
-/// `agentrouter link [--read-only] [--yes-servers]`.
+/// The folders named on the command line (or the current folder), canonical and allowed.
+fn chosen_folders(dirs: &[String], full: bool) -> Result<Vec<PathBuf>, String> {
+    let data = data_dir();
+    if dirs.is_empty() {
+        if full {
+            let cwd = std::env::current_dir().map_err(|e| format!("看不到当前文件夹：{e}"))?;
+            let real = std::fs::canonicalize(&cwd).map_err(|e| format!("看不到当前文件夹：{e}"))?;
+            return Ok(vec![PathBuf::from(shown(&real))]);
+        }
+        return this_folder().map(|f| vec![f]);
+    }
+    let mut out: Vec<PathBuf> = Vec::new();
+    for d in dirs {
+        let real = agentrouter_aggregator::check_folder(Path::new(d), &data)?;
+        if !out.contains(&real) {
+            out.push(real);
+        }
+    }
+    if out.len() > agentrouter_aggregator::MAX_FOLDERS {
+        return Err(format!(
+            "一次最多链接 {} 个文件夹",
+            agentrouter_aggregator::MAX_FOLDERS
+        ));
+    }
+    Ok(out)
+}
+
+/// `agentrouter link [<dir>…] [--read-only | --full] [--yes-servers]`.
 pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
-    let folder = match this_folder() {
+    if opts.full && opts.read_only {
+        eprintln!("--full 和 --read-only 不能一起用。");
+        return 2;
+    }
+    let folders = match chosen_folders(&opts.dirs, opts.full) {
         Ok(f) => f,
         Err(e) => {
             eprintln!("{e}");
             return 2;
         }
     };
-    let name = folder_name(&folder);
+    let first = folders[0].clone();
+    let name = folder_name(&first);
     let mut cfg = Config::load();
     if let Some(g) = &opts.gateway {
         cfg.gateway = g.clone();
@@ -275,12 +432,50 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
     if opts.gateway.is_some() || opts.name.is_some() {
         let _ = cfg.save();
     }
-    line("AgentRouter · 链接这个文件夹");
-    line(&format!(
-        "  文件夹   {}   云端 Agent 只能在这个文件夹里干活{}",
-        shown(&folder),
-        if opts.read_only { "（只读）" } else { "" }
-    ));
+    let data = data_dir();
+    if opts.full {
+        line("AgentRouter · 完全访问");
+        line(
+            "  完全访问 云端 Agent 用你的账户权限，能读写这台电脑上的所有文件（包括密钥文件）。只在你信任的对话里用；审计照记，Ctrl+C 随时断开。",
+        );
+        for f in &folders {
+            if snapshottable(f, &data) {
+                line(&format!("  检查点   {}", shown(f)));
+            } else {
+                line(&format!(
+                    "  检查点   {} 是主目录或磁盘根目录，不做文件夹检查点；Agent 写过的文件会先留一份旧版（agentrouter undo --journal）",
+                    shown(f)
+                ));
+            }
+        }
+    } else {
+        line(if folders.len() > 1 {
+            "AgentRouter · 链接文件夹"
+        } else {
+            "AgentRouter · 链接这个文件夹"
+        });
+        for (i, f) in folders.iter().enumerate() {
+            let label = if i == 0 {
+                "  文件夹   "
+            } else {
+                "           "
+            };
+            let tail = if i + 1 == folders.len() {
+                format!(
+                    "   云端 Agent 只能在{}里干活{}",
+                    if folders.len() > 1 {
+                        "这些文件夹"
+                    } else {
+                        "这个文件夹"
+                    },
+                    if opts.read_only { "（只读）" } else { "" }
+                )
+            } else {
+                String::new()
+            };
+            line(&format!("{label}{}{tail}", shown(f)));
+        }
+    }
     let identity = match keystore::load() {
         Some(identity) => {
             line(&format!("  账号     这台电脑已链接（{}）", cfg.name));
@@ -307,35 +502,42 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
             }
         }
     };
-    let data = data_dir();
     let sandbox = agentrouter_sandbox::Runtime::new(&data);
     let mut status = sandbox.status();
-    if !status.ready
-        && !status
-            .problems
-            .iter()
-            .any(|p| p.message.contains("Node.js"))
-    {
-        line("  沙箱     第一次要准备隔离环境（下载一次，Windows 会弹一次管理员确认）…");
-        if let Err(e) = sandbox.setup() {
-            line(&format!("  沙箱     没准备好：{e}"));
+    if !opts.full {
+        if !status.ready
+            && !status
+                .problems
+                .iter()
+                .any(|p| p.message.contains("Node.js") || p.message.contains("命名空间"))
+        {
+            line("  沙箱     第一次要准备隔离环境（下载一次，Windows 会弹一次管理员确认）…");
+            if let Err(e) = sandbox.setup() {
+                line(&format!("  沙箱     没准备好：{e}"));
+            }
+            status = sandbox.status();
         }
-        status = sandbox.status();
-    }
-    if status.ready {
-        line(&format!(
-            "  沙箱     {}（{}）",
-            status.mechanism, status.backend
-        ));
-    } else {
-        for p in &status.problems {
-            line(&format!("  沙箱     不可用：{}。{}", p.message, p.next));
+        if status.ready {
+            line(&format!(
+                "  沙箱     {}（{}）",
+                status.mechanism, status.backend
+            ));
+        } else {
+            for p in &status.problems {
+                line(&format!("  沙箱     不可用：{}。{}", p.message, p.next));
+            }
+            line("           没有沙箱时本机工具一个也不会运行（不会在沙箱外运行）。");
         }
-        line("           没有沙箱时本机工具一个也不会运行（不会在沙箱外运行）。");
     }
-    line("  本机工具 云端对话第一次用到时装上（文件、Git、终端……），每个都只能动这个文件夹");
 
-    let link_id = agentrouter_linker::link_id(&identity.device, &folder);
+    let link_id = if opts.full {
+        agentrouter_linker::link_id(
+            &identity.device,
+            Path::new(&format!("full:{}", shown(&first))),
+        )
+    } else {
+        agentrouter_linker::link_id(&identity.device, &first)
+    };
     let gateway = cfg.gateway.clone();
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -347,20 +549,46 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
             return 1;
         }
     };
+    let info = LinkInfo {
+        id: link_id.clone(),
+        folder: name.clone(),
+        os: agentrouter_device::util::os_name().into(),
+        arch: agentrouter_device::util::arch_name().into(),
+        app: "cli".into(),
+        version: env!("CARGO_PKG_VERSION").into(),
+        sandbox: if status.ready && !opts.full {
+            status.backend.clone()
+        } else {
+            String::new()
+        },
+        read_only: opts.read_only,
+        folders: folders.iter().map(|f| shown(f)).collect(),
+        full: opts.full,
+    };
+    let computer = cfg.name.clone();
     let code = runtime.block_on(async move {
         let console = Arc::new(Console {
-            shadow: Shadow::new(&data, &link_id, &folder),
+            data: data.clone(),
+            full: opts.full,
+            shadows: Mutex::new(Vec::new()),
+            journal: opts.full.then(|| Journal::new(&data, "full")),
+            turn: Mutex::new(None),
+            home: first.clone(),
             asking: Arc::new(tokio::sync::Mutex::new(())),
             no_git_said: AtomicBool::new(false),
+            info: Mutex::new(info.clone()),
+            handle: OnceLock::new(),
         });
+        console.set_folders(&folders);
         let handle_cell: Arc<OnceLock<agentrouter_linker::Handle>> = Arc::new(OnceLock::new());
         let cell = handle_cell.clone();
         let agg = Aggregator::new(
             AggConfig {
                 link: link_id.clone(),
-                folder: folder.clone(),
+                folders: folders.clone(),
                 folder_name: name.clone(),
                 read_only: opts.read_only,
+                full: opts.full,
                 data_dir: data.clone(),
                 control: identity.control.clone(),
                 yes_servers: opts.yes_servers,
@@ -375,23 +603,35 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
         let for_head = agg.clone();
         let (handle, mut events) = agentrouter_linker::start(agentrouter_linker::Options {
             gateway: gateway.clone(),
-            info: LinkInfo {
-                id: link_id.clone(),
-                folder: name.clone(),
-                os: agentrouter_device::util::os_name().into(),
-                arch: agentrouter_device::util::arch_name().into(),
-                app: "cli".into(),
-                version: env!("CARGO_PKG_VERSION").into(),
-                sandbox: if status.ready { status.backend.clone() } else { String::new() },
-                read_only: opts.read_only,
-            },
+            info,
             tokens: agentrouter_linker::keystore_tokens(gateway),
             audit_head: Arc::new(move || for_head.audit_head()),
         });
         let _ = handle_cell.set(handle.clone());
+        let _ = console.handle.set(handle.clone());
+
+        // The link's own SSH-like server (exec/read/write, host.rs): started here, never by the cloud.
+        if console.full || status.ready {
+            let agg = agg.clone();
+            tokio::spawn(async move {
+                let Some(exe) = std::env::current_exe().ok().map(|p| shown(&p)) else { return };
+                let def = ServerDef::parse(&json!({
+                    "name": "host", "title": "终端", "command": exe,
+                    "args": ["mcp-serve", "host", "{{folders}}"],
+                }));
+                match def {
+                    Ok(def) => {
+                        if let Err(e) = agg.add_server(def, Duration::from_secs(30)).await {
+                            line(&format!("{}  终端没起来：{}", now(), e.message));
+                        }
+                    }
+                    Err(e) => line(&format!("{}  终端没起来：{}", now(), e.message)),
+                }
+            });
+        }
 
         // The project's own servers: asked here, one by one.
-        let project = project_servers(&folder);
+        let project = project_servers(&first);
         if !project.is_empty() {
             let agg = agg.clone();
             let console = console.clone();
@@ -416,6 +656,7 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
         let mut ticker = tokio::time::interval(Duration::from_millis(200));
         let mut was_up = false;
         let mut downs = 0u32;
+        let typing = std::io::stdin().is_terminal();
         let code = loop {
             tokio::select! {
                 event = events.recv() => {
@@ -426,7 +667,8 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
                             if was_up {
                                 line(&format!("{}  重新连上了", now()));
                             } else {
-                                line(&format!("已连上。网页对话里选「{name}」就能用。Ctrl+C 断开。"));
+                                let more = if typing && !opts.full { "要再加文件夹，在这里输入 + 路径。" } else { "" };
+                                line(&format!("已连上。网页对话里选「{computer}」就能用。{more}Ctrl+C 断开。"));
                             }
                             was_up = true;
                             downs = 0;
@@ -454,7 +696,7 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
                                     1
                                 }
                                 End::Replaced => {
-                                    line("这个文件夹在别的终端里又运行了 agentrouter link，这里断开。");
+                                    line("这些文件夹在别的终端里又运行了 agentrouter link，这里断开。");
                                     0
                                 }
                                 End::Refused { code, message } if code == "DEVICE_OUTDATED" => {
@@ -474,6 +716,31 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
                         handle.stop();
                         interrupted.store(false, Ordering::SeqCst);
                     }
+                    // `+ <path>` typed in this terminal adds a folder (typing it is the consent). Not while a y/N
+                    // question holds the terminal.
+                    if typing
+                        && let Ok(rx) = stdin_lines().try_lock()
+                    {
+                        while let Ok(typed) = rx.try_recv() {
+                            let Some(path) = typed.trim().strip_prefix('+').map(str::trim) else {
+                                if !typed.trim().is_empty() {
+                                    line("要加文件夹就输入 + 路径（例如 + D:\\Games\\Mods）。");
+                                }
+                                continue;
+                            };
+                            if opts.full {
+                                line("完全访问下不用加文件夹：整台电脑都能用。");
+                                continue;
+                            }
+                            let path = path.trim_matches('"').to_string();
+                            let agg = agg.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = agg.add_folder(Path::new(&path)).await {
+                                    line(&format!("{}  没加上：{}", now(), e.message));
+                                }
+                            });
+                        }
+                    }
                 }
             }
         };
@@ -486,8 +753,38 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
     code
 }
 
-/// `agentrouter undo [--list] [id]` for this folder.
-pub fn undo(list: bool, id: Option<&str>) -> i32 {
+/// `agentrouter undo [--list] [--journal] [id]`: this folder's checkpoints, or (`--journal`) 完全访问's file journal.
+pub fn undo(list: bool, journal: bool, id: Option<&str>) -> i32 {
+    if journal {
+        let journal = Journal::new(&data_dir(), "full");
+        if list {
+            let turns = journal.list(30);
+            if turns.is_empty() {
+                line("完全访问还没有留过文件的旧版。");
+            }
+            for t in turns {
+                line(&format!("{}  {}  {} 个文件", t.id, t.label, t.files.len()));
+                for f in t.files.iter().take(5) {
+                    line(&format!("    {}", shown(f)));
+                }
+            }
+            return 0;
+        }
+        return match journal.undo(id) {
+            Ok(t) => {
+                line(&format!(
+                    "已放回 {} 个文件的旧版（{}）。",
+                    t.files.len(),
+                    t.label
+                ));
+                0
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                1
+            }
+        };
+    }
     let folder = match this_folder() {
         Ok(f) => f,
         Err(e) => {
@@ -495,14 +792,7 @@ pub fn undo(list: bool, id: Option<&str>) -> i32 {
             return 2;
         }
     };
-    let (_, link) = match link_of(&folder) {
-        Ok(x) => x,
-        Err(e) => {
-            eprintln!("{e}");
-            return 1;
-        }
-    };
-    let shadow = Shadow::new(&data_dir(), &link, &folder);
+    let shadow = Shadow::new(&data_dir(), &folder_key(&folder), &folder);
     if list {
         match shadow.list(30) {
             Ok(items) if items.is_empty() => line("这个文件夹还没有检查点。"),

@@ -11,3 +11,4 @@ publish.workspace = true
 name = "agentrouter_checkpoint"
 
 [dependencies]
+sha2 = "0.11"

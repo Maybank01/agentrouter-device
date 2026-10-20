@@ -457,13 +457,22 @@ async fn start_once(
     server: &Arc<Server>,
 ) -> Result<(Running, Option<u32>), StartError> {
     let def = &server.def;
-    let mut args = def.args.clone();
-    let folder = agg.folder_shown();
-    for a in args.iter_mut() {
-        if a.contains("{{folder") {
-            *a = a
-                .replace("{{folders}}", &folder)
-                .replace("{{folder}}", &folder);
+    let folders = agg.folders_now();
+    let home = agg.home_folder();
+    let shown = |p: &std::path::Path| p.to_string_lossy().into_owned();
+    // `{{folders}}` alone is every linked folder, one argument each (the filesystem server's allowed directories);
+    // inside a longer argument, and `{{folder}}`, it is the first.
+    let mut args = Vec::with_capacity(def.args.len() + folders.len());
+    for a in &def.args {
+        if a == "{{folders}}" {
+            args.extend(folders.iter().map(|f| shown(f)));
+        } else if a.contains("{{folder") {
+            args.push(
+                a.replace("{{folders}}", &shown(&home))
+                    .replace("{{folder}}", &shown(&home)),
+            );
+        } else {
+            args.push(a.clone());
         }
     }
     agg.packages
@@ -472,7 +481,7 @@ async fn start_once(
     let program = resolve(&def.command)
         .ok_or_else(|| StartError::Failed(format!("这台电脑上找不到 {}", def.command)))?;
     for name in &def.keep_out {
-        agentrouter_device::mcp_pkg::keep_out(&agg.cfg.folder, name);
+        agentrouter_device::mcp_pkg::keep_out(&home, name);
     }
     let mut env = def.env.clone();
     if !env.iter().any(|(k, _)| k.eq_ignore_ascii_case("PATH"))
@@ -490,28 +499,38 @@ async fn start_once(
             agentrouter_device::util::child_ps_module_path(),
         ));
     }
-    let folders = vec![agg.cfg.folder.clone()];
     let readable = vec![agg.cfg.data_dir.join("mcp-packages")];
     let launch = agentrouter_sandbox::Launch {
         key: &format!("{}\u{1}{}", def.name, agg.cfg.link),
         program: &program,
         args: &args,
         env: &env,
-        cwd: &agg.cfg.folder,
+        cwd: &home,
         folders: &folders,
         network: &def.network,
         readable: &readable,
         read_only: agg.cfg.read_only,
         open_web: def.open_web(),
     };
-    let policy = agg
-        .sandbox
-        .policy(&launch)
-        .map_err(StartError::Unavailable)?;
-    let std_cmd = agg
-        .sandbox
-        .command(&launch)
-        .map_err(StartError::Unavailable)?;
+    let (policy, std_cmd) = if agg.cfg.full {
+        // 完全访问 (§6.4): the person's own rights and environment, no sandbox.
+        let mut cmd = std::process::Command::new(&program);
+        cmd.args(&args).current_dir(&home);
+        for (k, v) in &env {
+            cmd.env(k, v);
+        }
+        (json!({"full": true}), cmd)
+    } else {
+        let policy = agg
+            .sandbox
+            .policy(&launch)
+            .map_err(StartError::Unavailable)?;
+        let cmd = agg
+            .sandbox
+            .command(&launch)
+            .map_err(StartError::Unavailable)?;
+        (policy, cmd)
+    };
     agg.audit_server_start(def, &program, &args, &policy);
     let mut cmd = tokio::process::Command::from(std_cmd);
     #[cfg(unix)]
