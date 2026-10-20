@@ -37,3 +37,6 @@ windows-sys = { workspace = true, features = ["Win32_System_Console", "Win32_Fou
 
 [build-dependencies]
 embed-resource = "3"
+
+[dev-dependencies]
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
