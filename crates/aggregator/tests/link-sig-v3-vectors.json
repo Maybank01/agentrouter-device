@@ -1,0 +1,265 @@
+{
+  "about": "Link request signature v3 vectors (docs/LINKER-MCP.md §3.3). Checked in order with one replay cache; now = nowMs.",
+  "publicKey": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
+  "kid": "fe812c12f3ab4ce6",
+  "link": "lnk_0123456789abcdef0123456789abcdef",
+  "nowMs": 1760000000000,
+  "cases": [
+    {
+      "name": "initialize binds the session",
+      "method": "initialize",
+      "params": {
+        "protocolVersion": "2025-06-18",
+        "capabilities": {},
+        "clientInfo": {
+          "name": "agentrouter-control-plane",
+          "version": "1"
+        },
+        "_meta": {
+          "agentrouter.top/sig": {
+            "v": 3,
+            "kid": "fe812c12f3ab4ce6",
+            "link": "lnk_0123456789abcdef0123456789abcdef",
+            "session": "ags_conv1",
+            "method": "initialize",
+            "digest": "aaf869579ae7770ba0f4a472e34f312e0379163b7ac3d5c4a028ec99ab615856",
+            "exp": 1760000060000,
+            "nonce": "00000000000000000000000000000001",
+            "sig": "yOQ1Huv0--SNl8lZpU74zb-bXKABrXAsGwsam9xddGApylew7vkwvLIE5xsO7ZHeVppXDySqzzsU8FWSYnRPBw"
+          }
+        }
+      },
+      "canonical": "{\"capabilities\":{},\"clientInfo\":{\"name\":\"agentrouter-control-plane\",\"version\":\"1\"},\"protocolVersion\":\"2025-06-18\"}",
+      "string": "agentrouter-link-request/v3\nlnk_0123456789abcdef0123456789abcdef\nags_conv1\ninitialize\naaf869579ae7770ba0f4a472e34f312e0379163b7ac3d5c4a028ec99ab615856\n1760000060000\n00000000000000000000000000000001",
+      "expect": "ok"
+    },
+    {
+      "name": "tools/call with unicode keys, numbers and nested arrays",
+      "method": "tools/call",
+      "params": {
+        "name": "files__write_file",
+        "arguments": {
+          "path": "src/模组.txt",
+          "content": "a b \"q\"",
+          "n": [
+            1,
+            0.1,
+            1e+21,
+            0,
+            1e-7
+          ],
+          "": 1,
+          "😀": 2,
+          "B": true,
+          "b": null
+        },
+        "_meta": {
+          "agentrouter.top/sig": {
+            "v": 3,
+            "kid": "fe812c12f3ab4ce6",
+            "link": "lnk_0123456789abcdef0123456789abcdef",
+            "session": "ags_conv1",
+            "method": "tools/call",
+            "digest": "443ae9f29a37131a351d8cf06b3d54771f6634d90a26c16cc64d30eb74f0b1c8",
+            "exp": 1760000060000,
+            "nonce": "00000000000000000000000000000002",
+            "sig": "wsLXKo8A8MCwd4kDqVWrMxiMSSNyn5VYoy_CIzmCH7Qb93UTq1BFm7_oMMBHV9Lvpp-Ch4t57V_MmYjuy1GoDA"
+          }
+        }
+      },
+      "canonical": "{\"arguments\":{\"B\":true,\"b\":null,\"content\":\"a b \\\"q\\\"\",\"n\":[1,0.1,1e+21,0,1e-7],\"path\":\"src/模组.txt\",\"😀\":2,\"\":1},\"name\":\"files__write_file\"}",
+      "string": "agentrouter-link-request/v3\nlnk_0123456789abcdef0123456789abcdef\nags_conv1\ntools/call\n443ae9f29a37131a351d8cf06b3d54771f6634d90a26c16cc64d30eb74f0b1c8\n1760000060000\n00000000000000000000000000000002",
+      "expect": "ok"
+    },
+    {
+      "name": "other _meta keys are not signed",
+      "method": "tools/call",
+      "params": {
+        "name": "git__git_status",
+        "arguments": {
+          "repo_path": "."
+        },
+        "_meta": {
+          "agentrouter.top/sig": {
+            "v": 3,
+            "kid": "fe812c12f3ab4ce6",
+            "link": "lnk_0123456789abcdef0123456789abcdef",
+            "session": "ags_conv1",
+            "method": "tools/call",
+            "digest": "5ca32081a50882cda01256d43b5825f353b0f1d22f6e08627c46fdc9718e3b18",
+            "exp": 1760000060000,
+            "nonce": "00000000000000000000000000000003",
+            "sig": "vy4U1806I4119qgDh21zgegvoHOov60p6mnfaUDym5c6m3H2ftYeAHu7M54clxZGhI3Zr5PUPWBrgBc9CX3qCA"
+          },
+          "progressToken": 42,
+          "agentrouter.top/turn": "t1"
+        }
+      },
+      "canonical": "{\"arguments\":{\"repo_path\":\".\"},\"name\":\"git__git_status\"}",
+      "string": "agentrouter-link-request/v3\nlnk_0123456789abcdef0123456789abcdef\nags_conv1\ntools/call\n5ca32081a50882cda01256d43b5825f353b0f1d22f6e08627c46fdc9718e3b18\n1760000060000\n00000000000000000000000000000003",
+      "expect": "ok"
+    },
+    {
+      "name": "arguments changed after signing",
+      "method": "tools/call",
+      "params": {
+        "name": "files__write_file",
+        "arguments": {
+          "path": "../../.ssh/config",
+          "content": "x"
+        },
+        "_meta": {
+          "agentrouter.top/sig": {
+            "v": 3,
+            "kid": "fe812c12f3ab4ce6",
+            "link": "lnk_0123456789abcdef0123456789abcdef",
+            "session": "ags_conv1",
+            "method": "tools/call",
+            "digest": "59825fc971fd896ea4a1608af2ae91bb00051742f2e560587614eaf259ba4231",
+            "exp": 1760000060000,
+            "nonce": "00000000000000000000000000000004",
+            "sig": "E6ofe6x-eqCH9V5myPuFrMCrpNz5zOwALfF4DfzvLwtzu2r6uattXnee8lYIfZl0aV0kN7pYE7dUgLt0WJ5LCA"
+          }
+        }
+      },
+      "canonical": "{\"arguments\":{\"content\":\"x\",\"path\":\"a.txt\"},\"name\":\"files__write_file\"}",
+      "string": "agentrouter-link-request/v3\nlnk_0123456789abcdef0123456789abcdef\nags_conv1\ntools/call\n59825fc971fd896ea4a1608af2ae91bb00051742f2e560587614eaf259ba4231\n1760000060000\n00000000000000000000000000000004",
+      "expect": "SIGNATURE_INVALID"
+    },
+    {
+      "name": "signed for another link",
+      "method": "tools/call",
+      "params": {
+        "name": "files__read_file",
+        "arguments": {
+          "path": "a"
+        },
+        "_meta": {
+          "agentrouter.top/sig": {
+            "v": 3,
+            "kid": "fe812c12f3ab4ce6",
+            "link": "lnk_ffffffffffffffffffffffffffffffff",
+            "session": "ags_conv1",
+            "method": "tools/call",
+            "digest": "f0c612bb0825c1dd956303795dfbdf31af51654060288d98d5727c2fda902e5c",
+            "exp": 1760000060000,
+            "nonce": "00000000000000000000000000000005",
+            "sig": "zwxy4lZyfnap8Ow_9eMm3Mkro54ZNDXzWezkO853FHXZ252huQJpzgdE4QoGtVjHeRTHW6lYY_1eBr3rs3JeBA"
+          }
+        }
+      },
+      "canonical": "{\"arguments\":{\"path\":\"a\"},\"name\":\"files__read_file\"}",
+      "string": "agentrouter-link-request/v3\nlnk_ffffffffffffffffffffffffffffffff\nags_conv1\ntools/call\nf0c612bb0825c1dd956303795dfbdf31af51654060288d98d5727c2fda902e5c\n1760000060000\n00000000000000000000000000000005",
+      "expect": "WRONG_LINK"
+    },
+    {
+      "name": "signed for another method",
+      "method": "tools/call",
+      "params": {
+        "name": "files__read_file",
+        "arguments": {
+          "path": "a"
+        },
+        "_meta": {
+          "agentrouter.top/sig": {
+            "v": 3,
+            "kid": "fe812c12f3ab4ce6",
+            "link": "lnk_0123456789abcdef0123456789abcdef",
+            "session": "ags_conv1",
+            "method": "initialize",
+            "digest": "f0c612bb0825c1dd956303795dfbdf31af51654060288d98d5727c2fda902e5c",
+            "exp": 1760000060000,
+            "nonce": "00000000000000000000000000000006",
+            "sig": "PA9nigHCatKLATwoCxTqHME3ribZdhqOjwiNrMzyUH7FRe69Up2_eajslD8lZsSvUGfGET36MXq6yxW9ZHanAA"
+          }
+        }
+      },
+      "canonical": "{\"arguments\":{\"path\":\"a\"},\"name\":\"files__read_file\"}",
+      "string": "agentrouter-link-request/v3\nlnk_0123456789abcdef0123456789abcdef\nags_conv1\ninitialize\nf0c612bb0825c1dd956303795dfbdf31af51654060288d98d5727c2fda902e5c\n1760000060000\n00000000000000000000000000000006",
+      "expect": "SIGNATURE_INVALID"
+    },
+    {
+      "name": "expired",
+      "method": "tools/call",
+      "params": {
+        "name": "files__read_file",
+        "arguments": {},
+        "_meta": {
+          "agentrouter.top/sig": {
+            "v": 3,
+            "kid": "fe812c12f3ab4ce6",
+            "link": "lnk_0123456789abcdef0123456789abcdef",
+            "session": "ags_conv1",
+            "method": "tools/call",
+            "digest": "ddefe921e560e5baf18cf97deffcd286ab71ec3e7e696e16edd7c3026f6ed277",
+            "exp": 1759999999999,
+            "nonce": "00000000000000000000000000000007",
+            "sig": "IjxpmoLy1gudfXpcAYGYKAq6WhNlGDTGcjTi7raA-vYtE0APl83bCIqsd6ZVyh8NGSFW4tiVZt5sQ3dV02iOCg"
+          }
+        }
+      },
+      "canonical": "{\"arguments\":{},\"name\":\"files__read_file\"}",
+      "string": "agentrouter-link-request/v3\nlnk_0123456789abcdef0123456789abcdef\nags_conv1\ntools/call\nddefe921e560e5baf18cf97deffcd286ab71ec3e7e696e16edd7c3026f6ed277\n1759999999999\n00000000000000000000000000000007",
+      "expect": "REQUEST_EXPIRED"
+    },
+    {
+      "name": "lives too long",
+      "method": "tools/call",
+      "params": {
+        "name": "files__read_file",
+        "arguments": {},
+        "_meta": {
+          "agentrouter.top/sig": {
+            "v": 3,
+            "kid": "fe812c12f3ab4ce6",
+            "link": "lnk_0123456789abcdef0123456789abcdef",
+            "session": "ags_conv1",
+            "method": "tools/call",
+            "digest": "ddefe921e560e5baf18cf97deffcd286ab71ec3e7e696e16edd7c3026f6ed277",
+            "exp": 1760000066000,
+            "nonce": "00000000000000000000000000000008",
+            "sig": "0bagTvIrlS2wSvEZilRH5LcNyTrWTk2t-WOUgNiqcZU66jLhTCLDeYL6yH3BsiQRrjDm9Ta5a50-BerVPRCYCA"
+          }
+        }
+      },
+      "canonical": "{\"arguments\":{},\"name\":\"files__read_file\"}",
+      "string": "agentrouter-link-request/v3\nlnk_0123456789abcdef0123456789abcdef\nags_conv1\ntools/call\nddefe921e560e5baf18cf97deffcd286ab71ec3e7e696e16edd7c3026f6ed277\n1760000066000\n00000000000000000000000000000008",
+      "expect": "REQUEST_EXPIRED"
+    },
+    {
+      "name": "replayed nonce (same as case 2)",
+      "method": "tools/call",
+      "params": {
+        "name": "files__read_file",
+        "arguments": {},
+        "_meta": {
+          "agentrouter.top/sig": {
+            "v": 3,
+            "kid": "fe812c12f3ab4ce6",
+            "link": "lnk_0123456789abcdef0123456789abcdef",
+            "session": "ags_conv1",
+            "method": "tools/call",
+            "digest": "ddefe921e560e5baf18cf97deffcd286ab71ec3e7e696e16edd7c3026f6ed277",
+            "exp": 1760000060000,
+            "nonce": "00000000000000000000000000000002",
+            "sig": "fCGBLAB8xyolFr_Rq6_D1v5rqhYBSO4HvRIvy7Pe-kq_xtZdRNXawLemvjOxe2YPynnzc1Y9AkyQtTmT0gdvCQ"
+          }
+        }
+      },
+      "canonical": "{\"arguments\":{},\"name\":\"files__read_file\"}",
+      "string": "agentrouter-link-request/v3\nlnk_0123456789abcdef0123456789abcdef\nags_conv1\ntools/call\nddefe921e560e5baf18cf97deffcd286ab71ec3e7e696e16edd7c3026f6ed277\n1760000060000\n00000000000000000000000000000002",
+      "expect": "REPLAYED"
+    },
+    {
+      "name": "missing signature",
+      "method": "tools/call",
+      "params": {
+        "name": "files__read_file",
+        "arguments": {}
+      },
+      "canonical": "",
+      "string": "",
+      "expect": "SIGNATURE_INVALID"
+    }
+  ]
+}

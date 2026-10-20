@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/sandbox", "crates/linker", "crates/checkpoint", "crates/device-core", "crates/connector-cli", "app/src-tauri"]
+members = ["crates/sandbox", "crates/linker", "crates/aggregator", "crates/checkpoint", "crates/device-core", "crates/connector-cli", "app/src-tauri"]
 
 [workspace.package]
 version = "0.1.0"
@@ -13,6 +13,7 @@ publish = false
 agentrouter-device-core = { path = "crates/device-core" }
 agentrouter-sandbox = { path = "crates/sandbox" }
 agentrouter-linker = { path = "crates/linker" }
+agentrouter-aggregator = { path = "crates/aggregator" }
 agentrouter-checkpoint = { path = "crates/checkpoint" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }

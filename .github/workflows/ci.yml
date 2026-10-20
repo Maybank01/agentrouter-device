@@ -139,3 +139,5 @@ jobs:
           Start-Service -Name seclogon
           Get-Service -Name seclogon
       - run: cargo test -p agentrouter-sandbox -- --nocapture
+      - name: The aggregator runs a real MCP server confined (issue #46)
+        run: cargo test -p agentrouter-aggregator -- --nocapture
