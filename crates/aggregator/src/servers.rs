@@ -28,6 +28,8 @@ const LOG_LINE_MAX: usize = 500;
 const HANDSHAKE: Duration = Duration::from_secs(300);
 const RESTARTS_MAX: usize = 3;
 const RESTART_WINDOW: Duration = Duration::from_secs(120);
+/// How long a stopped server gets to end by itself (input closed) before its process group is killed.
+const STOP_GRACE: Duration = Duration::from_secs(3);
 /// The most servers one link runs at once.
 pub const MAX_SERVERS: usize = 12;
 
@@ -387,10 +389,14 @@ pub async fn supervise(agg: Arc<Inner>, server: Arc<Server>) {
                 agg.server_event(&server, "ready", None);
                 agg.notify_tools_changed().await;
                 let ct = running.cancellation_token();
+                let mut waiting = Box::pin(running.waiting());
                 let stopped = tokio::select! {
-                    _ = running.waiting() => false,
+                    _ = &mut waiting => false,
                     _ = server.stop.cancelled() => {
+                        // Close its input and give it a moment to end what it started (the host server ends its
+                        // background jobs on that) before the process group is killed.
                         ct.cancel();
+                        let _ = tokio::time::timeout(STOP_GRACE, &mut waiting).await;
                         true
                     }
                 };

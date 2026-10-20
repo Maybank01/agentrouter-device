@@ -8,11 +8,13 @@
 //! `docs/development/PROJECT-SERVICE.md` §10.6): DSH's native file, search and command tools reach the computer
 //! through these tools, so they answer in the shapes those tools need (batched metadata, ripgrep semantics, …).
 //!
-//! One module per concern: [`files`] (read, write, stat, list), [`search`] (ripgrep), [`run`] (commands, streamed).
+//! One module per concern: [`files`] (read, write, stat, list), [`search`] (ripgrep), [`run`] (commands, streamed),
+//! [`jobs`] (background commands).
 //! Every call runs on its own thread with a [`Call`]: its progress token (output streams as MCP progress) and its
 //! cancel flag (`notifications/cancelled` ends what it runs).
 
 mod files;
+mod jobs;
 mod run;
 mod search;
 
@@ -41,6 +43,7 @@ fn tools() -> Value {
     let mut all = run::tools();
     all.extend(files::tools());
     all.extend(search::tools());
+    all.extend(jobs::tools());
     Value::Array(all)
 }
 
@@ -49,6 +52,7 @@ struct Host {
     folders: Vec<PathBuf>,
     /// Cancel flags of the calls running now, by JSON-RPC id.
     calls: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    jobs: jobs::Jobs,
 }
 
 type Notify = Arc<dyn Fn(&Value) + Send + Sync>;
@@ -133,7 +137,16 @@ impl Host {
         Host {
             folders,
             calls: Mutex::default(),
+            jobs: jobs::Jobs::default(),
         }
+    }
+
+    /// The link is ending: what runs is cancelled, every background job's tree ends.
+    fn shut_down(&self) {
+        for flag in self.calls.lock().unwrap().values() {
+            flag.store(true, Ordering::Relaxed);
+        }
+        self.jobs.end_all();
     }
 
     fn home(&self) -> PathBuf {
@@ -174,6 +187,10 @@ impl Host {
             "stat" => self.stat(args),
             "list" => self.list(args),
             "search" => self.search(args, call),
+            "job_start" => self.job_start(args),
+            "job_read" => self.job_read(args, call),
+            "job_stop" => self.job_stop(args),
+            "jobs" => self.jobs_list(),
             other => Err(format!("没有这个工具：{other}")),
         }
     }
@@ -312,6 +329,14 @@ fn write_line(out: &Arc<Mutex<std::io::Stdout>>, value: &Value) {
 /// `agentrouter mcp-serve host <folder>…`.
 pub fn run(args: &[String]) -> i32 {
     let host = Arc::new(Host::new(args.iter().map(PathBuf::from).collect()));
+    // Stopped by a signal (the console ending, a terminal closing): the same as input closing, then gone.
+    {
+        let host = host.clone();
+        let _ = ctrlc::set_handler(move || {
+            host.shut_down();
+            std::process::exit(0);
+        });
+    }
     let out = Arc::new(Mutex::new(std::io::stdout()));
     let mut running = Vec::new();
     for line in std::io::stdin().lock().lines().map_while(Result::ok) {
@@ -322,7 +347,8 @@ pub fn run(args: &[String]) -> i32 {
             write_line(&out, &reply);
         }
     }
-    // Input closed: answer what is still running, then end.
+    // Input closed (the link ended): cancel what runs, end the jobs, answer, then end.
+    host.shut_down();
     for h in running {
         let _ = h.join();
     }
@@ -357,11 +383,29 @@ mod tests {
         let list = tools();
         let tools = list.as_array().unwrap();
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["exec", "read", "write", "stat", "list", "search"]);
+        assert_eq!(
+            names,
+            [
+                "exec",
+                "read",
+                "write",
+                "stat",
+                "list",
+                "search",
+                "job_start",
+                "job_read",
+                "job_stop",
+                "jobs"
+            ]
+        );
         for t in tools {
             let name = t["name"].as_str().unwrap();
             let read_only = t["annotations"]["readOnlyHint"].as_bool().unwrap();
-            assert_eq!(read_only, !matches!(name, "exec" | "write"), "{name}");
+            assert_eq!(
+                read_only,
+                !matches!(name, "exec" | "write" | "job_start" | "job_stop"),
+                "{name}"
+            );
         }
     }
 

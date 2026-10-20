@@ -113,6 +113,10 @@ fn clip_stream(kept: &[u8], total: usize) -> String {
 #[cfg(windows)]
 struct Job(windows_sys::Win32::Foundation::HANDLE);
 
+// SAFETY: a job object handle is a kernel handle usable from any thread; only Drop closes it, once.
+#[cfg(windows)]
+unsafe impl Send for Job {}
+
 #[cfg(windows)]
 impl Job {
     fn new() -> std::io::Result<Job> {
