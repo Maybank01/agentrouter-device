@@ -48,6 +48,8 @@ use servers::{Server, ServerDef, State};
 
 /// JSON-RPC error code of every refusal of ours; `data = {code, next}`.
 pub const ERROR_CODE: i32 = -32001;
+/// Folders one link may hold.
+pub const MAX_FOLDERS: usize = 32;
 /// A session survives a link drop this long (the same `s` resumes).
 pub const SESSION_GRACE: Duration = Duration::from_secs(120);
 /// Results stay under the 8 MiB frame with room for the envelope.
@@ -162,10 +164,52 @@ pub trait Hooks: Send + Sync + 'static {
     fn confirm_server(&self, _def: &ServerDef) -> BoxFuture<bool> {
         Box::pin(async { false })
     }
-    /// Snapshot the folder before the first non-read-only call of a turn; returns the checkpoint id.
+    /// Snapshot the folders before the first non-read-only call of a turn; returns the checkpoint id.
     fn checkpoint(&self, _label: &str) -> Option<String> {
         None
     }
+    /// Before every non-read-only call (after [`Hooks::checkpoint`]): keep what the call names by path (完全访问's
+    /// file journal, §7.2). Returns a journal id for the audit line.
+    fn journal(&self, _tool: &str, _arguments: &Value) -> Option<String> {
+        None
+    }
+    /// The Agent asks for another folder (`link__folder_add`): ask the person on this computer (y/N, default no).
+    fn confirm_folder(&self, _path: &str, _reason: &str) -> BoxFuture<bool> {
+        Box::pin(async { false })
+    }
+    /// The folders changed (a folder was added): tell the cloud (`info`) and the checkpoints.
+    fn folders_changed(&self, _folders: &[PathBuf]) {}
+}
+
+/// Why a path cannot be a linked folder (missing, a file, the home folder, a drive root, the device data folder), or
+/// its canonical form.
+pub fn check_folder(path: &std::path::Path, data_dir: &std::path::Path) -> Result<PathBuf, String> {
+    let shown = |p: &std::path::Path| {
+        let text = p.to_string_lossy();
+        text.strip_prefix(r"\\?\").unwrap_or(&text).to_string()
+    };
+    let real =
+        std::fs::canonicalize(path).map_err(|e| format!("看不到 {}：{e}", path.display()))?;
+    let real = PathBuf::from(shown(&real));
+    if !real.is_dir() {
+        return Err(format!("{} 不是文件夹", shown(&real)));
+    }
+    let home = agentrouter_device::util::home_dir();
+    let home = std::fs::canonicalize(&home)
+        .map(|h| PathBuf::from(shown(&h)))
+        .unwrap_or(home);
+    if real.parent().is_none()
+        || real == home
+        || home.starts_with(&real)
+        || real.starts_with(data_dir)
+        || data_dir.starts_with(&real)
+    {
+        return Err(format!(
+            "{} 太大了：不能把用户主目录、磁盘根目录或 AgentRouter 自己的数据文件夹交给云端。请选一个具体的项目文件夹。",
+            shown(&real)
+        ));
+    }
+    Ok(real)
 }
 
 /// Sends one MCP message of session `s` to the link.
@@ -174,11 +218,15 @@ pub type Outbound = Arc<dyn Fn(&str, Value) + Send + Sync>;
 pub struct Config {
     /// `lnk_…`
     pub link: String,
-    /// The canonical folder (the only writable place for the servers).
-    pub folder: PathBuf,
-    /// Its display name.
+    /// The canonical folders (the only writable places for the servers in folder mode); the first is home: servers
+    /// start there and relative paths resolve there. More can be added at run time ([`Aggregator::add_folder`]).
+    pub folders: Vec<PathBuf>,
+    /// The first folder's display name.
     pub folder_name: String,
     pub read_only: bool,
+    /// 完全访问 (`agentrouter link --full`, chosen on this computer only): servers run without the sandbox, with the
+    /// person's own rights (docs/LINKER-MCP.md §6.4).
+    pub full: bool,
     /// The device data folder (packages, audit; hidden from every sandbox).
     pub data_dir: PathBuf,
     /// The control plane's pinned signing key.
@@ -223,6 +271,8 @@ pub struct Inner {
     out: Outbound,
     sessions: Mutex<HashMap<String, Arc<Session>>>,
     servers: Mutex<BTreeMap<String, Arc<Server>>>,
+    /// The linked folders now (starts as `cfg.folders`).
+    folders: Mutex<Vec<PathBuf>>,
     replay: Mutex<ReplayCache>,
     progress: Mutex<HashMap<ProgressKey, (Peer<RoleServer>, ProgressToken)>>,
     down_since: Mutex<Option<tokio::time::Instant>>,
@@ -278,6 +328,7 @@ impl Aggregator {
     /// Start the aggregator of one link (inside a tokio runtime). `out` sends to the link.
     pub fn new(cfg: Config, hooks: Arc<dyn Hooks>, out: Outbound) -> Aggregator {
         let audit = Audit::open(&audit_path(&cfg.data_dir, &cfg.link));
+        let folders = cfg.folders.clone();
         let inner = Arc::new(Inner {
             sandbox: agentrouter_sandbox::Runtime::new(&cfg.data_dir),
             packages: Packages::new(cfg.data_dir.join("mcp-packages")),
@@ -287,6 +338,7 @@ impl Aggregator {
             out,
             sessions: Mutex::new(HashMap::new()),
             servers: Mutex::new(BTreeMap::new()),
+            folders: Mutex::new(folders),
             replay: Mutex::new(ReplayCache::default()),
             progress: Mutex::new(HashMap::new()),
             down_since: Mutex::new(None),
@@ -317,7 +369,7 @@ impl Aggregator {
                 }
             }
         });
-        inner.record(json!({"kind": "link", "event": "start", "link": inner.cfg.link, "folder": inner.cfg.folder_name, "readOnly": inner.cfg.read_only, "sandbox": agentrouter_sandbox::Runtime::backend()}));
+        inner.record(json!({"kind": "link", "event": "start", "link": inner.cfg.link, "folder": inner.cfg.folder_name, "folders": inner.folders_shown(), "full": inner.cfg.full, "readOnly": inner.cfg.read_only, "sandbox": if inner.cfg.full { String::new() } else { agentrouter_sandbox::Runtime::backend() }}));
         Aggregator { inner }
     }
 
@@ -350,6 +402,17 @@ impl Aggregator {
     /// The servers and the sandbox, as `link__servers` shows them.
     pub fn servers_view(&self) -> Value {
         self.inner.servers_view()
+    }
+
+    /// The linked folders now.
+    pub fn folders(&self) -> Vec<PathBuf> {
+        self.inner.folders.lock().unwrap().clone()
+    }
+
+    /// Add a folder the person chose on this computer (`+ <path>` in the terminal, or a `y` to `link__folder_add`):
+    /// it joins the writable set and every running server restarts with the new policy.
+    pub async fn add_folder(&self, path: &std::path::Path) -> Result<Vec<PathBuf>, Failure> {
+        Inner::add_folder(&self.inner, path).await
     }
 
     /// Add a server from this computer (not from the cloud): the console's own default set.
@@ -402,8 +465,69 @@ impl Inner {
         self.audit.lock().unwrap().record(entry);
     }
 
-    pub(crate) fn folder_shown(&self) -> String {
-        self.cfg.folder.to_string_lossy().into_owned()
+    /// The first linked folder (servers start there; relative paths resolve there).
+    pub(crate) fn home_folder(&self) -> PathBuf {
+        self.folders
+            .lock()
+            .unwrap()
+            .first()
+            .cloned()
+            .unwrap_or_else(|| self.cfg.folders.first().cloned().unwrap_or_default())
+    }
+
+    pub(crate) fn folders_now(&self) -> Vec<PathBuf> {
+        self.folders.lock().unwrap().clone()
+    }
+
+    fn folders_shown(&self) -> Vec<String> {
+        self.folders_now()
+            .iter()
+            .map(|f| f.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    async fn add_folder(self: &Arc<Self>, path: &std::path::Path) -> Result<Vec<PathBuf>, Failure> {
+        let real = check_folder(path, &self.cfg.data_dir).map_err(|e| {
+            Failure::new("FOLDER_INVALID", e).next("换一个具体的项目文件夹（真实存在的目录）。")
+        })?;
+        let folders = {
+            let mut folders = self.folders.lock().unwrap();
+            if folders.contains(&real) {
+                return Ok(folders.clone());
+            }
+            if folders.len() >= MAX_FOLDERS {
+                return Err(Failure::new(
+                    "FOLDER_INVALID",
+                    format!("一个链接最多 {MAX_FOLDERS} 个文件夹"),
+                ));
+            }
+            folders.push(real.clone());
+            folders.clone()
+        };
+        self.record(json!({"kind": "link", "event": "folder_added", "link": self.cfg.link, "folder": real.to_string_lossy(), "folders": self.folders_shown()}));
+        self.hooks.folders_changed(&folders);
+        self.restart_servers().await;
+        Ok(folders)
+    }
+
+    /// Every server again with the current folders (its sandbox policy is fixed when it starts).
+    async fn restart_servers(self: &Arc<Self>) {
+        let running: Vec<Arc<Server>> = self.servers.lock().unwrap().values().cloned().collect();
+        for old in running {
+            if matches!(old.state(), State::Stopped) {
+                continue;
+            }
+            old.stop.cancel();
+            old.wait_settled(Duration::from_secs(5)).await;
+            let fresh = Server::new(old.def.clone());
+            self.servers
+                .lock()
+                .unwrap()
+                .insert(fresh.def.name.clone(), fresh.clone());
+            self.server_event(&fresh, "starting", Some(fresh.def.shown()));
+            tokio::spawn(servers::supervise(self.clone(), fresh));
+        }
+        self.notify_tools_changed().await;
     }
 
     fn send(&self, s: &str, m: Value) {
@@ -683,6 +807,13 @@ impl Inner {
                     Outcome::Ok
                 }
             };
+            // What the person's feed says, in the audit too (#63: a refused write logged as a plain answer).
+            entry["outcome"] = json!(match &outcome {
+                Outcome::Ok => "ok",
+                Outcome::ToolError(text) if is_boundary_refusal(text) => "refused",
+                Outcome::ToolError(_) => "tool_error",
+                Outcome::Denied(_) => "denied",
+            });
             if let Some(cp) = &p.checkpoint {
                 entry["checkpoint"] = json!(cp);
             }
@@ -726,6 +857,8 @@ impl Inner {
             .collect();
         json!({
             "folder": self.cfg.folder_name,
+            "folders": self.folders_shown(),
+            "full": self.cfg.full,
             "readOnly": self.cfg.read_only,
             "sandbox": {"backend": status.backend, "mechanism": status.mechanism, "ready": status.ready,
                         "problems": status.problems.iter().map(|p| json!({"message": p.message, "next": p.next})).collect::<Vec<_>>()},
@@ -871,7 +1004,9 @@ impl Inner {
         }
         // What would make every start fail: say so now instead of a crash loop.
         let status = self.sandbox.status();
-        if let Some(problem) = status.problems.first() {
+        if !self.cfg.full
+            && let Some(problem) = status.problems.first()
+        {
             return Err(
                 Failure::new(agentrouter_sandbox::UNAVAILABLE, problem.message.clone())
                     .next(problem.next.clone()),
@@ -1041,11 +1176,23 @@ impl Inner {
                 .and_then(Value::as_str)
                 .map(str::to_string);
             let label = format!("{} {}", name, hint_of(&arguments));
-            if let Some(cp) = self.checkpoint_for(&session, turn, label).await
+            let cp = self.checkpoint_for(&session, turn, label).await;
+            let hooks = self.hooks.clone();
+            let (journal_tool, journal_args) = (name.clone(), arguments.clone());
+            let journal =
+                tokio::task::spawn_blocking(move || hooks.journal(&journal_tool, &journal_args))
+                    .await
+                    .ok()
+                    .flatten();
+            let mark = match (cp, journal) {
+                (Some(cp), Some(j)) => Some(format!("{cp} {j}")),
+                (cp, j) => cp.or(j),
+            };
+            if let Some(mark) = mark
                 && let Ok(key) = serde_json::to_value(&context.id).map(|v| id_key(&v))
                 && let Some(p) = session.pending.lock().unwrap().get_mut(&key)
             {
-                p.checkpoint = Some(cp);
+                p.checkpoint = Some(mark);
             }
         }
         let timeout = meta
@@ -1180,6 +1327,41 @@ impl Inner {
                 json!({"name": name, "state": server.state().label(), "lines": tail})
             }
             "package_put" => self.packages.store(args).map_err(Failure::from)?,
+            "folder_add" => {
+                let path = args
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim();
+                let reason = args
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim();
+                if path.is_empty() || path.len() > 1024 {
+                    return Err(Failure::new(
+                        "FOLDER_INVALID",
+                        "path 要是一个文件夹的完整路径",
+                    ));
+                }
+                // Validate before asking: the person is never asked about a folder that cannot be linked.
+                check_folder(std::path::Path::new(path), &self.cfg.data_dir).map_err(|e| {
+                    Failure::new("FOLDER_INVALID", e)
+                        .next("换一个具体的项目文件夹（真实存在的目录）。")
+                })?;
+                let yes = self
+                    .hooks
+                    .confirm_folder(path, &agentrouter_device::util::clip(reason, 120))
+                    .await;
+                self.record(json!({"kind": "link", "event": if yes { "folder_approved" } else { "folder_declined" }, "link": self.cfg.link, "folder": path, "reason": reason}));
+                if !yes {
+                    return Err(Failure::new("DENIED_BY_USER", "用户没有同意把这个文件夹交给云端").next(
+                        "告诉用户为什么需要这个文件夹；他也可以在电脑的终端里输入 + 路径 自己加上。",
+                    ));
+                }
+                let folders = Inner::add_folder(self, std::path::Path::new(path)).await?;
+                json!({"folders": folders.iter().map(|f| f.to_string_lossy()).collect::<Vec<_>>()})
+            }
             other => {
                 return Err(Failure::new(
                     "UNKNOWN_TOOL",
@@ -1247,6 +1429,12 @@ pub fn link_tools() -> Vec<Tool> {
             true,
         ),
         tool(
+            "link__folder_add",
+            "Ask the person to add another folder to this link (they answer y/N on the computer). On yes the folder becomes writable for every local server, which restart; the answer lists the folders.",
+            json!({"type": "object", "properties": {"path": {"type": "string"}, "reason": {"type": "string"}}, "required": ["path"]}),
+            false,
+        ),
+        tool(
             "link__package_put",
             "Store a pinned catalog package file (base64) after checking its registry digest.",
             json!({"type": "object", "properties": {"pin": {"type": "object"}, "data": {"type": "string"}}, "required": ["pin", "data"]}),
@@ -1263,16 +1451,18 @@ struct SessionHandler {
 
 impl ServerHandler for SessionHandler {
     fn get_info(&self) -> InitializeResult {
-        let folder = self
+        let (folders, full) = self
             .inner
             .upgrade()
-            .map(|i| i.cfg.folder_name.clone())
+            .map(|i| (i.folders_shown().join(", "), i.cfg.full))
             .unwrap_or_default();
         InitializeResult::new(ServerCapabilities::builder().enable_tools().enable_tool_list_changed().build())
             .with_server_info(Implementation::new("agentrouter-link", env!("CARGO_PKG_VERSION")))
-            .with_instructions(format!(
-                "Tools of the folder «{folder}» on the person's own computer. They work only inside that folder (the computer's sandbox refuses anything outside it). Tool names are <server>__<tool>; link__* manage which local servers run."
-            ))
+            .with_instructions(if full {
+                format!("Tools on the person's own computer with full access (their normal rights over the whole computer; home folder {folders}). Paths are real. Tool names are <server>__<tool>; link__* manage which local servers run.")
+            } else {
+                format!("Tools on the person's own computer, in the folders {folders} (real paths; the computer's sandbox refuses writes outside them; link__folder_add asks the person for another). Tool names are <server>__<tool>; link__* manage which local servers run.")
+            })
     }
 
     async fn list_tools(

@@ -362,6 +362,180 @@ impl Shadow {
     }
 }
 
+/// The shadow repository key of a folder (`f-<hash>`): one per folder, whatever link it was linked through, so
+/// `agentrouter undo` in a folder finds its checkpoints (several folders per link, 2026-10-20).
+pub fn folder_key(folder: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(folder.to_string_lossy().as_bytes());
+    let hex: String = digest[..12].iter().map(|b| format!("{b:02x}")).collect();
+    format!("f-{hex}")
+}
+
+/// A file bigger than this is not kept by the journal.
+pub const JOURNAL_FILE_MAX: u64 = 64 << 20;
+
+/// 完全访问's file journal (docs/LINKER-MCP.md §7.2): before a call that names a file by path outside the snapshotted
+/// folders, its previous content is copied to `<data>/checkpoints/journal/<link>/<turn>/` (a file that did not exist
+/// is recorded as absent), and `undo` puts the turn's files back.
+#[derive(Debug, Clone)]
+pub struct Journal {
+    dir: PathBuf,
+}
+
+/// One turn of the journal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JournalTurn {
+    pub id: String,
+    pub label: String,
+    pub files: Vec<PathBuf>,
+}
+
+impl Journal {
+    pub fn new(data_dir: &Path, link: &str) -> Journal {
+        Journal {
+            dir: data_dir.join("checkpoints").join("journal").join(link),
+        }
+    }
+
+    fn turn_dir(&self, turn: &str) -> PathBuf {
+        self.dir.join(turn)
+    }
+
+    fn manifest(&self, turn: &str) -> Vec<(String, String, PathBuf)> {
+        std::fs::read_to_string(self.turn_dir(turn).join("manifest"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| {
+                let mut p = l.splitn(3, '\t');
+                Some((
+                    p.next()?.to_string(),
+                    p.next()?.to_string(),
+                    PathBuf::from(p.next()?),
+                ))
+            })
+            .collect()
+    }
+
+    /// Start a turn (`label` = what the first call was). Turn ids sort by time.
+    pub fn begin(&self, label: &str) -> Result<String, String> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let id = format!("j{now:x}");
+        let dir = self.turn_dir(&id);
+        std::fs::create_dir_all(&dir).map_err(|e| format!("建不了 {}：{e}", dir.display()))?;
+        std::fs::write(dir.join("label"), label.replace(['\n', '\r'], " "))
+            .map_err(|e| e.to_string())?;
+        self.prune();
+        Ok(id)
+    }
+
+    /// Keep `path`'s current content in `turn` (once per turn and path). Returns whether something was recorded.
+    pub fn keep(&self, turn: &str, path: &Path) -> Result<bool, String> {
+        let text = path.to_string_lossy();
+        if text.contains(['\t', '\n', '\r']) || !path.is_absolute() {
+            return Ok(false);
+        }
+        let entries = self.manifest(turn);
+        if entries.iter().any(|(_, _, p)| p == path) {
+            return Ok(false);
+        }
+        let dir = self.turn_dir(turn);
+        let line = match std::fs::symlink_metadata(path) {
+            Ok(m) if m.is_file() && m.len() <= JOURNAL_FILE_MAX => {
+                let name = format!("{}", entries.len());
+                std::fs::copy(path, dir.join(&name))
+                    .map_err(|e| format!("留不了 {} 的旧版：{e}", path.display()))?;
+                format!("file\t{name}\t{text}\n")
+            }
+            Ok(_) => return Ok(false),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => format!("absent\t-\t{text}\n"),
+            Err(_) => return Ok(false),
+        };
+        use std::io::Write;
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("manifest"))
+            .and_then(|mut f| f.write_all(line.as_bytes()))
+            .map_err(|e| e.to_string())?;
+        Ok(true)
+    }
+
+    /// The newest turns that kept something, first.
+    pub fn list(&self, n: usize) -> Vec<JournalTurn> {
+        let mut ids: Vec<String> = std::fs::read_dir(&self.dir)
+            .map(|r| {
+                r.flatten()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        ids.sort();
+        ids.reverse();
+        ids.into_iter()
+            .filter_map(|id| {
+                let files: Vec<PathBuf> =
+                    self.manifest(&id).into_iter().map(|(_, _, p)| p).collect();
+                if files.is_empty() {
+                    return None;
+                }
+                let label =
+                    std::fs::read_to_string(self.turn_dir(&id).join("label")).unwrap_or_default();
+                Some(JournalTurn { id, label, files })
+            })
+            .take(n)
+            .collect()
+    }
+
+    /// Put back the files of `turn` (or the newest turn): kept content is restored, files that did not exist are
+    /// removed. The turn is then dropped from the journal.
+    pub fn undo(&self, turn: Option<&str>) -> Result<JournalTurn, String> {
+        let target = match turn {
+            Some(id) => self
+                .list(usize::MAX)
+                .into_iter()
+                .find(|t| t.id == id)
+                .ok_or_else(|| format!("没有这个记录：{id}"))?,
+            None => self
+                .list(1)
+                .into_iter()
+                .next()
+                .ok_or("没有可以撤销的文件改动")?,
+        };
+        let dir = self.turn_dir(&target.id);
+        for (kind, backup, path) in self.manifest(&target.id) {
+            if kind == "file" {
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                std::fs::copy(dir.join(&backup), &path)
+                    .map_err(|e| format!("放不回 {}：{e}", path.display()))?;
+            } else if path.is_file() {
+                std::fs::remove_file(&path)
+                    .map_err(|e| format!("删不掉 {}：{e}", path.display()))?;
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(target)
+    }
+
+    /// Keep the newest [`KEEP`] turns.
+    fn prune(&self) {
+        let mut ids: Vec<PathBuf> = std::fs::read_dir(&self.dir)
+            .map(|r| r.flatten().map(|e| e.path()).collect())
+            .unwrap_or_default();
+        if ids.len() <= KEEP {
+            return;
+        }
+        ids.sort();
+        for old in &ids[..ids.len() - KEEP] {
+            let _ = std::fs::remove_dir_all(old);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

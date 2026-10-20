@@ -20,8 +20,8 @@ npx @agentrouter-top/cli link        # 或者装好后：agentrouter link
 
 | 命令 | 作用 |
 | --- | --- |
-| `agentrouter link [--read-only] [--yes-servers]` | 链接当前文件夹并保持连接（`--read-only`：只读；`--yes-servers`：无人值守时不逐个问） |
-| `agentrouter undo [--list] [检查点]` | 撤销 Agent 最近一轮改动（再运行一次再往前一轮）；`--list` 列出检查点 |
+| `agentrouter link [文件夹…] [--read-only \| --full] [--yes-servers]` | 链接这些文件夹（默认当前文件夹）并保持连接；连着时输入 `+ 路径` 再加一个（`--read-only`：只读；`--full`：完全访问，本机工具用你的账户权限；`--yes-servers`：无人值守时不逐个问） |
+| `agentrouter undo [--list] [--journal] [检查点]` | 撤销 Agent 在这个文件夹最近一轮的改动（再运行一次再往前一轮）；`--list` 列出检查点；`--journal` 放回完全访问时改过的文件 |
 | `agentrouter audit [verify] [条数]` | 这个文件夹的审计记录；`verify` 检查有没有被改过 |
 | `agentrouter sandbox setup\|status\|remove` | 本机工具的隔离环境 |
 | `agentrouter status` | 账号、网关、沙箱、当前文件夹 |

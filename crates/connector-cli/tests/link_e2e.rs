@@ -235,10 +235,9 @@ fn a_linked_folder_end_to_end_and_the_boundary_holds() {
     assert_eq!(hello["v"], 2);
     assert_eq!(hello["link"]["id"], link);
     assert_eq!(hello["link"]["folder"], "my-mod");
-    assert!(
-        !hello.to_string().contains(&*folder.to_string_lossy()),
-        "no absolute path leaves the device"
-    );
+    // Real paths (owner 2026-10-20): the folders the person linked, as they are on this computer.
+    assert_eq!(hello["link"]["folders"][0], json!(folder.to_string_lossy()));
+    assert_eq!(hello["link"]["full"], false);
     ws.send(Message::text(
         json!({"op": "welcome", "link": link}).to_string(),
     ))
@@ -414,6 +413,61 @@ fn a_linked_folder_end_to_end_and_the_boundary_holds() {
             .join("pre-commit")
             .exists()
     );
+
+    // The SSH-like host server the console starts itself: a real shell in the folder, files by real path; the
+    // sandbox still refuses writes outside the folder.
+    let host = |name: &str, arguments: Value| json!({"name": format!("host__{name}"), "arguments": arguments});
+    let mut id = 40;
+    let ran = loop {
+        id += 1;
+        let a = call(
+            &mut ws,
+            id,
+            "tools/call",
+            host("exec", json!({"command": "echo linked"})),
+            true,
+        );
+        if !["SERVER_NOT_RUNNING", "SERVER_STARTING"].contains(&code(&a).as_str()) || id > 100 {
+            break a;
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    };
+    assert!(ok(&ran), "{ran}");
+    assert!(
+        ran["result"]["structuredContent"]["stdout"]
+            .as_str()
+            .unwrap_or("")
+            .contains("linked"),
+        "{ran}"
+    );
+    assert_eq!(
+        ran["result"]["structuredContent"]["cwd"],
+        json!(folder.to_string_lossy())
+    );
+    let wrote = call(
+        &mut ws,
+        120,
+        "tools/call",
+        host("write", json!({"path": "host.txt", "data": "via host"})),
+        true,
+    );
+    assert!(ok(&wrote), "{wrote}");
+    assert_eq!(
+        std::fs::read_to_string(folder.join("host.txt")).unwrap(),
+        "via host"
+    );
+    let host_escape = outside.join("host-escaped.txt");
+    let refused = call(
+        &mut ws,
+        121,
+        "tools/call",
+        host(
+            "write",
+            json!({"path": host_escape.to_string_lossy(), "data": "x"}),
+        ),
+        true,
+    );
+    assert!(!ok(&refused) && !host_escape.exists(), "{refused}");
 
     // A forged call (arguments changed after signing) is refused.
     let mut forged = control_forged(

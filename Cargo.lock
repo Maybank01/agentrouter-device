@@ -19,6 +19,9 @@ dependencies = [
 [[package]]
 name = "agentrouter-checkpoint"
 version = "0.1.0"
+dependencies = [
+ "sha2",
+]
 
 [[package]]
 name = "agentrouter-device-cli"
@@ -34,6 +37,7 @@ dependencies = [
  "embed-resource",
  "libc",
  "serde_json",
+ "sha2",
  "tokio",
  "tungstenite",
  "windows-sys",

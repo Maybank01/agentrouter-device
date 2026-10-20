@@ -46,8 +46,8 @@ const BACKOFF_MAX: Duration = Duration::from_secs(30);
 /// Close code the gateway uses when a newer connection of the same link replaced this one.
 pub const CLOSE_REPLACED: u16 = 4409;
 
-/// What `hello` tells the cloud about this link. The absolute folder path stays on the device: the cloud sees a
-/// display name and the stable [`link_id`].
+/// What `hello` (and `info`) tells the cloud about this link: the stable [`link_id`], the first folder's display
+/// name and, since 2026-10-20, the folders' real paths (running `link` on them is the person's choice to show them).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkInfo {
     /// `lnk_…` ([`link_id`]).
@@ -59,9 +59,13 @@ pub struct LinkInfo {
     /// Always `cli` for the console.
     pub app: String,
     pub version: String,
-    /// `srt@0.0.80` when the sandbox is ready, else empty.
+    /// `srt@0.0.80` when the sandbox is ready, else empty (always empty in 完全访问).
     pub sandbox: String,
     pub read_only: bool,
+    /// The linked folders' real absolute paths, the first is home (owner 2026-10-20: real paths, several folders).
+    pub folders: Vec<String>,
+    /// 完全访问 (`agentrouter link --full`, chosen on the computer only).
+    pub full: bool,
 }
 
 impl LinkInfo {
@@ -75,6 +79,8 @@ impl LinkInfo {
             "version": self.version,
             "sandbox": self.sandbox,
             "readOnly": self.read_only,
+            "folders": self.folders,
+            "full": self.full,
         })
     }
 }
@@ -157,15 +163,25 @@ pub enum End {
 }
 
 enum Out {
-    Data { s: String, m: Value },
-    Close { s: String },
+    Data {
+        s: String,
+        m: Value,
+    },
+    Close {
+        s: String,
+    },
+    /// The link's info changed (a folder was added): `{"op":"info"}` with the current info.
+    Info,
 }
+
+type SharedInfo = std::sync::Arc<std::sync::Mutex<LinkInfo>>;
 
 /// Sends MCP messages into the link; stops it.
 #[derive(Clone)]
 pub struct Handle {
     out: mpsc::UnboundedSender<Out>,
     stop: watch::Sender<bool>,
+    info: SharedInfo,
 }
 
 impl Handle {
@@ -182,6 +198,12 @@ impl Handle {
         let _ = self.out.send(Out::Close { s: s.to_string() });
     }
 
+    /// New info for this link (same id): sent now as `{"op":"info"}` and used by every later `hello`.
+    pub fn set_info(&self, info: LinkInfo) {
+        *self.info.lock().unwrap() = info;
+        let _ = self.out.send(Out::Info);
+    }
+
     /// Close the link for good ([`End::Stopped`]).
     pub fn stop(&self) {
         let _ = self.stop.send(true);
@@ -193,11 +215,13 @@ pub fn start(options: Options) -> (Handle, mpsc::UnboundedReceiver<Event>) {
     let (out_tx, out_rx) = mpsc::unbounded_channel();
     let (event_tx, event_rx) = mpsc::unbounded_channel();
     let (stop_tx, stop_rx) = watch::channel(false);
-    tokio::spawn(run(options, out_rx, event_tx, stop_rx));
+    let info: SharedInfo = std::sync::Arc::new(std::sync::Mutex::new(options.info.clone()));
+    tokio::spawn(run(options, info.clone(), out_rx, event_tx, stop_rx));
     (
         Handle {
             out: out_tx,
             stop: stop_tx,
+            info,
         },
         event_rx,
     )
@@ -234,6 +258,7 @@ enum Conn {
 
 async fn run(
     options: Options,
+    info: SharedInfo,
     mut out_rx: mpsc::UnboundedReceiver<Out>,
     events: mpsc::UnboundedSender<Event>,
     mut stop: watch::Receiver<bool>,
@@ -249,6 +274,7 @@ async fn run(
                 let mut welcomed = false;
                 let conn = connection(
                     &options,
+                    &info,
                     &token,
                     &mut out_rx,
                     &events,
@@ -286,6 +312,7 @@ async fn run(
 
 async fn connection(
     options: &Options,
+    info: &SharedInfo,
     token: &str,
     out_rx: &mut mpsc::UnboundedReceiver<Out>,
     events: &mpsc::UnboundedSender<Event>,
@@ -310,8 +337,8 @@ async fn connection(
         Ok(Err(e)) => return Conn::Lost(format!("连不上网关：{e}")),
         Err(_) => return Conn::Lost("连网关超时".into()),
     };
-    let hello =
-        json!({"op": "hello", "v": VERSION, "token": token, "link": options.info.to_json()});
+    let current = info.lock().unwrap().to_json();
+    let hello = json!({"op": "hello", "v": VERSION, "token": token, "link": current});
     if let Err(e) = ws.send(Message::text(hello.to_string())).await {
         return Conn::Lost(format!("hello 没发出去：{e}"));
     }
@@ -365,6 +392,7 @@ async fn connection(
                 let frame = match out {
                     Out::Data { s, m } => json!({"s": s, "m": m}),
                     Out::Close { s } => json!({"op": "close", "s": s}),
+                    Out::Info => json!({"op": "info", "link": info.lock().unwrap().to_json()}),
                 };
                 let text = frame.to_string();
                 if text.len() > FRAME_MAX {
