@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
-members = ["crates/sandbox", "crates/linker", "crates/aggregator", "crates/checkpoint", "crates/device-core", "crates/connector-cli", "app/src-tauri"]
+members = ["crates/sandbox", "crates/linker", "crates/aggregator", "crates/checkpoint", "crates/device-core", "crates/connector-cli"]
+# The desktop shell (app/) is frozen (docs/LINKER-MCP.md §0): source kept, out of the workspace, CI and releases.
+exclude = ["app/src-tauri"]
 
 [workspace.package]
 version = "0.1.0"

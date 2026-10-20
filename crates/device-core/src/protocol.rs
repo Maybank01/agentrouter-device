@@ -1,6 +1,6 @@
-//! The linked-device protocol, device side (agentrouter-cloud `docs/product/workspace-v1/DEVICE-PROTOCOL.md`):
-//! the three signed strings, canonical JSON for argument digests, Ed25519 keys as raw base64url, and the
-//! checks every signed request goes through before the local gate sees it.
+//! The device protocol primitives (pairing and token strings, canonical JSON for digests, Ed25519 keys as raw
+//! base64url, the replay cache). Requests themselves are MCP with the link signature v3 in `params._meta`
+//! (docs/LINKER-MCP.md §3.3; checked by the aggregator); the signed device action set is gone (#49).
 
 use std::collections::HashMap;
 use std::fmt;
@@ -12,7 +12,6 @@ use sha2::{Digest, Sha256};
 
 use crate::util::{b64url, b64url_decode, hex};
 
-pub const PROTOCOL_VERSION: i64 = 1;
 /// A signed request lives 60 s; a device refuses one claiming to live longer (plus 5 s of clock skew).
 pub const REQUEST_MAX_AHEAD_MS: i64 = 60_000 + 5_000;
 
@@ -22,19 +21,6 @@ pub fn pair_string(public_key: &str, name: &str, os: &str, arch: &str) -> String
 
 pub fn token_string(device: &str, challenge: &str) -> String {
     format!("agentrouter-device-token/v1\n{device}\n{challenge}")
-}
-
-pub fn request_string(
-    device: &str,
-    session: &str,
-    action: &str,
-    digest: &str,
-    exp: i64,
-    nonce: &str,
-) -> String {
-    format!(
-        "agentrouter-device-request/v1\n{device}\n{session}\n{action}\n{digest}\n{exp}\n{nonce}"
-    )
 }
 
 /// A protocol error: the code the gateway and the tool see, and a sentence the AI can pass on.
@@ -261,84 +247,6 @@ impl ReplayCache {
         self.seen.insert(nonce.to_string(), exp);
         true
     }
-}
-
-/// A request that passed every protocol check.
-#[derive(Debug, Clone)]
-pub struct Verified {
-    pub session: String,
-    pub action: String,
-}
-
-/// The protocol checks, in the order DEVICE-PROTOCOL.md §5.1 gives them. Only after these does the
-/// local gate (access level, folders, confirmation) decide.
-pub fn check_request(
-    request: &Value,
-    args: &Value,
-    pinned: &ControlKey,
-    device_id: &str,
-    now: i64,
-    replay: &mut ReplayCache,
-) -> Result<Verified, DeviceError> {
-    let field = |name: &str| request.get(name).and_then(Value::as_str).unwrap_or("");
-    if request.get("v").and_then(Value::as_i64) != Some(PROTOCOL_VERSION) {
-        return Err(DeviceError::invalid_signature(
-            "unsupported request version",
-        ));
-    }
-    if field("kid") != pinned.kid {
-        return Err(DeviceError::invalid_signature("unknown signing key"));
-    }
-    let exp_value = request.get("exp");
-    let exp = exp_value.and_then(Value::as_i64);
-    let (device, session, action, digest, nonce) = (
-        field("device"),
-        field("session"),
-        field("action"),
-        field("digest"),
-        field("nonce"),
-    );
-    let Some(exp) = exp else {
-        return Err(DeviceError::invalid_signature("bad expiry"));
-    };
-    let text = request_string(device, session, action, digest, exp, nonce);
-    if !verify(&pinned.public_key, &text, field("sig")) {
-        return Err(DeviceError::invalid_signature("bad signature"));
-    }
-    if device != device_id {
-        return Err(DeviceError::new(
-            "WRONG_DEVICE",
-            "signed for another device",
-        ));
-    }
-    if args_digest(args) != digest {
-        return Err(DeviceError::invalid_signature(
-            "arguments do not match the signature",
-        ));
-    }
-    if exp <= now {
-        return Err(DeviceError::new("REQUEST_EXPIRED", "expired"));
-    }
-    if exp > now + REQUEST_MAX_AHEAD_MS {
-        return Err(DeviceError::new("REQUEST_EXPIRED", "lives too long"));
-    }
-    if nonce.len() != 32
-        || !nonce
-            .bytes()
-            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
-    {
-        return Err(DeviceError::invalid_signature("bad nonce"));
-    }
-    if !replay.remember(nonce, exp, now) {
-        return Err(DeviceError::new(
-            "REPLAYED",
-            "this request was already used",
-        ));
-    }
-    Ok(Verified {
-        session: session.to_string(),
-        action: action.to_string(),
-    })
 }
 
 #[cfg(test)]

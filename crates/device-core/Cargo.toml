@@ -1,6 +1,6 @@
 [package]
 name = "agentrouter-device-core"
-description = "AgentRouter linked device: protocol checks, local gate, MCP host, checkpoints, audit log, key store and the gateway connection."
+description = "AgentRouter device core: pairing and token, keys, protocol primitives, the argument-level audit, pinned MCP packages, config (and what `mcp-serve local` still needs)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -14,17 +14,10 @@ name = "agentrouter_device"
 base64 = "0.23"
 ed25519-dalek = "3"
 getrandom = "0.4"
-gif = "0.14"
-grep-regex = "0.1"
-grep-searcher = "0.1"
-ignore = "0.4"
-jpeg-encoder = "0.7"
-native-tls = "0.2"
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.11"
 agentrouter-sandbox.workspace = true
-tungstenite = { version = "0.30", default-features = false, features = ["handshake", "native-tls"] }
 ureq = { version = "3", default-features = false, features = ["native-tls", "json"] }
 
 [target.'cfg(unix)'.dependencies]
