@@ -137,3 +137,5 @@ jobs:
       - run: cargo test -p agentrouter-sandbox -- --nocapture
       - name: The aggregator runs a real MCP server confined (issue #46)
         run: cargo test -p agentrouter-aggregator -- --nocapture
+      - name: The whole chain through the real CLI, and the escape cases (issue #50)
+        run: cargo test -p agentrouter-device-cli --test link_e2e -- --nocapture

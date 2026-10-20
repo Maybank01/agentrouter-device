@@ -35,6 +35,7 @@ dependencies = [
  "libc",
  "serde_json",
  "tokio",
+ "tungstenite",
  "windows-sys",
 ]
 
