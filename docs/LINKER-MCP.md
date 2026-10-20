@@ -42,7 +42,7 @@ Owner answers to the open questions, 2026-10-19 (details in §12):
 
 > Folder-picker draft (`.artifacts/brand-draft-anime/folder-picker-20261020.html`): 「这个可以」 ·
 > 「直接展示真实目录可以不。没必要说限制特别死，因为用户是具备开启完全访问的能力的。虚拟目录可能是个伪需求」 ·
-> 「就和Agent使用SSH同样的感觉会更好吧」 (Cloud `docs/product/PRODUCT.md` v1.56)
+> 「就和Agent使用SSH同样的感觉会更好吧」 (Cloud `docs/product/PRODUCT.md` v1.58)
 
 - **One link, several folders.** `agentrouter link <dir> [<dir>…]`; a folder can be added to a running link with a
   local `y` (§5). The sandbox's writable set is all listed folders + scratch; outside stays denied in folder mode.
