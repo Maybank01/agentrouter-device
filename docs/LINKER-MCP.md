@@ -1,10 +1,12 @@
-# 宿主机 (host) + MCP aggregation — one chain for every execution host
+# Host Daemon (`hostd`) + MCP aggregation — one chain for every execution host
 
-> Terminology (owner 2026-10-20, §0.2): the program formerly called **Linker** is the **宿主机 / host**: it makes a machine
-> an execution host and view provider. "Link" now names only its connection layer (and the `lnk_` connection id). The
-> binary, the `agentrouter link` command, the npm package and this file's name stay (§13.6).
+> Terminology (owner 2026-10-20, §0.2, §0.3): the **宿主机 / host** is the machine (a person's PC, a rented Mac mini, a
+> cloud node). The program formerly called **Linker** is the **Host Daemon, `hostd`** (宿主守护进程; like sshd, dockerd,
+> containerd): one per machine, it creates and manages the **sandboxes** on that machine and executes into them. People
+> still run `agentrouter link`, which starts `hostd`. "Link" names only the connection (and the `lnk_` id). Renaming the
+> binary, package and this file waits until #69–#77 merge (§13.6).
 
-Status: **design, owner-reviewed** (2026-10-19, issue #40; 2026-10-20 additions §0.1, issue #64; 2026-10-20 host positioning §0.2 + §13, issue #78; owner answers in §12). Nothing here is implemented yet; the
+Status: **design, owner-reviewed** (2026-10-19, issue #40; 2026-10-20 additions §0.1, issue #64; 2026-10-20 host positioning §0.2, §0.3 + §13, issue #78; owner answers in §12). Nothing here is implemented yet; the
 phased tasks at the end are filed as `agent-ready` issues. This document supersedes the device-action
 parts of Cloud `docs/product/workspace-v1/DEVICE-PROTOCOL.md` (§5, §13, §18) and `LINKED-DEVICES.md`
 (§23) once Phase 3 lands; until then live behaviour follows those documents.
@@ -22,7 +24,7 @@ Read as:
   (`npx @agentrouter-top/cli link`, or `agentrouter link`); the cloud Agent can act **in that folder
   only**, for as long as the command runs. Ctrl+C ends it.
 - **Two layers, nothing else.**
-  - **Linker** (now the host's **link layer**, §0.2) — the stable outbound link: identity, auth, reconnect, heartbeat,
+  - **Linker** (now `hostd`'s **link layer**, §0.3) — the stable outbound link: identity, auth, reconnect, heartbeat,
     frame relay. It has **no capabilities of its own** (no file, command, git, worktree, deploy or screen action).
   - **MCP aggregation** — everything the cloud Agent can do locally comes from local MCP servers,
     aggregated into **one MCP endpoint**, every server process confined by the OS to the started folder.
@@ -71,19 +73,35 @@ host (Cloud `PROJECT-SERVICE.md`); DSH's native tools reach the session's bound 
 「B站这个，其实最好还是第三方MCP提供」 (platform connectors are third-party MCP, not our code; generic MCP integration is
 Cloud #2201).
 
-- **The program is the host (宿主机).** It turns any machine into an execution host + view provider: the person's PC,
-  a rented Mac mini, later GPU boxes — and **also the inside of every cloud Daytona sandbox**. Daytona keeps only the
-  sandbox lifecycle (create / start / stop / snapshot / destroy); the host does execution and views (exec, files with
-  versions, stat/list, search, jobs, PTY, change feed, host info: the `host` server, §3.7). **One host protocol for every
-  execution host;** the policy differs per placement (§13.1).
+- **The program makes a machine a host (宿主机).** It turns any machine into an execution host + view provider: the
+  person's PC, a rented Mac mini, later GPU boxes, and the cloud nodes that run Daytona sandboxes. Execution and views
+  (exec, files with versions, stat/list, search, jobs, PTY, change feed, host info: the `host` tools, §3.7) are one host
+  protocol on every machine; the policy differs per placement (§13.1). Superseded by §0.3 on the same day: an earlier
+  draft of this section put the program **inside** every Daytona sandbox.
 - **Default-installed MCP bundle:** the built-in `host` server always; `serena` installed by default and started on first
   use; `files`, `git`, `shell` (DesktopCommander) leave the bundle because `host` covers them (§13.2).
-- **Third-party MCP:** from the catalog or added by the person, run under the host's rules, credentials from the vault,
+- **Third-party MCP:** from the catalog or added by the person, run in a sandbox under its policy, credentials from the vault,
   per-tool ask-first, argument audit (§13.3).
 - **Recommended MCP list:** a maintained catalog as data, searchable by Agents through a platform tool; an install
-  request goes to the host, which decides by its rules; Agent definitions preselect MCPs; people add their own (§13.4).
+  request goes to `hostd`, which decides by the sandbox's policy; Agent definitions preselect MCPs; people add their own (§13.4).
 
-## 1. Why: the structural causes this replaces
+### 0.3 Owner decisions 2026-10-20 (later): `hostd`, and sandboxes separate from the daemon
+
+> 「宿主机是不是应该说成 demon啥的」→「可以，按照这个修正吧」 · 「沙箱和具体的daemon给分离，这样反而更好」
+
+- **Names.** Machine = 宿主机 / host. Program = **Host Daemon, `hostd`** (宿主守护进程). `agentrouter link` starts it.
+- **Sandbox ≠ daemon.** A **sandbox** is an isolation boundary where commands and MCP servers run; **`hostd`** is the
+  control program of a machine. **One `hostd` per machine** (per OS user on a PC, per node in the cloud), never one per
+  sandbox. `hostd` creates and manages the sandboxes on its machine and executes into them:
+  - person's PC: the sandbox is the `srt` folder confinement of a link (§6), or none in 完全访问 (§6.4);
+  - cloud node: the sandboxes are the Daytona sandboxes on that node (lifecycle through Daytona; commands and files
+    through `hostd` into the sandbox);
+  - rented Mac mini: `srt` (Seatbelt) sandboxes per tenant lease.
+- **Why this is better:** one daemon per node shares caches and the node's single link to the cloud; fewer processes and
+  credentials (sandboxes hold none and never dial out); sandboxes stay empty and disposable; the isolation policy is a
+  per-sandbox setting (folder set, read-only, 完全访问, network list) instead of a property of a whole program. §13.1
+  has the details.
+
 
 | Today (device `main` @ #38, Cloud `dev`) | Structural problem |
 | --- | --- |
@@ -537,31 +555,41 @@ cloud↔local Agent messaging.
 
 ## 13. The host everywhere (owner 2026-10-20, §0.2)
 
-### 13.1 One host program, one protocol, a policy per placement
+### 13.1 One daemon per machine, sandboxes inside it, a policy per sandbox (owner 2026-10-20, §0.3)
 
-The same program (`agentrouter link`: link layer + aggregator + the `host` server + bundled/third-party servers) runs
-wherever an Agent needs hands. Everything in §3 is identical in every placement: frames, signing (§3.3), the `host`
-tools and their answers (§3.7), `link__*` management tools, errors, audit format. Only the policy differs:
+`hostd` (link layer + aggregator + sandbox manager) runs once per machine. Everything in §3 is the same everywhere:
+frames, signing (§3.3), the `host` tools and answers (§3.7), `link__*` management tools, errors, audit. What runs **in**
+a sandbox is a small worker — the `host` server binary of §3.7 (#69–#77) plus the sandbox's MCP servers — so the nine
+capabilities have one implementation; `hostd` itself never touches a sandbox's files or processes directly.
 
-| | Person's PC | Machine we rent (Mac mini; later GPU boxes) | Cloud Daytona sandbox |
+| | Person's PC | Rented machine (Mac mini; later GPU boxes) | Cloud node (runs Daytona sandboxes) |
 | --- | --- | --- | --- |
-| Started by | the person (`agentrouter link …`) | a service on the machine, under a dedicated OS account per tenant lease | the sandbox's entrypoint (the host is baked into the empty snapshot, Cloud PROJECT-SERVICE §7.8) |
-| Identity | device key paired by the person (§4) | device key paired by us (ops), leased to one person's session tree at a time | **no pairing:** a key pair generated in the sandbox at start; the control plane registers its public key through the lifecycle call and issues a host token bound to (sandbox id, session tree), revoked at destroy |
-| Boundary | folder mode: `srt` OS sandbox (§6); 完全访问: the person's own rights (§6.4) | 完全访问 inside the lease account (the account and the machine are the boundary); wiped between leases | **the sandbox is the boundary:** servers run without `srt`, like 完全访问 inside the container |
-| Folders | named by the person; more only with a local `y` (§5) | the lease's working folders | the session's mounted views (workspace manifest, Cloud PROJECT-SERVICE); `link__folder_add` answers `DENIED_BY_USER` |
-| Who decides server installs | the person: catalog presets run, custom ones need `y` (§5) | platform policy (as cloud) | platform policy: catalog presets named by the session's definition or the person's list; the person's own custom entries only in that person's sandboxes (§13.3) |
-| Network | catalog allow-list per server (§6.1) | catalog allow-list per server | the sandbox's egress policy + the catalog allow-list per server at the node's egress proxy |
-| Undo | checkpoints + journal (§7.2) | checkpoints | off: the project service's per-turn changesets are the undo |
-| Audit | §7.1 + `audit_head` | same | same (the chain head is the only copy outside the sandbox that matters) |
+| `hostd` started by | the person: `agentrouter link …` starts it in the foreground; a second `link` on the same computer and OS user joins the running `hostd` as another sandbox; `hostd` exits with its last link | a service on the machine (ops) | a Coolify Service on the node host, next to the Daytona runner and `project-daemon` |
+| Identity | device key paired by the person (§4) | device key paired by us, leased to one person's session tree at a time | node key paired by us; **sandboxes have no credentials** and never dial out |
+| Sandbox = | one per link: the `srt` confinement of its folders (§6); in 完全访问 no confinement (§6.4) | `srt` (Seatbelt) per tenant lease, or a per-lease OS account; wiped between leases | a Daytona sandbox (Sysbox container) from the empty snapshot (Cloud PROJECT-SERVICE §7.8) |
+| Sandbox lifecycle | `srt` via `hostd` (policy generated from the folders; ends with the link) | `srt` / lease via `hostd` | **Daytona** (create / start / stop / snapshot / destroy), called by Cloud; `hostd` adopts the sandbox when Daytona reports it running |
+| How `hostd` executes into it | spawns the worker and servers through `srt` (as §6 today) | same | starts the worker inside the container through the node's container runtime (exec with stdio; the worker binary is mounted read-only like a toolchain layer, so the snapshot stays empty); Daytona's toolbox is not used for Agent work. To verify on Sysbox in stage 3 |
+| Folders | named by the person; more only with a local `y` (§5) | the lease's working folders | the session's mounted views (Cloud workspace manifest); `link__folder_add` answers `DENIED_BY_USER` |
+| Who decides server installs | the person: catalog entries run, custom ones need `y` (§5) | platform policy | platform policy: catalog entries named by the session's definition or the person's list; the person's own entries only in that person's sandboxes (§13.3) |
+| Network (per sandbox) | catalog allow-list per server (§6.1) | same | the sandbox's egress policy + the catalog allow-list per server at the node's egress proxy |
+| Undo | checkpoints + journal (§7.2) | checkpoints | project-service changesets per turn |
+| Audit | §7.1 + `audit_head`, one chain per sandbox | same | same, kept by `hostd` outside the sandbox |
 
-- `hello.link` gains `placement: "pc" | "machine" | "cloud"` (planned field; Cloud shows hosts by placement and never
-  offers a `cloud` host to anyone outside its session tree).
-- **What Daytona keeps:** lifecycle (create / start / stop / snapshot / destroy), starting the host at boot, and the
-  port proxy for previews until the gateway gives each sandbox its own addresses. Agent execution and files stop using
-  Daytona's toolbox (`/toolbox/process/execute`, `/toolbox/files/*` in Cloud `daytona-provider.ts`); they go to the host
-  like on a PC. Cloud PROJECT-SERVICE §10.8 is the Cloud side of this split.
-- A cloud host dials out to the same gateway endpoint as a PC (`/device/v2/link`), so the relay, the MCP client and
-  the DSH plugin have one path; the sandbox needs no inbound port either.
+- **Links become sandboxes on one connection.** Each sandbox keeps its own `lnk_` id and MCP endpoint; `hostd` carries
+  all of them on its one WebSocket, so frames gain the sandbox's id (`{l, s, m}`, planned) and `hello` lists the
+  sandboxes (`info` when one is added or ends). `hello` gains `placement: "pc" | "machine" | "node"` (planned).
+- **Per-sandbox policy.** Folder set, read-only, 完全访问, network list and installed servers belong to the sandbox, so two
+  links on one PC (a folder-mode one and a 完全访问 one) are two sandboxes of one daemon.
+- **`hostd` and `project-daemon` on a cloud node: co-located, not merged.** Both run once per node and share the node
+  disk: `project-daemon` materialises views and lockfile images; `hostd` asks it over its local socket to mount a
+  session's views into a sandbox and serves Agents. Not merged because `hostd` also runs where no project service
+  exists (PCs, Mac minis), the two ship from different repositories on different cadences, and they hold different
+  privileges (`hostd` executes into sandboxes and talks to the container runtime; `project-daemon` holds the shared,
+  cross-person content cache and never executes Agent commands). A crash or bad release of one does not take the
+  other down. Revisit if they always ship together.
+- **What Daytona keeps:** sandbox lifecycle and snapshots, and the preview port proxy until the gateway gives each
+  sandbox its own addresses. Agent execution and files leave Daytona's toolbox (`/toolbox/process/execute`,
+  `/toolbox/files/*` in Cloud `daytona-provider.ts`). Cloud PROJECT-SERVICE §10.8 is the Cloud side.
 
 ### 13.2 The default-installed bundle, re-evaluated now that `host` exists
 
@@ -574,7 +602,7 @@ tools and their answers (§3.7), `link__*` management tools, errors, audit forma
 | `serena` | no | **Kept: installed by default, started on its first call** | LSP-backed symbol search, references, rename and symbol-level edits; `host__search` is text only. Language servers cost seconds and memory, so the aggregator lists its tools from the names the catalog recorded when vetting (no start for `tools/list`) and starts it on the first call. GPL-3.0-or-later: a separate process installed by pin from PyPI, never linked into or redistributed with our binary (as today) |
 | `browser` (Playwright MCP) | no | **Default on cloud compute, on demand on PCs** | Checking previews and E2E is routine in the cloud (the browser base layer, Cloud PROJECT-SERVICE §7.8); on a PC it downloads a browser and needs the open web (Q7), so it is installed when an Agent asks |
 
-How they run (unchanged): each server is a child of the aggregator inside the placement's boundary (§13.1), started from
+How they run (unchanged): each server runs inside a sandbox, spawned by `hostd` under that sandbox's policy (§13.1), started from
 the exact pinned version after the registry digest check, with the catalog's network allow-list. Bundle versions are
 pinned in the catalog; a bump is a catalog change with re-vetting (licence, archived?, last release).
 
@@ -584,12 +612,13 @@ pinned in the catalog; a bump is a catalog change with re-vetting (licence, arch
   through the pinned `mcp-remote` bridge), kept in the person's own list in Cloud; a project's `.agentrouter/mcp.json`
   (custom, §8). Platform connectors (B站, 小红书, …) are third-party servers: we vet and pin them, we do not write or
   fork them (owner 「B站这个，其实最好还是第三方MCP提供」).
-- **Install = `link__server_add` on a host,** and the host decides by its placement's rules (§13.1): on a PC a catalog
-  entry runs, a custom one needs the local `y`; on a cloud host the platform's policy decides.
-- **Same rules as the bundle:** the placement's boundary; network from the catalog, custom entries registries only
+- **Install = `link__server_add` on a sandbox,** and `hostd` decides by that sandbox's policy (§13.1): on a PC a
+  catalog entry runs, a custom one needs the local `y`; on a cloud node the platform's policy decides. The server runs
+  inside that sandbox, never in `hostd`.
+- **Same rules as the bundle:** the sandbox's boundary; network from the catalog, custom entries registries only
   unless the person declared domains when adding (on a PC in the `y` prompt); never `*` for custom (§6.1).
 - **Credentials vault:** an entry declares the secrets it needs (`credentials: [{env, label}]`). They live in Cloud's
-  vault per person and go to the host only inside the signed start of that server, as that process's environment;
+  vault per person and go to `hostd` only inside the signed start of that server, as that process's environment;
   never in tool arguments or results, never in the audit (redacted, §7.1), never in the model's context. On a PC the
   person may instead keep them local (set in the terminal or the server's own config), then they never leave the PC.
   Revoking or rotating a credential in the web restarts the server.
@@ -599,7 +628,7 @@ pinned in the catalog; a bump is a catalog change with re-vetting (licence, arch
   person's external account, not about the computer, so Cloud's MCP client asks in the conversation before sending the
   call; access to the computer stays decided on the computer (§5). Unattended sessions (triggers, public channels) cannot
   answer: such a tool fails with `ASK_UNAVAILABLE` unless the definition sets `never`, which the publish check shows.
-- **Argument audit:** every third-party call is in the host's argument-level audit (§7.1) and in Cloud's
+- **Argument audit:** every third-party call is in `hostd`'s argument-level audit (§7.1) and in Cloud's
   `platform_tool_calls` (server, tool, argument digest, ask decision). Cloud #2201 carries the Cloud side.
 
 ### 13.4 Recommended MCP catalog (data, for Agents)
@@ -611,8 +640,8 @@ pinned in the catalog; a bump is a catalog change with re-vetting (licence, arch
   package file), `tools` (names, read-only, ask default), `network`, `credentials`, `risks`, `recommended` (+ tags),
   `superseded_by` (e.g. `files` → `host`).
 - **Agents see it through one platform tool** (Cloud `mcp_catalog`): `search`, `recommend {task}` (entries with their
-  `when_to_use`), `installed {host}`, `install {id, host, reason}` → `link__server_add` on that host, which answers
-  installed / refused / waiting for the person's `y`.
+  `when_to_use`), `installed {sandbox}`, `install {id, sandbox, reason}` → `link__server_add` on that sandbox; its `hostd`
+  answers installed / refused / waiting for the person's `y`.
 - **Agent definitions preselect MCPs** (Cloud AGENT-DEFINITION §3.7); **people add their own** entries (private list;
   sharing later).
 
@@ -620,16 +649,19 @@ pinned in the catalog; a bump is a catalog change with re-vetting (licence, arch
 
 | Repo | Task |
 | --- | --- |
-| device | `placement: cloud`: start from a sandbox entrypoint, platform-issued key + token, no `srt`, no checkpoints, no `y`, `link__folder_add` refused |
+| device | One `hostd` per machine: a second `link` joins the running daemon as another sandbox; frames `{l, s, m}`, sandboxes in `hello`/`info` |
+| device | `placement: node`: `hostd` as a node service, adopting Daytona sandboxes and executing into them via the container runtime (worker mounted read-only); no `srt`, no checkpoints, no `y`, `link__folder_add` refused |
+| device | Rename to `hostd` once #69–#77 merge: binary/crate names, console text, this file → `HOSTD-MCP.md` (the `agentrouter link` command stays) |
 | device | Lazy start of bundle/catalog servers from recorded tool names (`serena`) |
 | device | Credentials in a signed server start: env for that process only, redacted everywhere |
 | cloud | Catalog as data + `mcp_catalog` tool; definitions' `mcp` field compiled into installs (AGENT-DEFINITION §3.7) |
-| cloud | Execution-host interface split: lifecycle (Daytona) vs host protocol (PROJECT-SERVICE §10.8) |
+| cloud | Execution-host interface split: sandbox lifecycle (Daytona / `srt`) vs execution and views (`hostd`) (PROJECT-SERVICE §10.8); `hostd` co-located with `project-daemon` on the node |
 | cloud | Vault entries for MCP credentials, ask-first in the MCP client, `ASK_UNAVAILABLE` (#2201) |
 
 ### 13.6 Names
 
-Docs and UI say **宿主机 / host**; "link" names only the connection (`lnk_` ids, `/device/v2/link`). Kept unchanged:
-the `agentrouter` binary, the `link` command (the person still links this machine to their account), npm
-`@agentrouter-top/cli`, crate names, and this file's name: a rename would conflict with the nine open PRs (#69–#77)
-that edit it and with Cloud references, for no behaviour gain. The file may be renamed once those have merged.
+Docs and UI copy: the machine is the **宿主机 / host**, the program is the **Host Daemon, `hostd`** (宿主守护进程), the
+isolation boundary is a **sandbox**; "link" names only the connection (`lnk_` ids, `/device/v2/link`). People keep
+running `agentrouter link`, which starts `hostd` (the command still says what the person does: link this machine to
+their account). Renaming the binary, crates, console text and this file waits until #69–#77 merge, so those nine PRs do
+not conflict; it is listed in §13.5.
