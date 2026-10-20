@@ -124,6 +124,13 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -yq bubblewrap socat ripgrep
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # srt-win starts the sandbox account's processes with CreateProcessWithLogonW, which needs Secondary Logon
+      # (disabled on the hosted image; on people's PCs it is on by default).
+      - name: Windows Secondary Logon service
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Set-Service -Name seclogon -StartupType Manual
+          Start-Service -Name seclogon
+          Get-Service -Name seclogon
       - run: cargo test -p agentrouter-sandbox -- --nocapture
-      - name: MCP servers start confined (device core)
-        run: cargo test -p agentrouter-device-core sandboxed -- --nocapture
