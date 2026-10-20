@@ -1,9 +1,7 @@
-//! `agentrouter mcp-serve workspace`: the device's workspace as an MCP stdio service (S1).
-//!
-//! The cloud installs it with the existing `device_mcp_install` (`runner: "command"`, command
-//! `agentrouter`, args `["mcp-serve", "workspace"]`); the connector resolves that command through its
-//! own shim folder (`<data>/bin/agentrouter.cmd`) so it always runs this exact binary. The connector
-//! passes `AGENTROUTER_DEVICE_HOME` and `AGENTROUTER_SESSION` in the server environment.
+//! `agentrouter mcp-serve local`: the local-Agent entry, an MCP stdio service with a self-reported local identity
+//! (`lag_`/`lses_`, #37/#38). Kept as it is pending the communication design (docs/LINKER-MCP.md §4, owner Q2); the
+//! cloud's `mcp-serve workspace` mode was deleted with the old device chain (#49): the cloud reaches a folder only
+//! through `agentrouter link` and its sandboxed MCP servers.
 //!
 //! Tools: workspace/project/worktree management (the M1 primitives) and `exec` — a command run in the
 //! person's shell inside one of those directories (the ssh-like half). Every path is checked with the
@@ -640,15 +638,11 @@ fn handle(line: &str) -> Option<Value> {
 /// Agent entry: same tools, but the caller is a locally registered `lag_`/`lses_` identity read from
 /// the launch environment, and every audit entry/dialog names it.
 pub fn run(args: &[String]) -> i32 {
-    let mode = match (args.first().map(String::as_str), args.len()) {
-        (Some("workspace"), 1) => "workspace",
-        (Some("local"), 1) => "local",
-        _ => {
-            eprintln!("用法：agentrouter mcp-serve local|workspace（stdio MCP 服务）");
-            return 2;
-        }
-    };
-    if mode == "local" {
+    if args.first().map(String::as_str) != Some("local") || args.len() != 1 {
+        eprintln!("用法：agentrouter mcp-serve local（本地 Agent 的 stdio MCP 服务）");
+        return 2;
+    }
+    {
         let identity = local_agent::Identity::from_env();
         let data = data();
         if let Err(error) = local_agent::register(&data, &identity) {

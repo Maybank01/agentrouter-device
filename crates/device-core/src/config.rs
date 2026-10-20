@@ -10,10 +10,9 @@ use crate::util::data_dir;
 
 /// Where devices connect. MVP preview: the Dev gateway (production enables devices later).
 pub const DEFAULT_GATEWAY: &str = "https://agent-gateway-dev.agentrouter.top";
-/// The cloud web app the desktop shell shows. MVP preview: Dev.
-pub const DEFAULT_WEB: &str = "https://edge-d53hmn9blslvhcuff8rjsdvt.agentrouter.top";
 
-/// The access level, chosen on the device and only on the device (the web shows it, never sets it).
+/// The access level of the old device chain. Console mode has none (the folder and `--read-only` are the boundary);
+/// only `agentrouter mcp-serve local` still reads it (deploy targets at `full`), pending its design (LINKER-MCP §4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Access {
@@ -98,54 +97,26 @@ impl fmt::Display for Access {
 #[serde(default)]
 pub struct Config {
     pub gateway: String,
-    /// The web app the desktop shell loads (same pages as the browser).
-    pub web: String,
     pub name: String,
     pub access: Access,
     pub folders: Vec<String>,
-    /// Paused: the channel is closed until the person resumes; running jobs keep running.
-    pub paused: bool,
-    /// Disconnected from the tray: every job was stopped; only the person can connect again.
-    pub disconnected: bool,
     /// Unattended (servers, CI): the machine's operator approved commands up front, at link time, on
     /// this machine. Nothing is asked at run time; everything is still audited.
     pub unattended: bool,
     /// Nobody sits at this machine (CI, headless test runs): a local question answers "no" at once
     /// instead of opening a dialog. Only this local file sets it; it can never approve anything.
     pub headless: bool,
-    /// At 「每条都确认」, read-only commands (`git status`, `ls`, `rg`, `cat` …) run without asking
-    /// (DEVICE-PROTOCOL.md §5.6). On unless the person turns it off.
-    pub readonly_commands: bool,
-    /// The person let conversations look at the screen and use mouse, keyboard and GUI programs
-    /// (`agentrouter screen on`, LINKED-DEVICES.md §20). Off by default; nothing is asked once on.
-    pub screen: bool,
-    /// Programs never shown to the AI (blacked out, no titles, no clicks), e.g. `KeePass.exe`.
-    pub private_apps: Vec<String>,
-    /// Local MCP servers (`agentrouter mcp on|off`, LINKED-DEVICES.md §23): the default bundle and the servers the
-    /// cloud delivers run here. On by default (owner 2026-10-13: 「就是默认装」); the person can turn it off.
-    pub mcp: bool,
-    /// The workspace root + project registry (`agentrouter workspace init`, workspace spec §6.1): off by
-    /// default; only then does the cloud get `workspace_ensure`/`workspace_list`. Init turns it on.
-    pub workspaces: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             gateway: DEFAULT_GATEWAY.to_string(),
-            web: DEFAULT_WEB.to_string(),
             name: crate::util::host_name(),
             access: Access::default(),
             folders: Vec::new(),
-            paused: false,
-            disconnected: false,
             unattended: false,
             headless: false,
-            readonly_commands: true,
-            screen: false,
-            private_apps: Vec::new(),
-            mcp: true,
-            workspaces: false,
         }
     }
 }

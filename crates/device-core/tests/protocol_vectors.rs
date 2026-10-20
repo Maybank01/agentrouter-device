@@ -2,7 +2,7 @@
 //! with the same canonical JSON and Node's Ed25519 as agentrouter-cloud `linked-devices/protocol.ts`.
 
 use agentrouter_device::protocol::{
-    ControlKey, DeviceKey, ReplayCache, args_digest, canonical_json, check_request, js_number,
+    ControlKey, DeviceKey, ReplayCache, args_digest, canonical_json, js_number, verify,
 };
 use serde_json::Value;
 
@@ -40,16 +40,29 @@ fn keys_and_signatures_match_node() {
         public_key: v["pub"].as_str().unwrap().to_string(),
     };
     assert!(control.is_consistent());
-    let args: Value = serde_json::from_str(v["argsText"].as_str().unwrap()).unwrap();
+    // Node's signature over a signed string verifies here (the same Ed25519 the link signature v3 uses).
     let request = &v["request"];
+    let field = |k: &str| request[k].as_str().unwrap().to_string();
+    let text = format!(
+        "agentrouter-device-request/v1\n{}\n{}\n{}\n{}\n{}\n{}",
+        field("device"),
+        field("session"),
+        field("action"),
+        field("digest"),
+        request["exp"].as_i64().unwrap(),
+        field("nonce")
+    );
+    assert!(verify(&control.public_key, &text, &field("sig")));
+    assert!(!verify(
+        &control.public_key,
+        &format!("{text}x"),
+        &field("sig")
+    ));
     let exp = request["exp"].as_i64().unwrap();
-    let device = request["device"].as_str().unwrap();
     let mut replay = ReplayCache::default();
-    let ok = check_request(request, &args, &control, device, exp - 30_000, &mut replay).unwrap();
-    assert_eq!(ok.session, "ags_test");
-    assert_eq!(ok.action, "exec");
-    // The same request again is a replay.
-    let again =
-        check_request(request, &args, &control, device, exp - 30_000, &mut replay).unwrap_err();
-    assert_eq!(again.code, "REPLAYED");
+    assert!(replay.remember(&field("nonce"), exp, exp - 30_000));
+    assert!(
+        !replay.remember(&field("nonce"), exp, exp - 30_000),
+        "a replay"
+    );
 }

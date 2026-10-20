@@ -1,30 +1,26 @@
-//! AgentRouter linked device: an outbound-only link that lets the person's cloud conversations use the local
-//! MCP servers on this computer (files, git, terminal, Windows UI, …), within the access level chosen here.
-//!
-//! Protocol: agentrouter-cloud `docs/product/workspace-v1/DEVICE-PROTOCOL.md`. Design and security
-//! rules: `LINKED-DEVICES.md` (§5, §6). The cloud is never trusted: every request is signature-checked
-//! and then passes the local gate (access level, folders, local confirmation), and is audited.
+//! AgentRouter device core: what the console mode keeps from the device side — pairing and the token
+//! (`net`, `link`, `keystore`), the protocol primitives, the argument-level audit, pinned MCP packages
+//! (`mcp_pkg`), config and helpers. The link is `agentrouter-linker`, the MCP endpoint `agentrouter-aggregator`
+//! (docs/LINKER-MCP.md). `exec`, `shell`, `confine`/`confined`, `consent`, `deploy`, `workspace`, `worktree`,
+//! `gate`, `lockfile` and `local_agent` stay only for `agentrouter mcp-serve local` (local Agents, pending the
+//! communication design, LINKER-MCP §4).
 
 pub mod audit;
-pub mod checkpoint;
 pub mod config;
 pub mod confine;
 #[cfg(windows)]
 pub mod confined;
 pub mod consent;
 pub mod deploy;
-pub mod device;
 pub mod exec;
 pub mod gate;
 pub mod keystore;
 pub mod link;
 pub mod local_agent;
 pub mod lockfile;
-pub mod mcp;
 pub mod mcp_pkg;
 pub mod net;
 pub mod protocol;
-pub mod screen;
 pub mod shell;
 pub mod util;
 pub mod workspace;

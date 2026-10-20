@@ -1,5 +1,5 @@
-//! The device's workspace MCP service as the cloud runs it: a stdio server started with
-//! `agentrouter mcp-serve workspace`, `AGENTROUTER_DEVICE_HOME` and `AGENTROUTER_SESSION`.
+//! The local-Agent MCP entry: a stdio server started with
+//! `agentrouter mcp-serve local`, `AGENTROUTER_DEVICE_HOME` and `AGENTROUTER_LOCAL_SESSION` (the workspace mode is gone, #49).
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -27,7 +27,7 @@ impl Client {
     ) -> Client {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_agentrouter"));
         cmd.arg("mcp-serve")
-            .arg("workspace")
+            .arg("local")
             .env("AGENTROUTER_DEVICE_HOME", data)
             .env("USERPROFILE", home)
             .env("HOME", home)
@@ -35,7 +35,7 @@ impl Client {
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
         if let Some(session) = session {
-            cmd.env("AGENTROUTER_SESSION", session);
+            cmd.env("AGENTROUTER_LOCAL_SESSION", session);
         }
         for (key, value) in envs {
             cmd.env(key, value);
@@ -218,18 +218,6 @@ fn catastrophic_commands_are_denied() {
     let (error, text) = client.tool("exec", json!({"command": "format C: /y"}));
     assert!(error, "{text}");
     assert!(text.contains("DENIED") || text.contains("拒绝"), "{text}");
-}
-
-#[test]
-fn worktree_create_needs_a_session() {
-    let data = temp("nosession-data");
-    let home = temp("nosession-home");
-    let mut client = Client::start(&data, &home, None);
-    let (error, text) = client.tool("workspace_create", json!({"name": "mod"}));
-    assert!(!error, "{text}");
-    let (error, text) = client.tool("worktree_create", json!({"project": "mod"}));
-    assert!(error, "{text}");
-    assert!(text.contains("WORKSPACE_SESSION_INVALID"), "{text}");
 }
 
 fn config(data: &Path, unattended: bool, folders: &[&Path]) {
@@ -613,17 +601,6 @@ fn local_entry_registers_identity_and_exposes_the_workspace_tools() {
     assert_eq!(
         agentrouter_device::audit::verify(&data.join("audit.log")),
         Ok(7)
-    );
-    // `agentrouter agent list` shows it.
-    let output = Command::new(env!("CARGO_BIN_EXE_agentrouter"))
-        .args(["agent", "list"])
-        .env("AGENTROUTER_DEVICE_HOME", &data)
-        .output()
-        .unwrap();
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("lag_dsh") && stdout.contains("lses_conv-1"),
-        "{stdout}"
     );
 }
 
