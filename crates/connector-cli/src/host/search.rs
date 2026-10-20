@@ -323,8 +323,9 @@ mod tests {
     use super::super::tests::{host_in, temp};
     use super::*;
 
-    fn tree() -> PathBuf {
-        let dir = temp("search");
+    /// A tree of its own per test (tests run in parallel).
+    fn tree(name: &str) -> PathBuf {
+        let dir = temp(name);
         std::fs::create_dir_all(dir.join(".git")).unwrap();
         std::fs::create_dir_all(dir.join("src/nested")).unwrap();
         std::fs::create_dir_all(dir.join("build")).unwrap();
@@ -358,7 +359,7 @@ mod tests {
 
     #[test]
     fn content_search_follows_ripgreps_rules() {
-        let dir = tree();
+        let dir = tree("search-content");
         let host = host_in(&dir);
         let out = host.search(&json!({"pattern": "needle"})).unwrap();
         // .gitignore'd build/, the hidden file and the binary file are skipped; UTF-16 is transcoded.
@@ -410,7 +411,7 @@ mod tests {
 
     #[test]
     fn files_mode_is_rg_files_with_globs_and_sorting() {
-        let dir = tree();
+        let dir = tree("search-files");
         let host = host_in(&dir);
         let out = host
             .search(&json!({"mode": "files", "globs": ["*.rs", "*.ts"]}))
