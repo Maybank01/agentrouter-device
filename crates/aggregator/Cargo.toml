@@ -1,0 +1,26 @@
+[package]
+name = "agentrouter-aggregator"
+description = "AgentRouter device: the MCP aggregator — one MCP endpoint towards the link, an MCP client towards every local server (each OS-confined to the folder), signature check, argument-level audit, checkpoints (docs/LINKER-MCP.md §2, §3.3–§3.5, §5, §7)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "agentrouter_aggregator"
+
+[dependencies]
+agentrouter-device-core.workspace = true
+agentrouter-sandbox.workspace = true
+rmcp = { version = "3.6", default-features = false, features = ["base64", "client", "server", "transport-child-process"] }
+serde_json.workspace = true
+sha2 = "0.11"
+tokio = { workspace = true, features = ["rt", "macros", "sync", "time", "process", "io-util"] }
+tokio-util = { version = "0.7", default-features = false }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util"] }
