@@ -230,7 +230,18 @@ impl Host {
                     match reader.read(&mut buf) {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
-                            pty.state.lock().unwrap().out.push(&buf[..n]);
+                            // A cursor position query (ConPTY sends one at start and waits for the answer, as
+                            // TUIs do): answered like a terminal would, from the top-left corner.
+                            let chunk = &buf[..n];
+                            let queries = chunk.windows(4).filter(|w| *w == b"\x1b[6n").count();
+                            if queries > 0 {
+                                let mut writer = pty.writer.lock().unwrap();
+                                for _ in 0..queries {
+                                    let _ = writer.write_all(b"\x1b[1;1R");
+                                }
+                                let _ = writer.flush();
+                            }
+                            pty.state.lock().unwrap().out.push(chunk);
                             pty.changed.notify_all();
                         }
                     }
@@ -340,8 +351,38 @@ mod tests {
     use super::super::tests::{host_in, temp};
     use super::*;
 
+    /// The text without terminal control sequences (ConPTY repaints with cursor moves between words).
+    fn plain(raw: &str) -> String {
+        let mut out = String::new();
+        let mut chars = raw.chars();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                match chars.next() {
+                    Some('[') => {
+                        for c in chars.by_ref() {
+                            if c.is_ascii_alphabetic() || c == '~' {
+                                break;
+                            }
+                        }
+                    }
+                    Some(']') => {
+                        for c in chars.by_ref() {
+                            if c == '\x07' || c == '\x1b' {
+                                break;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            } else if c != '\r' {
+                out.push(c);
+            }
+        }
+        out
+    }
+
     fn read_until(host: &Host, id: &str, needle: &str) -> String {
-        let mut text = String::new();
+        let (mut raw, mut text) = (String::new(), String::new());
         let mut offset = 0;
         let until = Instant::now() + Duration::from_secs(20);
         while !text.contains(needle) && Instant::now() < until {
@@ -351,7 +392,8 @@ mod tests {
                     &Call::detached(),
                 )
                 .unwrap();
-            text.push_str(r["data"].as_str().unwrap());
+            raw.push_str(r["data"].as_str().unwrap());
+            text = plain(&raw);
             offset = r["next_offset"].as_u64().unwrap();
         }
         text
