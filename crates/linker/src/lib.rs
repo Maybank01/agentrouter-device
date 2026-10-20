@@ -317,7 +317,8 @@ async fn connection(
     }
     let mut last_rx = Instant::now();
     let welcome_by = Instant::now() + WELCOME_WAIT;
-    let mut heartbeat = tokio::time::interval(HEARTBEAT);
+    // The first beat goes right after `welcome`; the timer starts one period later.
+    let mut heartbeat = tokio::time::interval_at(Instant::now() + HEARTBEAT, HEARTBEAT);
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let head = |options: &Options| {
         let h = (options.audit_head)();
