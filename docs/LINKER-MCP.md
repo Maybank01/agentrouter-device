@@ -715,3 +715,32 @@ pinned in the catalog; a bump is a catalog change with re-vetting (licence, arch
 The program is **`hostd`** (Host Daemon, 宿主守护进程; owner 2026-10-20, §0.3); "link" names only the connection (`lnk_`
 ids, `/device/v2/link`). People keep running `agentrouter link`, which starts `hostd`. Renaming the binary, crates,
 console text and this file waits until #69–#77 merge, so those nine PRs do not conflict (#80).
+
+### 13.7 Generic MCP integration: what `hostd` adds (Cloud MCP-INTEGRATION, 2026-10-20)
+
+Cloud `docs/development/MCP-INTEGRATION.md` (#2201, docs PR Maybank01/agentrouter-cloud#2238) owns the catalog, actions
+and views. The `hostd` side it needs, beyond §13.1–§13.5:
+
+- **Account home.** A credentialed catalog entry (`placement: account_home`, e.g. `bilibili`) runs on exactly one `hostd`
+  per (person, credential), whatever environment a session binds; one process per credential (`per_credential: 1`), so
+  one IP, one cookie refresher, one poller. Sessions on other hosts (or with no environment) call it through the gateway.
+- **Credential tools are host-only.** Tools the catalog lists as `credential_tools` (`bilibili_login`, `…_login_check`,
+  `…_refresh_cookie`) are never in `tools/list` for the cloud; Cloud's login card asks the account home to run them and
+  shows the QR to the person. A credential is delivered in the signed server start as env or a file in the server's own
+  data directory (outside every linked folder), never as an argument (§13.5).
+- **Write-back (new frame):** when a server rewrites its credential file (B站 cookie rotation), `hostd` sends a signed
+  `credential_update {server, name, sealed value}`; Cloud accepts it only from that account home for that server's
+  declared names. Local-only credentials (§13.3) are never sent.
+- **Result redaction (new):** `hostd` replaces any value it delivered to a server (exact and URL-encoded) with `[secret]`
+  in that server's results before they leave the host.
+- **Feed poller (new frames):** for entries that declare feeds, `hostd` calls the read tool on the catalog's interval
+  (floor per entry, jitter, idle backoff, unread-count gate), extracts items by the declared paths and sends
+  `view_items {feed, items, cursor}`; it advances its cursor only after Cloud's ack (Cloud dedupes by item id). Polls run
+  only while Cloud says the feed has subscribers; no model calls.
+- **Rate-limit backstop (new):** per-server, per-tool limits arrive in the signed start; over them a call fails with
+  `RATE_LIMITED` (added to §3.5) even if Cloud let it through.
+- **Lifecycle:** lazy start from recorded tool names, idle stop (default 10 min, kept up while a feed is active), crash
+  backoff, per-host cap on running third-party servers (PC 8, cloud 4).
+
+Follow-ups D1–D6 are listed in that doc §8.3 (D1, D2, D6 extend §13.5; D3 write-back + redaction, D4 feed poller, D5
+rate backstop are new).
