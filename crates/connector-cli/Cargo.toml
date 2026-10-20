@@ -29,6 +29,8 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "ti
 ctrlc = { version = "3", features = ["termination"] }
 serde_json.workspace = true
 sha2 = "0.11"
+# ripgrep's directory walker (.gitignore/.ignore rules, sorted walks): BurntSushi/ripgrep, Unlicense OR MIT.
+ignore = "0.4.33"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
