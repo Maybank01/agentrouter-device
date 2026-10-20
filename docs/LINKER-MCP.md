@@ -96,6 +96,13 @@ Cloud #2201).
   adding a place means running `hostd` there, nothing else. MCP servers are the same everywhere: the default ones and
   third-party ones (e.g. Bilibili) run under `hostd`, in a sandbox or on a PC, with the same catalog, credentials and
   audit (§13).
+- **`hostd` connects a machine space** (owner 2026-10-20: 「也就是说，daemon实际上是接入了一个空间？」 — yes). Everything
+  is a space: stored spaces (作品, memory, Agent definitions) are connected by the Cloud Space Server, machine spaces
+  (a sandbox, a PC, a Mac mini: files, processes, terminals) by `hostd`, external spaces (a Bilibili comment section or
+  DM inbox) by third-party MCP servers running under `hostd`. Tools observe and control spaces through views.
+- **`hostd` is not a space client.** It does exec, processes, terminals, the machine's local files, isolation, audit
+  and MCP. Stored spaces reach a cloud sandbox through a separate **space client** (Cloud), which `hostd` calls to
+  mount views; on a PC the Agent works on real folders, so no space client runs there unless a 作品 is synced to it.
 - The one-page picture across Cloud and this repository: Cloud `docs/development/ARCHITECTURE-OVERVIEW.md`.
 
 ## 1. Why: the structural causes this replaces
