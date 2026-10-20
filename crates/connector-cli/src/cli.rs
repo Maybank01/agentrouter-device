@@ -60,6 +60,9 @@ const USAGE: &str = "AgentRouter 小助手（agentrouter）：把这台电脑链
                                 撤销 AI 的改动：不写检查点就撤销当前文件夹最近一轮改动；--list 列出检查点
   agentrouter audit [条数]       看最近的审计记录（默认 20 条，含参数；密钥不记）
   agentrouter audit verify      检查审计日志有没有被改过
+  agentrouter sandbox setup|status|remove
+                                本机工具的隔离环境：每个本机工具只能改链接的文件夹，读不到密钥文件夹；
+                                setup 装好它（Windows 会弹一次管理员确认），remove 全部删掉
 
 （agentrouter-device 是同一个程序的旧名字，用法一样。）
 ";
@@ -183,6 +186,7 @@ pub fn main() {
         "workspace" => cmd_workspace(flags),
         "agent" => cmd_agent(flags),
         "audit" => cmd_audit(flags),
+        "sandbox" => cmd_sandbox(flags),
         "version" | "--version" | "-V" => {
             println!("agentrouter {}", env!("CARGO_PKG_VERSION"));
             0
@@ -197,6 +201,59 @@ pub fn main() {
         }
     };
     std::process::exit(code);
+}
+
+/// `agentrouter sandbox setup|status|remove` (docs/LINKER-MCP.md §6, #42).
+fn cmd_sandbox(flags: Flags) -> i32 {
+    let rt = agentrouter_sandbox::Runtime::new(&data_dir());
+    let report = |done: Result<Vec<String>, String>| match done {
+        Ok(lines) if lines.is_empty() => {
+            println!("没有要做的。");
+            0
+        }
+        Ok(lines) => {
+            for l in lines {
+                println!("{l}");
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            1
+        }
+    };
+    match flags.positional.first().map(String::as_str) {
+        Some("setup") => {
+            let code = report(rt.setup());
+            if code == 0 {
+                print_sandbox_status(&rt.status());
+            }
+            code
+        }
+        Some("remove") => report(rt.remove()),
+        None | Some("status") => {
+            let st = rt.status();
+            print_sandbox_status(&st);
+            if st.ready { 0 } else { 1 }
+        }
+        Some(other) => {
+            eprintln!("不认识的 sandbox 子命令：{other}（setup、status 或 remove）");
+            2
+        }
+    }
+}
+
+fn print_sandbox_status(st: &agentrouter_sandbox::Status) {
+    println!(
+        "隔离环境 {}（{}）：{}",
+        st.backend,
+        st.mechanism,
+        if st.ready { "可用" } else { "不可用" }
+    );
+    for p in &st.problems {
+        println!("  {}", p.message);
+        println!("  {}", p.next);
+    }
 }
 
 /// One running copy per user: a lock file held open for the app's lifetime.

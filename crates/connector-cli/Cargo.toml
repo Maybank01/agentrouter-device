@@ -19,6 +19,7 @@ path = "src/alias.rs"
 
 [dependencies]
 agentrouter-device-core.workspace = true
+agentrouter-sandbox.workspace = true
 # termination: Ctrl+Break and closing the console window also stop jobs and disconnect.
 ctrlc = { version = "3", features = ["termination"] }
 serde_json.workspace = true

@@ -26,6 +26,7 @@ name = "agentrouter-device-cli"
 version = "0.1.0"
 dependencies = [
  "agentrouter-device-core",
+ "agentrouter-sandbox",
  "ctrlc",
  "embed-resource",
  "libc",
@@ -37,6 +38,7 @@ dependencies = [
 name = "agentrouter-device-core"
 version = "0.1.0"
 dependencies = [
+ "agentrouter-sandbox",
  "base64 0.23.1",
  "ed25519-dalek",
  "getrandom 0.4.3",
@@ -53,6 +55,15 @@ dependencies = [
  "tungstenite",
  "ureq",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "agentrouter-sandbox"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.4.3",
+ "serde_json",
+ "sha2 0.11.0",
 ]
 
 [[package]]

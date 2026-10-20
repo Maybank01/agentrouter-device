@@ -2,36 +2,12 @@
 //! a call with text and image content, secrets blanked, restart after a crash, stop.
 
 use std::sync::atomic::AtomicBool;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use agentrouter_device::config::Access;
 use agentrouter_device::gate::Scope;
 use agentrouter_device::mcp::{McpHost, resolve_command};
-use serde_json::{Value, json};
-
-const SERVER: &str = r#"
-import sys, json, os
-for line in sys.stdin:
-    m = json.loads(line)
-    i, method = m.get("id"), m.get("method")
-    if i is None:
-        continue
-    if method == "initialize":
-        r = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}}, "serverInfo": {"name": "fake", "version": "1"}}
-    elif method == "tools/list":
-        r = {"tools": [{"name": "echo", "description": "echo", "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}}},
-                       {"name": "die", "description": "exit", "inputSchema": {"type": "object"}}]}
-    elif method == "tools/call":
-        name = m["params"]["name"]
-        if name == "die":
-            sys.exit(3)
-        text = m["params"]["arguments"].get("text", "") + " " + os.environ.get("FAKE_KEY", "")
-        r = {"content": [{"type": "text", "text": text}, {"type": "image", "data": "iVBORw0KGgo=", "mimeType": "image/png"}]}
-    else:
-        print(json.dumps({"jsonrpc": "2.0", "id": i, "error": {"code": -32601, "message": "no"}}), flush=True)
-        continue
-    print(json.dumps({"jsonrpc": "2.0", "id": i, "result": r}), flush=True)
-"#;
+use serde_json::json;
 
 fn python() -> Option<String> {
     // A real interpreter (Windows has python3.exe stubs that only open the Store).
@@ -47,32 +23,22 @@ fn python() -> Option<String> {
         .map(|p| p.display().to_string())
 }
 
-fn wait_until(host: &McpHost, name: &str, done: impl Fn(&Value) -> bool) -> Value {
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        let list = host.list().unwrap();
-        let server = list["servers"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|s| s["name"] == name)
-            .cloned()
-            .unwrap_or(Value::Null);
-        if done(&server) || Instant::now() > deadline {
-            return server;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
-
 #[test]
-fn a_stdio_server_starts_answers_restarts_and_stops() {
+fn without_the_sandbox_a_server_does_not_start_at_all() {
+    // #42: every server runs inside the OS sandbox; a device without it refuses, never runs unconfined. (The host's
+    // relay behaviour is replaced by the aggregator, which has its own tests.)
     let Some(python) = python() else {
         eprintln!("no python: skipped");
         return;
     };
-    let dir = std::env::temp_dir().join(format!("ar-mcp-test-{}", std::process::id()));
-    let host = McpHost::new(&dir);
+    let exe = std::env::current_exe().unwrap();
+    let dir = exe
+        .parent()
+        .and_then(std::path::Path::parent)
+        .unwrap()
+        .join(format!("ar-mcp-test-{}", std::process::id()));
+    let marker = dir.join("ran.txt");
+    let host = McpHost::new(&dir.join("data"));
     host.set(true);
     let scope = Scope {
         access: Access::Folders,
@@ -80,57 +46,15 @@ fn a_stdio_server_starts_answers_restarts_and_stops() {
         deny: vec![],
     };
     let cancel = AtomicBool::new(false);
+    let script = format!("open(r'{}','w').write('ran')", marker.display());
     let start = json!({
-        "name": "fake", "command": python, "args": ["-u", "-c", SERVER],
-        "env": {"FAKE_KEY": "very-secret-1"}, "secretEnv": ["FAKE_KEY"], "hash": "h1", "waitMs": 20000,
+        "name": "fake", "command": python, "args": ["-u", "-c", script], "hash": "h1", "waitMs": 5000,
     });
-    let started = host.start(&scope, "s1", &start, &cancel, None).unwrap();
-    assert_eq!(started["state"], "ready", "{started}");
-    assert_eq!(started["tools"].as_array().unwrap().len(), 2);
-    assert!(!started.to_string().contains("very-secret-1"));
-
-    let call = |tool: &str| {
-        host.call(
-            &scope,
-            "s1",
-            &json!({"name": "fake", "tool": tool, "arguments": {"text": "hi"}, "hash": "h1", "timeoutMs": 10000}),
-            &cancel,
-        )
-    };
-    let answer = call("echo").unwrap();
-    assert_eq!(answer["content"][0]["text"], "hi [secret]");
-    assert_eq!(answer["content"][1]["type"], "image");
-
-    // A crash: the call fails, the host starts it again.
-    assert!(call("die").is_err());
-    // The exit is seen a moment later than the failed call: wait for the restarted one, not the old state.
-    let again = wait_until(&host, "fake", |s| {
-        s["state"] == "ready" && s["restarts"] == 1
-    });
-    assert_eq!(again["restarts"], 1, "{again}");
-    assert_eq!(call("echo").unwrap()["content"][0]["text"], "hi [secret]");
-
-    // Unknown server, then stop.
-    let missing = host
-        .call(
-            &scope,
-            "s1",
-            &json!({"name": "nope", "tool": "echo"}),
-            &cancel,
-        )
-        .unwrap_err();
-    assert_eq!(missing.code, "MCP_NOT_RUNNING");
-    assert_eq!(
-        host.stop("s1", &json!({"name": "fake"})).unwrap()["stopped"],
-        true
-    );
-    assert!(
-        host.list().unwrap()["servers"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
-    host.set(false);
+    let refused = host.start(&scope, "s1", &start, &cancel, None).unwrap_err();
+    assert_eq!(refused.code, "SANDBOX_UNAVAILABLE", "{refused:?}");
+    assert!(refused.next.is_some(), "tells the person what to run");
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(!marker.exists(), "nothing ran unconfined");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -9,7 +9,6 @@ use std::process::Command;
 
 use agentrouter_device::checkpoint::{self, Change};
 use agentrouter_device::config::Access;
-use agentrouter_device::util::short_id;
 use agentrouter_device::workspace;
 use agentrouter_device::worktree;
 use common::{ControlPlane, call, device_workspaces, temp_dir};
@@ -341,33 +340,10 @@ fn mcp_start_runs_in_the_session_worktree() {
             "waitMs": 60_000,
         }),
     )
-    .unwrap();
-    assert_eq!(start["state"], "ready", "{start}");
-    assert_eq!(start["cwd"], worktree_dir);
-    let result = call(
-        &d,
-        &cp,
-        "mcp_call",
-        json!({"name": "probe", "tool": "probe", "arguments": {}}),
-    )
-    .unwrap();
-    let text = result["content"][0]["text"].as_str().unwrap_or_default();
-    let (cwd, expect) = text.split_once('|').unwrap_or((text, ""));
-    assert_eq!(
-        PathBuf::from(cwd),
-        PathBuf::from(&worktree_dir),
-        "the server's process cwd is the session worktree"
-    );
-    assert_eq!(
-        PathBuf::from(expect),
-        PathBuf::from(&worktree_dir),
-        "{{worktree}} was substituted in the environment"
-    );
-    // A long session id still works (the session id is the worktree directory name).
-    let long_session = format!("ags_{}", short_id("").repeat(6));
-    assert_eq!(long_session.len(), 64);
-    let long_worktree = worktree_create(&d, &cp, "mod-arena", &long_session);
-    assert!(PathBuf::from(long_worktree["worktreeDir"].as_str().unwrap()).is_dir());
+    .unwrap_err();
+    // #42: a server never starts outside the OS sandbox (the worktree path itself goes with #49).
+    assert_eq!(start.0, "SANDBOX_UNAVAILABLE", "{start:?}");
+    let _ = worktree_dir;
 }
 
 #[test]

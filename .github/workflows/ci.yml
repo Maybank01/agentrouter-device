@@ -94,3 +94,48 @@ jobs:
           name: agentrouter-windows-x64-unsigned
           path: dist/
           retention-days: 14
+
+  # The OS boundary every local MCP server runs in (issue #42, docs/LINKER-MCP.md §6): installs the pinned srt,
+  # provisions the Windows sandbox account, and proves that writes, deletes, hook plants, ~/.ssh reads and direct
+  # connections from a confined process (and its child shell) fail. Only here: it changes the runner machine.
+  sandbox:
+    name: Sandbox (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Linux, os: ubuntu-latest }
+          - { name: macOS, os: macos-latest }
+          - { name: Windows, os: windows-latest }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    # Windows: srt-win's broker starts the sandbox account's runner with CreateProcessWithLogonW, which the hosted
+    # runner refuses (ERROR_ACCESS_DENIED although Secondary Logon runs: the runner's service/job context). The
+    # Windows boundary is verified on a real Windows PC until a self-hosted interactive runner exists; the job still
+    # runs so a change in that behaviour shows up.
+    continue-on-error: ${{ matrix.name == 'Windows' }}
+    env:
+      AGENTROUTER_SANDBOX_TESTS: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Linux sandbox dependencies (bubblewrap, socat, ripgrep; user namespaces)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq bubblewrap socat ripgrep
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # srt-win starts the sandbox account's processes with CreateProcessWithLogonW, which needs Secondary Logon
+      # (disabled on the hosted image; on people's PCs it is on by default).
+      - name: Windows Secondary Logon service
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Set-Service -Name seclogon -StartupType Manual
+          Start-Service -Name seclogon
+          Get-Service -Name seclogon
+      - run: cargo test -p agentrouter-sandbox -- --nocapture
