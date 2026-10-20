@@ -110,6 +110,8 @@ pub enum Feed {
     Call {
         title: String,
         server: String,
+        /// The server's display title (`文件`, `Git`, …).
+        server_title: String,
         tool: String,
         /// A short hint of the arguments (a path, a command).
         hint: String,
@@ -127,8 +129,27 @@ pub enum Feed {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     Ok,
-    ToolError,
+    /// The tool answered `isError` (the first words of its text): an OS refusal outside the folder lands here.
+    ToolError(String),
     Denied(String),
+}
+
+/// Whether a tool's error text is the OS refusing a path (the sandbox boundary).
+pub fn is_boundary_refusal(text: &str) -> bool {
+    let t = text.to_ascii_lowercase();
+    [
+        "eacces",
+        "eperm",
+        "erofs",
+        "permission denied",
+        "access is denied",
+        "read-only file system",
+        "operation not permitted",
+        "outside allowed directories",
+        "access denied",
+    ]
+    .iter()
+    .any(|p| t.contains(p))
 }
 
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
@@ -547,6 +568,7 @@ impl Inner {
             self.hooks.feed(Feed::Call {
                 title: session.map(|s| s.title.clone()).unwrap_or_default(),
                 server: server.to_string(),
+                server_title: self.title_of(server),
                 tool: tool.to_string(),
                 hint: hint_of(params.get("arguments").unwrap_or(&Value::Null)),
                 outcome: Outcome::Denied(failure.code.to_string()),
@@ -651,7 +673,12 @@ impl Inner {
                 let result = message.get("result").cloned().unwrap_or(Value::Null);
                 entry["result"] = audit::result_summary(&result);
                 if result.get("isError").and_then(Value::as_bool) == Some(true) {
-                    Outcome::ToolError
+                    let text = result
+                        .get("content")
+                        .and_then(Value::as_array)
+                        .and_then(|c| c.iter().find_map(|i| i.get("text").and_then(Value::as_str)))
+                        .unwrap_or("");
+                    Outcome::ToolError(agentrouter_device::util::clip(text, 200))
                 } else {
                     Outcome::Ok
                 }
@@ -667,6 +694,7 @@ impl Inner {
             if p.method == "tools/call" && p.server != "link" {
                 self.hooks.feed(Feed::Call {
                     title: session.title.clone(),
+                    server_title: self.title_of(&p.server),
                     server: p.server,
                     tool: p.tool,
                     hint: p.hint,
@@ -676,6 +704,15 @@ impl Inner {
             }
         }
         self.send(s, message);
+    }
+
+    fn title_of(&self, server: &str) -> String {
+        self.servers
+            .lock()
+            .unwrap()
+            .get(server)
+            .map(|s| s.def.title.clone())
+            .unwrap_or_else(|| server.to_string())
     }
 
     fn servers_view(&self) -> Value {
