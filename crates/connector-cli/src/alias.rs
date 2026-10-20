@@ -2,6 +2,7 @@
 
 #[path = "cli.rs"]
 mod cli;
+mod console;
 #[path = "mcp_serve.rs"]
 mod mcp_serve;
 

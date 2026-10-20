@@ -43,12 +43,17 @@ version = "0.1.0"
 name = "agentrouter-device-cli"
 version = "0.1.0"
 dependencies = [
+ "agentrouter-aggregator",
+ "agentrouter-checkpoint",
  "agentrouter-device-core",
+ "agentrouter-linker",
  "agentrouter-sandbox",
+ "chrono",
  "ctrlc",
  "embed-resource",
  "libc",
  "serde_json",
+ "tokio",
  "windows-sys 0.61.2",
 ]
 

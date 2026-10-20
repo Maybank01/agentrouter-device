@@ -18,8 +18,13 @@ name = "agentrouter-device"
 path = "src/alias.rs"
 
 [dependencies]
+agentrouter-aggregator.workspace = true
+agentrouter-checkpoint.workspace = true
 agentrouter-device-core.workspace = true
+agentrouter-linker.workspace = true
 agentrouter-sandbox.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 # termination: Ctrl+Break and closing the console window also stop jobs and disconnect.
 ctrlc = { version = "3", features = ["termination"] }
 serde_json.workspace = true
