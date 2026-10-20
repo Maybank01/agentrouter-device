@@ -241,14 +241,19 @@ any other (§6), run with the person's rights in 完全访问 (§6.4). The aggre
 
 | Tool | Arguments | Answer (`structuredContent`) |
 | --- | --- | --- |
-| `host__exec` | `command`, `cwd?` (default: the first folder), `timeout_s?` (1–600, default 120) | `exit_code` (null on timeout), `timed_out`, `stdout`, `stderr` (each ≤ 256 KiB, a clip marker inside), `cwd`, `shell`, `ms` |
+| `host__exec` | `command`, `cwd?` (default: the first folder), `timeout_s?` (1–600, default 120) | `exit_code` (null on timeout, cancel or a signal), `signal` (Unix), `timed_out`, `cancelled`, `stdout`, `stderr` (each ≤ 256 KiB, a clip marker inside), `cwd`, `shell`, `ms`; streamed while it runs (below) |
 | `host__read` | `path`, `offset?`, `length?` (≤ 4 MiB, default whole file up to that), `encoding?` `utf8`/`base64`, `sha256?` | `path` (absolute, real), `size`, `offset`, `length`, `eof`, `encoding`, `data`, `sha256` (whole file, when asked) |
 | `host__write` | `path`, `data`, `encoding?` `utf8`/`base64`, `offset?`, `truncate?` | `path`, `size`, `written` |
 | `host__stat` | `paths` (≤ 1000), `content_max?` (≤ 256 KiB) | `entries`: per path `path` (real), `exists`, `kind` `file`/`dir`/`symlink`/`other`, `size`, `mtime_ms`, `readonly`, `symlink?`, `error?`; files up to `content_max` also `data` + `encoding` (utf8, else base64; ≤ 4 MiB per call) |
 | `host__list` | `path` or `paths` (≤ 64), `depth?` (1–16, default 1), `hidden?` (default true), `ignore?` (.gitignore/.ignore like ripgrep, default false), `limit?` (default 5000) | `listings`: per folder `path`, `entries` (`name` relative, `kind`, `size`, `mtime_ms`; sorted by name, pre-order), `truncated`; or `error` |
+| `host__search` | `mode` `files` (= `rg --files`) / `content` (= `rg --regexp`, default), `pattern`, `path?`, `cwd?`, `globs?` (rg `--glob`, `!` excludes), `hidden?`, `no_ignore?`, `ignore_case?`, `fixed_strings?`, `sort?` `path`/`modified`, `max_results?` (default 10 000), `max_line_bytes?` (default 2000), `timeout_s?` | `root`; files: `paths`; content: `matches` (`path`, `line_number`, `text` without its line ending, or base64 `bytes` for non-UTF-8, `clipped?`), `files`; both `count` (all), `truncated`, `timed_out`. ripgrep's own crates: .gitignore/.ignore/.rgignore inside a git repo, hidden skipped, NUL = binary (walked files skipped, a named file converted), BOM-sniffed UTF-16, Rust regex; paths as `rg` prints them; order = path (or mtime ascending) |
 
 - The shell is real: `/bin/sh -lc` on Linux/macOS, PowerShell (`pwsh`, else Windows PowerShell) on Windows; `shell`
   names it. The command's whole process tree ends on timeout (process group / job object). Paths are real; relative ones resolve against the first folder.
+- **Streamed output:** a `host__exec` call that carries `_meta.progressToken` gets its stdout/stderr as it arrives, as
+  `notifications/progress` (`progress` counts up; `message` = the JSON text of `{"stream": "stdout"|"stderr", "data":
+  "<utf-8>"}`, pushed every 100 ms or 32 KiB, characters never split, ≤ 16 MiB per stream). `notifications/cancelled`
+  for a running call ends the command's whole process tree (answer `cancelled: true`); so does the timeout.
 - `host__write` without `offset` creates or replaces the file (parents created); with `offset` it writes there,
   after truncating to `offset` when `truncate` is true (chunked transfer: first chunk `offset: 0, truncate: true`).
 - A write the OS refuses answers `isError` with the OS text (the console shows 拦下：在文件夹外).

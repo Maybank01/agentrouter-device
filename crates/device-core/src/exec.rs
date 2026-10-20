@@ -20,13 +20,18 @@ const STREAM_CAP: usize = 256 << 10;
 pub const TIMEOUT_DEFAULT_MS: u64 = 60_000;
 pub const TIMEOUT_MAX_MS: u64 = 10 * 60_000;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Outcome {
     pub stdout: String,
     pub stderr: String,
+    /// `None` when the command did not end by itself (timeout, cancel) or ended by a signal.
     pub exit_code: Option<i32>,
     pub timed_out: bool,
     pub duration_ms: u64,
+    /// Ended because the caller cancelled it.
+    pub cancelled: bool,
+    /// The signal that ended it (Unix), when it was not ours.
+    pub signal: Option<i32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,13 +101,13 @@ pub fn classify(command: &str) -> Danger {
     Danger::Safe
 }
 
-fn clip_stream(bytes: &[u8]) -> String {
-    let text = String::from_utf8_lossy(bytes);
-    if bytes.len() <= STREAM_CAP {
+/// The kept head of a stream (`total` bytes were written), with a marker when some was dropped.
+fn clip_stream(kept: &[u8], total: usize) -> String {
+    let text = String::from_utf8_lossy(kept);
+    if total <= kept.len() {
         return text.trim_end().to_string();
     }
-    let head = String::from_utf8_lossy(&bytes[..STREAM_CAP]);
-    format!("{head}\n…（输出被截断，共 {} 字节）", bytes.len())
+    format!("{text}\n…（输出被截断，共 {total} 字节）")
 }
 
 #[cfg(windows)]
@@ -161,68 +166,70 @@ impl Drop for Job {
     }
 }
 
-fn read_stream(mut stream: impl Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
-    std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let mut taken = std::io::Read::by_ref(&mut stream).take(STREAM_CAP as u64);
-        let _ = taken.read_to_end(&mut buf);
-        buf
-    })
+/// One of a command's two output streams.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stream {
+    Stdout,
+    Stderr,
 }
 
-/// End the command and everything it started (the shell may have exited already).
-fn kill_tree(child: &mut std::process::Child) {
+/// What a streamed run reports while it runs: a chunk of output as it arrives, or a tick (at least every 20 ms) so
+/// the caller can flush what it holds.
+pub enum Event<'a> {
+    Output(Stream, &'a [u8]),
+    Tick,
+}
+
+/// A shell command started in its own process group (Unix) or kill-on-close job object (Windows), so the whole tree
+/// it starts can be ended at once; dropping it ends the tree.
+pub struct Spawned {
+    pub child: std::process::Child,
     #[cfg(windows)]
-    {
-        let _ = child.kill();
-    }
-    #[cfg(unix)]
-    {
-        // SAFETY: the pid belongs to the process group we created for this command.
-        unsafe {
-            libc::kill(-(child.id() as i32), libc::SIGKILL);
+    job: Option<Job>,
+}
+
+impl Spawned {
+    /// End the command and everything it started (the shell may have exited already).
+    pub fn kill_tree(&mut self) {
+        #[cfg(unix)]
+        {
+            // SAFETY: the pid leads the process group we created for this command; ESRCH when it is gone.
+            unsafe {
+                libc::kill(-(self.child.id() as i32), libc::SIGKILL);
+            }
         }
-        let _ = child.kill();
+        #[cfg(windows)]
+        {
+            // Closing a kill-on-close job ends its whole tree.
+            self.job.take();
+        }
+        let _ = self.child.kill();
+    }
+
+    /// Send the whole tree a polite stop first (Unix SIGTERM; Windows has none for a console tree, so it ends it).
+    pub fn terminate_tree(&mut self) {
+        #[cfg(unix)]
+        // SAFETY: as in kill_tree.
+        unsafe {
+            libc::kill(-(self.child.id() as i32), libc::SIGTERM);
+        }
+        #[cfg(windows)]
+        self.kill_tree();
     }
 }
 
-/// Unconfined run (access level `full`: the person explicitly asked for unrestricted commands).
-pub fn run(command: &str, cwd: &Path, timeout: Duration) -> Result<Outcome, String> {
-    run_inner(command, cwd, timeout)
-}
-
-/// Confined run for the workspace MCP service (access level `folders`, S2b): the exec cwd is labelled
-/// Low by confine.rs and, on Windows, the command runs in a low-integrity restricted token with a Low
-/// TEMP/caches. On Unix there is no portable OS write boundary yet (documented in README): the gate,
-/// deny/consent, audit and process group are what apply.
-pub fn run_confined(
-    command: &str,
-    cwd: &Path,
-    timeout: Duration,
-    data_dir: &Path,
-) -> Result<Outcome, String> {
-    let confinement = crate::confine::Confinement::new(data_dir);
-    let sandbox = confinement
-        .prepare_command(cwd)
-        .map_err(|e| format!("{}: {}", e.code, e.message))?;
-    #[cfg(windows)]
-    if let Some(sandbox) = sandbox.as_ref() {
-        return crate::confined::run(
-            command,
-            cwd,
-            timeout,
-            sandbox,
-            &crate::shell::default_shell(),
-        );
+impl Drop for Spawned {
+    fn drop(&mut self) {
+        if matches!(self.child.try_wait(), Ok(None)) {
+            self.kill_tree();
+            let _ = self.child.wait();
+        }
     }
-    #[cfg(not(windows))]
-    let _ = sandbox;
-    run_inner(command, cwd, timeout)
 }
 
-/// Run `command` with the device's shell in `cwd`. `timeout` kills the process tree (Windows job) or
-/// the child (elsewhere); the output is capped. The caller validates `cwd` first.
-fn run_inner(command: &str, cwd: &Path, timeout: Duration) -> Result<Outcome, String> {
+/// The device's shell running `command` in `cwd` (PowerShell on Windows, `/bin/sh -lc` elsewhere): stdout and
+/// stderr piped, stdin as given. The caller validates `cwd` first.
+pub fn spawn_shell(command: &str, cwd: &Path, stdin: Stdio) -> Result<Spawned, String> {
     #[cfg(windows)]
     let shell = crate::shell::default_shell();
     #[cfg(windows)]
@@ -238,7 +245,7 @@ fn run_inner(command: &str, cwd: &Path, timeout: Duration) -> Result<Outcome, St
         c
     };
     cmd.current_dir(cwd)
-        .stdin(Stdio::null())
+        .stdin(stdin)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     // A connector started from PowerShell 7 inherits its PSModulePath; a *Windows PowerShell 5.1*
@@ -269,7 +276,7 @@ fn run_inner(command: &str, cwd: &Path, timeout: Duration) -> Result<Outcome, St
             });
         }
     }
-    let started = Instant::now();
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("命令起不来（{}）：{e}", cwd.display()))?;
@@ -289,46 +296,167 @@ fn run_inner(command: &str, cwd: &Path, timeout: Duration) -> Result<Outcome, St
             return Err(format!("建不了作业对象：{e}"));
         }
     };
-    let out_reader = child.stdout.take().map(read_stream);
-    let err_reader = child.stderr.take().map(read_stream);
-    let deadline = started + timeout;
-    let mut timed_out = false;
-    let exit_code = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status.code(),
-            Ok(None) => {}
-            Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("等命令结果出错：{e}"));
+    Ok(Spawned {
+        child,
+        #[cfg(windows)]
+        job,
+    })
+}
+
+/// Read `stream` in chunks into `tx` until it ends.
+fn pump(
+    mut stream: impl Read + Send + 'static,
+    which: Stream,
+    tx: std::sync::mpsc::Sender<(Stream, Vec<u8>)>,
+) {
+    std::thread::spawn(move || {
+        let mut buf = vec![0u8; 64 << 10];
+        loop {
+            match stream.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if tx.send((which, buf[..n].to_vec())).is_err() {
+                        break;
+                    }
+                }
             }
+        }
+    });
+}
+
+/// Unconfined run (access level `full`: the person explicitly asked for unrestricted commands).
+pub fn run(command: &str, cwd: &Path, timeout: Duration) -> Result<Outcome, String> {
+    run_streaming(command, cwd, timeout, &|| false, &mut |_| {})
+}
+
+/// Confined run for the workspace MCP service (access level `folders`, S2b): the exec cwd is labelled
+/// Low by confine.rs and, on Windows, the command runs in a low-integrity restricted token with a Low
+/// TEMP/caches. On Unix there is no portable OS write boundary yet (documented in README): the gate,
+/// deny/consent, audit and process group are what apply.
+pub fn run_confined(
+    command: &str,
+    cwd: &Path,
+    timeout: Duration,
+    data_dir: &Path,
+) -> Result<Outcome, String> {
+    let confinement = crate::confine::Confinement::new(data_dir);
+    let sandbox = confinement
+        .prepare_command(cwd)
+        .map_err(|e| format!("{}: {}", e.code, e.message))?;
+    #[cfg(windows)]
+    if let Some(sandbox) = sandbox.as_ref() {
+        return crate::confined::run(
+            command,
+            cwd,
+            timeout,
+            sandbox,
+            &crate::shell::default_shell(),
+        );
+    }
+    #[cfg(not(windows))]
+    let _ = sandbox;
+    run(command, cwd, timeout)
+}
+
+/// Run `command` with the device's shell in `cwd`, handing every chunk of output to `on_event` as it arrives (and a
+/// tick at least every 20 ms). `timeout` and `cancel` end the whole process tree; whatever the command left running
+/// when the shell exits is ended too. The output kept in the [`Outcome`] is capped per stream.
+pub fn run_streaming(
+    command: &str,
+    cwd: &Path,
+    timeout: Duration,
+    cancel: &dyn Fn() -> bool,
+    on_event: &mut dyn FnMut(Event<'_>),
+) -> Result<Outcome, String> {
+    let started = Instant::now();
+    let mut spawned = spawn_shell(command, cwd, Stdio::null())?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    if let Some(out) = spawned.child.stdout.take() {
+        pump(out, Stream::Stdout, tx.clone());
+    }
+    if let Some(err) = spawned.child.stderr.take() {
+        pump(err, Stream::Stderr, tx.clone());
+    }
+    drop(tx);
+    let deadline = started + timeout;
+    let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+    let (mut stdout_total, mut stderr_total) = (0usize, 0usize);
+    let mut status: Option<std::process::ExitStatus> = None;
+    let mut timed_out = false;
+    let mut cancelled = false;
+    let mut streams_open = true;
+    // After the shell ends, what it left behind is ended and the pipes get a short time to drain (a daemon that
+    // escaped the group must not hold the answer forever).
+    let mut drain_until: Option<Instant> = None;
+    loop {
+        match rx.recv_timeout(Duration::from_millis(20)) {
+            Ok((which, bytes)) => {
+                let (keep, total) = match which {
+                    Stream::Stdout => (&mut stdout, &mut stdout_total),
+                    Stream::Stderr => (&mut stderr, &mut stderr_total),
+                };
+                *total += bytes.len();
+                let room = STREAM_CAP.saturating_sub(keep.len());
+                keep.extend_from_slice(&bytes[..bytes.len().min(room)]);
+                on_event(Event::Output(which, &bytes));
+                continue;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => streams_open = false,
+        }
+        on_event(Event::Tick);
+        if status.is_none() {
+            match spawned.child.try_wait() {
+                Ok(Some(s)) => status = Some(s),
+                Ok(None) => {}
+                Err(e) => {
+                    spawned.kill_tree();
+                    let _ = spawned.child.wait();
+                    return Err(format!("等命令结果出错：{e}"));
+                }
+            }
+        }
+        if status.is_some() {
+            if drain_until.is_none() {
+                spawned.kill_tree();
+                drain_until = Some(Instant::now() + Duration::from_secs(2));
+            }
+            if !streams_open || drain_until.is_some_and(|t| Instant::now() >= t) {
+                break;
+            }
+            continue;
         }
         if Instant::now() >= deadline {
             timed_out = true;
-            kill_tree(&mut child);
-            let _ = child.wait();
-            break None;
+        } else if cancel() {
+            cancelled = true;
+        } else {
+            continue;
         }
-        std::thread::sleep(Duration::from_millis(20));
-    };
-    // Nothing a finished command left behind may keep the pipes open and hang the readers.
-    #[cfg(unix)]
-    {
-        // SAFETY: a pid we spawned in its own process group; ESRCH when the group is already gone.
-        unsafe {
-            libc::kill(-(child.id() as i32), libc::SIGKILL);
-        }
+        spawned.kill_tree();
+        status = spawned.child.wait().ok();
+        drain_until = Some(Instant::now() + Duration::from_secs(2));
     }
-    #[cfg(windows)]
-    drop(job);
-    let stdout_bytes = out_reader.and_then(|r| r.join().ok()).unwrap_or_default();
-    let stderr_bytes = err_reader.and_then(|r| r.join().ok()).unwrap_or_default();
+    let ended = timed_out || cancelled;
+    #[cfg(unix)]
+    let signal = {
+        use std::os::unix::process::ExitStatusExt;
+        status.and_then(|s| s.signal()).filter(|_| !ended)
+    };
+    #[cfg(not(unix))]
+    let signal = None;
     Ok(Outcome {
-        stdout: clip_stream(&stdout_bytes),
-        stderr: clip_stream(&stderr_bytes),
-        exit_code,
+        stdout: clip_stream(&stdout, stdout_total),
+        stderr: clip_stream(&stderr, stderr_total),
+        exit_code: if ended {
+            None
+        } else {
+            status.and_then(|s| s.code())
+        },
         timed_out,
         duration_ms: started.elapsed().as_millis() as u64,
+        cancelled,
+        signal,
     })
 }
 

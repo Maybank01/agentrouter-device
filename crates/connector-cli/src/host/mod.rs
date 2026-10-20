@@ -8,23 +8,25 @@
 //! `docs/development/PROJECT-SERVICE.md` §10.6): DSH's native file, search and command tools reach the computer
 //! through these tools, so they answer in the shapes those tools need (batched metadata, ripgrep semantics, …).
 //!
-//! One module per concern: [`files`] (read, write, stat, list).
+//! One module per concern: [`files`] (read, write, stat, list), [`search`] (ripgrep), [`run`] (commands, streamed).
+//! Every call runs on its own thread with a [`Call`]: its progress token (output streams as MCP progress) and its
+//! cancel flag (`notifications/cancelled` ends what it runs).
 
 mod files;
+mod run;
+mod search;
 
+use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use serde_json::{Value, json};
-
-use agentrouter_device::exec;
 
 const PROTOCOL: &str = "2025-06-18";
 /// One read or write carries at most this much (a transfer chunk; base64 stays under the 8 MiB link frame).
 pub const CHUNK_MAX: u64 = 4 << 20;
-const TIMEOUT_DEFAULT_S: u64 = 120;
 
 /// One tool's listing entry. `read_only` drives the aggregator's checkpoints (§7.2): only tools that change nothing
 /// may say so.
@@ -36,23 +38,61 @@ fn tool(name: &str, description: &str, schema: Value, read_only: bool) -> Value 
 }
 
 fn tools() -> Value {
-    let mut all = vec![tool(
-        "exec",
-        "Run a command in this computer's shell (/bin/sh -lc on Linux/macOS, PowerShell on Windows), like over ssh. cwd defaults to the link's first folder; paths are real.",
-        json!({"type": "object", "properties": {
-            "command": {"type": "string"},
-            "cwd": {"type": "string"},
-            "timeout_s": {"type": "integer", "minimum": 1, "maximum": exec::TIMEOUT_MAX_MS / 1000},
-        }, "required": ["command"]}),
-        false,
-    )];
+    let mut all = run::tools();
     all.extend(files::tools());
+    all.extend(search::tools());
     Value::Array(all)
 }
 
 /// What the server knows: the linked folders (the first is home).
 struct Host {
     folders: Vec<PathBuf>,
+    /// Cancel flags of the calls running now, by JSON-RPC id.
+    calls: Mutex<HashMap<String, Arc<AtomicBool>>>,
+}
+
+type Notify = Arc<dyn Fn(&Value) + Send + Sync>;
+
+/// One running `tools/call`.
+struct Call {
+    /// `params._meta.progressToken`: present when the caller wants progress (streamed output).
+    token: Option<Value>,
+    cancelled: Arc<AtomicBool>,
+    seq: AtomicU64,
+    notify: Notify,
+}
+
+impl Call {
+    #[cfg(test)]
+    fn detached() -> Call {
+        Call {
+            token: None,
+            cancelled: Arc::default(),
+            seq: AtomicU64::new(0),
+            notify: Arc::new(|_| {}),
+        }
+    }
+
+    fn cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Relaxed)
+    }
+
+    /// Whether anyone listens to progress.
+    fn streams(&self) -> bool {
+        self.token.is_some()
+    }
+
+    /// `notifications/progress` with `message` = the JSON text of `event` (the only free-form field MCP progress
+    /// has; the aggregator passes it through unchanged). `progress` counts up.
+    fn progress(&self, event: &Value) {
+        let Some(token) = &self.token else { return };
+        let n = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
+        (self.notify)(
+            &json!({"jsonrpc": "2.0", "method": "notifications/progress", "params": {
+                "progressToken": token, "progress": n, "message": event.to_string(),
+            }}),
+        );
+    }
 }
 
 fn shown(path: &Path) -> String {
@@ -89,6 +129,13 @@ fn arg_paths(args: &Value, max: usize) -> Result<Vec<String>, String> {
 }
 
 impl Host {
+    fn new(folders: Vec<PathBuf>) -> Host {
+        Host {
+            folders,
+            calls: Mutex::default(),
+        }
+    }
+
     fn home(&self) -> PathBuf {
         self.folders
             .first()
@@ -119,44 +166,16 @@ impl Host {
         })
     }
 
-    fn call(&self, tool: &str, args: &Value) -> Result<Value, String> {
+    fn call(&self, tool: &str, args: &Value, call: &Call) -> Result<Value, String> {
         match tool {
-            "exec" => self.exec(args),
+            "exec" => self.exec(args, call),
             "read" => self.read(args),
             "write" => self.write(args),
             "stat" => self.stat(args),
             "list" => self.list(args),
+            "search" => self.search(args, call),
             other => Err(format!("没有这个工具：{other}")),
         }
-    }
-
-    fn exec(&self, args: &Value) -> Result<Value, String> {
-        let command = arg_str(args, "command").unwrap_or("");
-        if command.trim().is_empty() {
-            return Err("command 不能是空的".into());
-        }
-        let cwd = match arg_str(args, "cwd") {
-            Some(c) if !c.trim().is_empty() => self.resolve(c)?,
-            _ => self.home(),
-        };
-        if !cwd.is_dir() {
-            return Err(format!("{} 不是一个文件夹", shown(&cwd)));
-        }
-        let timeout = args
-            .get("timeout_s")
-            .and_then(Value::as_u64)
-            .unwrap_or(TIMEOUT_DEFAULT_S)
-            .clamp(1, exec::TIMEOUT_MAX_MS / 1000);
-        let out = exec::run(command, &cwd, Duration::from_secs(timeout))?;
-        Ok(json!({
-            "exit_code": out.exit_code,
-            "timed_out": out.timed_out,
-            "stdout": out.stdout,
-            "stderr": out.stderr,
-            "cwd": shown(&cwd),
-            "shell": shell_name(),
-            "ms": out.duration_ms,
-        }))
     }
 }
 
@@ -222,9 +241,17 @@ fn handle(
             );
         }
     };
-    let id = m.get("id").cloned().filter(|v| !v.is_null())?;
     let method = m.get("method").and_then(Value::as_str).unwrap_or("");
     let params = m.get("params").cloned().unwrap_or(json!({}));
+    if method == "notifications/cancelled" {
+        if let Some(id) = params.get("requestId")
+            && let Some(flag) = host.calls.lock().unwrap().get(&id.to_string())
+        {
+            flag.store(true, Ordering::Relaxed);
+        }
+        return None;
+    }
+    let id = m.get("id").cloned().filter(|v| !v.is_null())?;
     match method {
         "initialize" => Some(answer(
             &id,
@@ -240,11 +267,32 @@ fn handle(
             let host = host.clone();
             let out = out.clone();
             running.retain(|h| !h.is_finished());
+            let key = id.to_string();
+            let cancelled = Arc::new(AtomicBool::new(false));
+            host.calls
+                .lock()
+                .unwrap()
+                .insert(key.clone(), cancelled.clone());
+            let notify: Notify = {
+                let out = out.clone();
+                Arc::new(move |v: &Value| write_line(&out, v))
+            };
             running.push(std::thread::spawn(move || {
                 let tool = params.get("name").and_then(Value::as_str).unwrap_or("");
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
-                let reply = answer(&id, tool_result(host.call(tool, &args)));
-                write_line(&out, &reply);
+                let call = Call {
+                    token: params
+                        .get("_meta")
+                        .and_then(|m| m.get("progressToken"))
+                        .filter(|t| t.is_string() || t.is_number())
+                        .cloned(),
+                    cancelled,
+                    seq: AtomicU64::new(0),
+                    notify,
+                };
+                let outcome = host.call(tool, &args, &call);
+                host.calls.lock().unwrap().remove(&key);
+                write_line(&out, &answer(&id, tool_result(outcome)));
             }));
             None
         }
@@ -263,9 +311,7 @@ fn write_line(out: &Arc<Mutex<std::io::Stdout>>, value: &Value) {
 
 /// `agentrouter mcp-serve host <folder>…`.
 pub fn run(args: &[String]) -> i32 {
-    let host = Arc::new(Host {
-        folders: args.iter().map(PathBuf::from).collect(),
-    });
+    let host = Arc::new(Host::new(args.iter().map(PathBuf::from).collect()));
     let out = Arc::new(Mutex::new(std::io::stdout()));
     let mut running = Vec::new();
     for line in std::io::stdin().lock().lines().map_while(Result::ok) {
@@ -303,26 +349,7 @@ mod tests {
     }
 
     pub(super) fn host_in(dir: &Path) -> Host {
-        Host {
-            folders: vec![dir.to_path_buf()],
-        }
-    }
-
-    #[test]
-    fn exec_runs_in_the_first_folder_and_reports_it() {
-        let dir = temp("exec");
-        std::fs::write(dir.join("marker.txt"), "x").unwrap();
-        let host = host_in(&dir);
-        let command = if cfg!(windows) {
-            "Get-ChildItem -Name"
-        } else {
-            "ls"
-        };
-        let out = host.exec(&json!({"command": command})).unwrap();
-        assert_eq!(out["exit_code"], json!(0));
-        assert!(out["stdout"].as_str().unwrap().contains("marker.txt"));
-        assert_eq!(out["cwd"], json!(shown(&dir)));
-        let _ = std::fs::remove_dir_all(&dir);
+        Host::new(vec![dir.to_path_buf()])
     }
 
     #[test]
@@ -330,7 +357,7 @@ mod tests {
         let list = tools();
         let tools = list.as_array().unwrap();
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["exec", "read", "write", "stat", "list"]);
+        assert_eq!(names, ["exec", "read", "write", "stat", "list", "search"]);
         for t in tools {
             let name = t["name"].as_str().unwrap();
             let read_only = t["annotations"]["readOnlyHint"].as_bool().unwrap();
