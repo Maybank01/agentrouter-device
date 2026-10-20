@@ -374,6 +374,16 @@ struct Server {
     logs: Mutex<VecDeque<String>>,
     next_id: AtomicI64,
     stopping: AtomicBool,
+    /// The OS sandbox it runs in (#42); `None` only for the device's own builtin service.
+    confine: Option<Confine>,
+}
+
+/// What the sandbox launcher needs to start one server confined to the linked folders.
+struct Confine {
+    runtime: agentrouter_sandbox::Runtime,
+    folders: Vec<PathBuf>,
+    network: Vec<String>,
+    readable: Vec<PathBuf>,
 }
 
 impl Server {
@@ -700,6 +710,18 @@ impl McpHost {
         // A catalog package runs only as the checked file (MCP_PACKAGE_NEEDED: the cloud sends it first).
         self.packages.apply(spec.pin.as_ref(), &mut spec.args)?;
         let builtin = is_builtin(&spec);
+        // The catalog's network list for this server (its sandbox allows these beside the package mirrors).
+        let network: Vec<String> = args
+            .get("network")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .take(32)
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default();
         let wait = args
             .get("waitMs")
             .and_then(Value::as_u64)
@@ -828,9 +850,26 @@ impl McpHost {
                         logs: Mutex::new(VecDeque::new()),
                         next_id: AtomicI64::new(1),
                         stopping: AtomicBool::new(false),
+                        confine: (!builtin).then(|| Confine {
+                            runtime: agentrouter_sandbox::Runtime::new(&self.data_dir),
+                            folders: scope.folders.clone(),
+                            network,
+                            // The device's shim and the checked catalog packages run from the hidden data folder.
+                            readable: vec![
+                                self.data_dir.join("bin"),
+                                self.data_dir.join("mcp-packages"),
+                            ],
+                        }),
                     });
                     if let Err(e) = launch(&server, &program) {
-                        return Err(error("MCP_START_FAILED", format!("没能启动：{e}")));
+                        return Err(match e {
+                            LaunchError::Sandbox(u) => {
+                                error(agentrouter_sandbox::UNAVAILABLE, u.message).next(u.next)
+                            }
+                            LaunchError::Spawn(e) => {
+                                error("MCP_START_FAILED", format!("没能启动：{e}"))
+                            }
+                        });
                     }
                     servers.insert(key, server.clone());
                     server
@@ -985,17 +1024,61 @@ impl McpHost {
     }
 }
 
-/// Start the process, its readers and the handshake (in the background).
-fn launch(server: &Arc<Server>, program: &Path) -> Result<(), String> {
-    let mut cmd = Command::new(program);
-    cmd.args(&server.spec.args)
-        .current_dir(&server.cwd)
-        .stdin(Stdio::piped())
+enum LaunchError {
+    Sandbox(agentrouter_sandbox::Unavailable),
+    Spawn(String),
+}
+
+impl std::fmt::Display for LaunchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LaunchError::Sandbox(u) => write!(f, "{}: {u}", agentrouter_sandbox::UNAVAILABLE),
+            LaunchError::Spawn(e) => f.write_str(e),
+        }
+    }
+}
+
+impl From<String> for LaunchError {
+    fn from(e: String) -> LaunchError {
+        LaunchError::Spawn(e)
+    }
+}
+
+impl From<&str> for LaunchError {
+    fn from(e: &str) -> LaunchError {
+        LaunchError::Spawn(e.to_string())
+    }
+}
+
+/// Start the process, its readers and the handshake (in the background). Every server except the device's own
+/// builtin runs inside the OS sandbox (#42); when the sandbox cannot run, nothing runs (no unconfined fallback).
+fn launch(server: &Arc<Server>, program: &Path) -> Result<(), LaunchError> {
+    let mut cmd = match &server.confine {
+        Some(c) => c
+            .runtime
+            .command(&agentrouter_sandbox::Launch {
+                key: &server_key(&server.spec.name, &server.cwd),
+                program,
+                args: &server.spec.args,
+                env: &server.spec.env,
+                cwd: &server.cwd,
+                folders: &c.folders,
+                network: &c.network,
+                readable: &c.readable,
+            })
+            .map_err(LaunchError::Sandbox)?,
+        None => {
+            let mut cmd = Command::new(program);
+            cmd.args(&server.spec.args).current_dir(&server.cwd);
+            for (k, v) in &server.spec.env {
+                cmd.env(k, v);
+            }
+            cmd
+        }
+    };
+    cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    for (k, v) in &server.spec.env {
-        cmd.env(k, v);
-    }
     // Python servers print UTF-8; tell them so (Windows consoles default to the ANSI code page).
     cmd.env("PYTHONIOENCODING", "utf-8").env("PYTHONUTF8", "1");
     #[cfg(unix)]
@@ -1202,7 +1285,7 @@ fn exited(server: Arc<Server>, generation: u64) {
         match resolve_command(&server.spec.command) {
             Some(program) => {
                 if let Err(e) = launch(&server, &program) {
-                    server.set_state(State::Crashed, Some(e));
+                    server.set_state(State::Crashed, Some(e.to_string()));
                 }
             }
             None => server.set_state(State::Crashed, Some("command not found".into())),
@@ -1241,7 +1324,7 @@ fn exited(server: Arc<Server>, generation: u64) {
     match resolve_command(&server.spec.command) {
         Some(program) => {
             if let Err(e) = launch(&server, &program) {
-                server.set_state(State::Crashed, Some(e));
+                server.set_state(State::Crashed, Some(e.to_string()));
             }
         }
         None => server.set_state(State::Crashed, Some("command not found".into())),

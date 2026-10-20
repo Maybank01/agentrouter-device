@@ -37,8 +37,8 @@ pub const ENTRY_JS: &str = include_str!("entry.cjs");
 /// srt needs Node 22.12 or later.
 pub const NODE_MIN: (u32, u32) = (22, 12);
 /// The loopback ports srt's proxies may use on Windows (the WFP fence permits only these). srt's default is ten
-/// ports (two per server); the device runs up to eight servers.
-pub const WINDOWS_PROXY_PORTS: (u16, u16) = (60080, 60179);
+/// ports (two per server) and srt-win accepts at most 65; 64 ports cover far more servers than one link runs.
+pub const WINDOWS_PROXY_PORTS: (u16, u16) = (60080, 60143);
 /// The error code a call gets when its server cannot be confined (never run unconfined instead).
 pub const UNAVAILABLE: &str = "SANDBOX_UNAVAILABLE";
 
@@ -428,9 +428,12 @@ impl Runtime {
             .map(|p| shown(&p))
             .collect();
         deny_read.dedup();
+        // The runtime lives in the hidden data folder; its helpers that run inside the sandbox (Linux
+        // `apply-seccomp`, the Windows entry) must stay readable there.
         let mut allow_read: Vec<String> = launch
             .readable
             .iter()
+            .chain(std::iter::once(&self.package_dir()))
             .filter(|p| p.exists())
             .map(|p| shown(&plain(p)))
             .collect();
@@ -742,7 +745,15 @@ mod tests {
     }
 
     fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
+        // Under the build's own target folder (never the system temp one, docs/AV-HYGIENE.md): the unit-test
+        // binary is `<target>/debug/deps/<name>`.
+        let exe = std::env::current_exe().unwrap();
+        let target = exe
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+            .expect("target folder");
+        let dir = target.join("tmp").join(format!(
             "agentrouter-sandbox-unit-{name}-{}",
             std::process::id()
         ));
