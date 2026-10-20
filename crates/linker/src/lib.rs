@@ -334,6 +334,9 @@ async fn connection(
                         match on_text(text.as_str(), events) {
                             Inbound::None => {}
                             Inbound::Welcome(link) => {
+                                // Anything queued before this welcome answers a request of an earlier connection:
+                                // the gateway already answered it LINK_LOST, so it is never replayed.
+                                while out_rx.try_recv().is_ok() {}
                                 *welcomed = true;
                                 let _ = events.send(Event::Up { link });
                                 if ws.send(Message::text(head(options).to_string())).await.is_err() {
