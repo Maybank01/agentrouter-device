@@ -22,6 +22,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentrouter-checkpoint"
+version = "0.1.0"
+
+[[package]]
 name = "agentrouter-device-cli"
 version = "0.1.0"
 dependencies = [
