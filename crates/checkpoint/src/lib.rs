@@ -170,12 +170,14 @@ impl Shadow {
     /// Files over [`FILE_MAX`] stay out (in the shadow's own `info/exclude`); the snapshot size, or an error when
     /// it is over [`TOTAL_MAX`].
     fn limit_sizes(&self) -> Result<u64, String> {
+        // Only the folder's own .gitignore files: `--exclude-standard` would also apply our info/exclude, and a big
+        // file left out last time would then be missed, snapshotted, and removed by the next restore.
         let listed = self.run(&[
             "ls-files",
             "-z",
             "--cached",
             "--others",
-            "--exclude-standard",
+            "--exclude-per-directory=.gitignore",
         ])?;
         let mut total = 0u64;
         let mut big = Vec::new();
