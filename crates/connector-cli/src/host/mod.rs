@@ -184,25 +184,60 @@ impl Host {
         })
     }
 
-    fn call(&self, tool: &str, args: &Value, call: &Call) -> Result<Value, String> {
-        match tool {
-            "exec" => self.exec(args, call),
-            "read" => self.read(args),
-            "write" => self.write(args),
-            "stat" => self.stat(args),
-            "list" => self.list(args),
-            "search" => self.search(args, call),
-            "job_start" => self.job_start(args),
-            "job_read" => self.job_read(args, call),
-            "job_stop" => self.job_stop(args),
-            "jobs" => self.jobs_list(),
-            "pty_open" => self.pty_open(args),
-            "pty_write" => self.pty_write(args),
-            "pty_read" => self.pty_read(args, call),
-            "pty_resize" => self.pty_resize(args),
-            "pty_close" => self.pty_close(args),
-            other => Err(format!("没有这个工具：{other}")),
+    fn call(&self, tool: &str, args: &Value, call: &Call) -> Result<Value, Fail> {
+        Ok(match tool {
+            "exec" => self.exec(args, call)?,
+            "read" => self.read(args)?,
+            "write" => self.write(args)?,
+            "stat" => self.stat(args)?,
+            "list" => self.list(args)?,
+            "search" => self.search(args, call)?,
+            "job_start" => self.job_start(args)?,
+            "job_read" => self.job_read(args, call)?,
+            "job_stop" => self.job_stop(args)?,
+            "jobs" => self.jobs_list()?,
+            "pty_open" => self.pty_open(args)?,
+            "pty_write" => self.pty_write(args)?,
+            "pty_read" => self.pty_read(args, call)?,
+            "pty_resize" => self.pty_resize(args)?,
+            "pty_close" => self.pty_close(args)?,
+            other => return Err(format!("没有这个工具：{other}").into()),
+        })
+    }
+}
+
+/// A tool's failure: a sentence for the model, and for the ones a client branches on a stable `code` plus data
+/// (`structuredContent` of the `isError` result).
+#[derive(Debug)]
+pub(super) struct Fail {
+    message: String,
+    code: Option<&'static str>,
+    data: Value,
+}
+
+impl Fail {
+    pub(super) fn coded(code: &'static str, message: String, data: Value) -> Fail {
+        Fail {
+            message,
+            code: Some(code),
+            data,
         }
+    }
+}
+
+impl From<String> for Fail {
+    fn from(message: String) -> Fail {
+        Fail {
+            message,
+            code: None,
+            data: Value::Null,
+        }
+    }
+}
+
+impl From<&str> for Fail {
+    fn from(message: &str) -> Fail {
+        Fail::from(message.to_string())
     }
 }
 
@@ -240,7 +275,7 @@ fn shorten_big(value: &mut Value) {
     }
 }
 
-fn tool_result(outcome: Result<Value, String>) -> Value {
+fn tool_result(outcome: Result<Value, Fail>) -> Value {
     match outcome {
         // The bytes go once (structuredContent): the text copy leaves a big `data` out, so a 4 MiB base64 chunk
         // stays under the 8 MiB link frame.
@@ -249,7 +284,23 @@ fn tool_result(outcome: Result<Value, String>) -> Value {
             shorten_big(&mut text);
             json!({"content": [{"type": "text", "text": text.to_string()}], "structuredContent": v, "isError": false})
         }
-        Err(e) => json!({"content": [{"type": "text", "text": e}], "isError": true}),
+        Err(Fail {
+            message,
+            code: None,
+            ..
+        }) => json!({"content": [{"type": "text", "text": message}], "isError": true}),
+        Err(Fail {
+            message,
+            code: Some(code),
+            data,
+        }) => {
+            let mut structured = json!({"code": code, "message": message});
+            if let Value::Object(extra) = data {
+                structured.as_object_mut().unwrap().extend(extra);
+            }
+            json!({"content": [{"type": "text", "text": format!("{code}: {message}")}],
+                "structuredContent": structured, "isError": true})
+        }
     }
 }
 
