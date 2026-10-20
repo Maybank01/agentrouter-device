@@ -17,7 +17,8 @@
 //! Policy (§6.1): write = folders + scratch (TEMP and the npm/uv/pip caches point there); `.git/hooks` and
 //! `.git/config` stay unwritable (srt's mandatory denies, plus explicit ones); reads are allowed except the
 //! person's secrets and the device data folder; network = package mirrors + the server's catalog list, through
-//! srt's proxy. There is no unconfined fallback: when the sandbox cannot run, [`Unavailable`] says what to do.
+//! srt's proxy, or the open web for a catalog preset whose list is [`OPEN_WEB`] ([`Launch::open_web`]). There is no
+//! unconfined fallback: when the sandbox cannot run, [`Unavailable`] says what to do.
 
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
@@ -34,6 +35,9 @@ const PACKAGE_JSON: &str = include_str!("../runtime/package.json");
 const PACKAGE_LOCK: &str = include_str!("../runtime/package-lock.json");
 /// Started inside the sandbox on Windows (see the module docs).
 pub const ENTRY_JS: &str = include_str!("entry.cjs");
+/// Started instead of srt's `cli.js` (same arguments) for an open-web launch: srt's own CLI, with an ask callback that
+/// allows public destinations only (see the file).
+pub const OPEN_WEB_JS: &str = include_str!("open-web.mjs");
 /// srt needs Node 22.12 or later.
 pub const NODE_MIN: (u32, u32) = (22, 12);
 /// The loopback ports srt's proxies may use on Windows (the WFP fence permits only these). srt's default is ten
@@ -58,6 +62,22 @@ pub const PACKAGE_MIRRORS: &[&str] = &[
     "objects.githubusercontent.com",
     "release-assets.githubusercontent.com",
     "releases.astral.sh",
+];
+
+/// The catalog `network` entry that asks for the open web (owner 2026-10-20 「可以开放到完整的互联网」, the browser
+/// presets). The device honours it only for a pinned catalog preset; anywhere else it is dropped.
+pub const OPEN_WEB: &str = "*";
+
+/// What the open web never includes beyond srt's own resolved-address deny set (loopback, link-local, multicast,
+/// cloud metadata, this host's addresses): private-use space, so the LAN stays closed (srt README
+/// `deniedResolvedAddresses`).
+pub const PRIVATE_RANGES: &[&str] = &[
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "100.64.0.0/10",
+    "fc00::/7",
+    "fec0::/10",
 ];
 
 /// Why a server cannot be started confined, and what the person can do about it.
@@ -103,6 +123,10 @@ pub struct Launch<'a> {
     pub readable: &'a [PathBuf],
     /// `agentrouter link --read-only`: the folders stay readable but not writable (only scratch is).
     pub read_only: bool,
+    /// Any public host on any port besides `network` (a pinned catalog preset whose list holds [`OPEN_WEB`]; the
+    /// caller decides). Loopback, link-local, multicast, cloud metadata, [`PRIVATE_RANGES`] and this computer's own
+    /// addresses stay closed, by name and by IP literal.
+    pub open_web: bool,
 }
 
 /// What `agentrouter sandbox status` shows and `hello` reports.
@@ -476,8 +500,12 @@ impl Runtime {
                 domains.push(d.clone());
             }
         }
+        let mut network = json!({"allowedDomains": domains, "deniedDomains": []});
+        if launch.open_web {
+            network["deniedResolvedAddresses"] = json!(PRIVATE_RANGES);
+        }
         let mut policy = json!({
-            "network": {"allowedDomains": domains, "deniedDomains": []},
+            "network": network,
             "filesystem": {
                 "denyRead": deny_read,
                 "allowRead": allow_read,
@@ -524,8 +552,20 @@ impl Runtime {
         )
         .map_err(|e| Unavailable::new(format!("写不了隔离设置：{e}"), NEXT_SETUP))?;
 
+        let srt = if launch.open_web {
+            // Beside srt's node_modules (it imports srt by relative path), in the data folder no sandbox can write.
+            let file = self.dir().join("open-web.mjs");
+            if std::fs::read_to_string(&file).ok().as_deref() != Some(OPEN_WEB_JS) {
+                std::fs::write(&file, OPEN_WEB_JS).map_err(|e| {
+                    Unavailable::new(format!("写不了 {}：{e}", shown(&file)), NEXT_SETUP)
+                })?;
+            }
+            file
+        } else {
+            ready.cli
+        };
         let mut cmd = Command::new(&ready.node);
-        cmd.arg(&ready.cli).arg("--settings").arg(&policy_file);
+        cmd.arg(&srt).arg("--settings").arg(&policy_file);
         if cfg!(windows) {
             let entry = scratch.join("entry.cjs");
             std::fs::write(&entry, ENTRY_JS).map_err(|e| {
@@ -784,6 +824,7 @@ mod tests {
             network: &network,
             readable: &[],
             read_only: false,
+            open_web: false,
         };
         let p = rt.policy(&launch).unwrap();
         let writes: Vec<&str> = p["filesystem"]["allowWrite"]
@@ -822,12 +863,56 @@ mod tests {
             network: &[],
             readable: &[],
             read_only: true,
+            open_web: false,
         };
         let p = rt.policy(&launch).unwrap();
         assert_eq!(
             p["filesystem"]["allowWrite"],
             json!([shown(&rt.scratch("files"))])
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_open_web_keeps_private_ranges_out_and_never_lists_a_bare_star() {
+        let dir = temp("openweb");
+        let (rt, folder) = launch_in(&dir);
+        let folders = vec![folder.clone()];
+        let network = vec![OPEN_WEB.to_string(), "playwright.dev".to_string()];
+        let mut launch = Launch {
+            key: "browser",
+            program: Path::new("node"),
+            args: &[],
+            env: &[],
+            cwd: &folder,
+            folders: &folders,
+            network: &network,
+            readable: &[],
+            read_only: false,
+            open_web: false,
+        };
+        for open_web in [false, true] {
+            launch.open_web = open_web;
+            let p = rt.policy(&launch).unwrap();
+            let domains = p["network"]["allowedDomains"].as_array().unwrap();
+            assert!(
+                !domains.iter().any(|d| d == OPEN_WEB),
+                "srt refuses a bare *"
+            );
+            assert!(domains.iter().any(|d| d == "playwright.dev"));
+            let denied = &p["network"]["deniedResolvedAddresses"];
+            if open_web {
+                assert_eq!(*denied, json!(PRIVATE_RANGES));
+            } else {
+                assert!(denied.is_null(), "{p}");
+            }
+        }
+        for lan in ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"] {
+            assert!(PRIVATE_RANGES.contains(&lan));
+        }
+        // The launcher is srt's own CLI with the callback, beside srt's node_modules.
+        assert!(OPEN_WEB_JS.contains("'./node_modules/@anthropic-ai/sandbox-runtime/dist/'"));
+        assert!(OPEN_WEB_JS.contains("import(pkg + 'cli.js')"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -851,6 +936,7 @@ mod tests {
                 network: &[],
                 readable: &[],
                 read_only: false,
+                open_web: false,
             };
             assert!(
                 rt.policy(&launch).is_err(),
