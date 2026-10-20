@@ -255,6 +255,7 @@ any other (§6), run with the person's rights in 完全访问 (§6.4). The aggre
 | `host__pty_write` | `pty`, `data` (keys as typed: `\r` Enter, `\u0003` Ctrl+C), `encoding?` | `written` |
 | `host__pty_read` | `pty`, `offset?`, `max_bytes?` (default 256 KiB), `wait_ms?` (≤ 30 000) | terminal output from the offset (escape sequences included), `next_offset`, `more`, `dropped`, `running`, `exit_code` |
 | `host__pty_resize` / `host__pty_close` | `pty`, `cols`, `rows` / `pty` | the new size / `closed` (the program's whole tree ended) |
+| `host__info` | — | `os`, `family`, `arch`, `os_version`, `shell` (`pwsh`/`powershell`/`sh`) + `shell_program`, `path_separator`, `path_list_separator`, `line_ending` (default for new files: `crlf` on Windows, `lf` elsewhere), `case_insensitive_paths`, `folders`, `home`, `temp_dir`, `programs` (git, node, npm, python, pwsh, bash, rg on PATH, or null), `version` |
 
 - The shell is real: `/bin/sh -lc` on Linux/macOS, PowerShell (`pwsh`, else Windows PowerShell) on Windows; `shell`
   names it. The command's whole process tree ends on timeout (process group / job object). Paths are real; relative ones resolve against the first folder.

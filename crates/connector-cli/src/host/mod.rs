@@ -9,11 +9,13 @@
 //! through these tools, so they answer in the shapes those tools need (batched metadata, ripgrep semantics, …).
 //!
 //! One module per concern: [`files`] (read, write, stat, list), [`search`] (ripgrep), [`run`] (commands, streamed),
-//! [`jobs`] (background commands), [`pty`] (interactive programs).
+//! [`jobs`] (background commands), [`pty`] (interactive programs),
+//! [`info`] (what this computer is).
 //! Every call runs on its own thread with a [`Call`]: its progress token (output streams as MCP progress) and its
 //! cancel flag (`notifications/cancelled` ends what it runs).
 
 mod files;
+mod info;
 mod jobs;
 mod pty;
 mod run;
@@ -46,6 +48,7 @@ fn tools() -> Value {
     all.extend(search::tools());
     all.extend(jobs::tools());
     all.extend(pty::tools());
+    all.extend(info::tools());
     Value::Array(all)
 }
 
@@ -201,6 +204,7 @@ impl Host {
             "pty_read" => self.pty_read(args, call)?,
             "pty_resize" => self.pty_resize(args)?,
             "pty_close" => self.pty_close(args)?,
+            "info" => self.info()?,
             other => return Err(format!("没有这个工具：{other}").into()),
         })
     }
@@ -458,6 +462,7 @@ mod tests {
             ("pty_read", true),
             ("pty_resize", false),
             ("pty_close", false),
+            ("info", true),
         ];
         let list = tools();
         let got: Vec<(&str, bool)> = list
