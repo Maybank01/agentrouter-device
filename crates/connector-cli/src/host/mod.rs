@@ -8,9 +8,10 @@
 //! `docs/development/PROJECT-SERVICE.md` §10.6): DSH's native file, search and command tools reach the computer
 //! through these tools, so they answer in the shapes those tools need (batched metadata, ripgrep semantics, …).
 //!
-//! One module per concern: [`files`] (read, write, stat, list).
+//! One module per concern: [`files`] (read, write, stat, list), [`search`] (ripgrep).
 
 mod files;
+mod search;
 
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -47,6 +48,7 @@ fn tools() -> Value {
         false,
     )];
     all.extend(files::tools());
+    all.extend(search::tools());
     Value::Array(all)
 }
 
@@ -126,6 +128,7 @@ impl Host {
             "write" => self.write(args),
             "stat" => self.stat(args),
             "list" => self.list(args),
+            "search" => self.search(args),
             other => Err(format!("没有这个工具：{other}")),
         }
     }
@@ -330,7 +333,7 @@ mod tests {
         let list = tools();
         let tools = list.as_array().unwrap();
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["exec", "read", "write", "stat", "list"]);
+        assert_eq!(names, ["exec", "read", "write", "stat", "list", "search"]);
         for t in tools {
             let name = t["name"].as_str().unwrap();
             let read_only = t["annotations"]["readOnlyHint"].as_bool().unwrap();
