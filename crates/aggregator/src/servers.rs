@@ -158,6 +158,17 @@ impl ServerDef {
             && self.args.iter().any(|a| a == PACKAGE_ARG))
     }
 
+    /// Its sandbox may reach the open web: a pinned catalog preset whose catalog list holds
+    /// [`agentrouter_sandbox::OPEN_WEB`] (owner 2026-10-20, the browser presets). For a custom server the entry is
+    /// dropped and it keeps the package mirrors plus its named domains.
+    pub fn open_web(&self) -> bool {
+        !self.is_custom()
+            && self
+                .network
+                .iter()
+                .any(|d| d == agentrouter_sandbox::OPEN_WEB)
+    }
+
     /// The command line as the person sees it (no environment values).
     pub fn shown(&self) -> String {
         let mut parts = vec![self.command.clone()];
@@ -491,6 +502,7 @@ async fn start_once(
         network: &def.network,
         readable: &readable,
         read_only: agg.cfg.read_only,
+        open_web: def.open_web(),
     };
     let policy = agg
         .sandbox
@@ -562,4 +574,35 @@ fn kill_tree(pid: Option<u32>) {
     }
     #[cfg(not(unix))]
     let _ = pid;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn def(extra: Value) -> ServerDef {
+        let mut args = json!({
+            "name": "browser", "preset": "browser", "command": "npx",
+            "args": ["-y", PACKAGE_ARG],
+            "pin": {"file": "playwright-mcp-0.0.41.tgz", "digest": format!("sha256:{}", "0".repeat(64)),
+                    "package": "@playwright/mcp", "version": "0.0.41"},
+            "network": ["*"],
+        });
+        for (k, v) in extra.as_object().unwrap() {
+            args[k] = v.clone();
+        }
+        ServerDef::parse(&args).unwrap()
+    }
+
+    #[test]
+    fn only_a_pinned_catalog_preset_gets_the_open_web() {
+        assert!(def(json!({})).open_web());
+        // A preset whose list does not ask for it.
+        assert!(!def(json!({"network": ["playwright.dev"]})).open_web());
+        // Custom servers: no preset, no pin, or not the pinned package.
+        assert!(!def(json!({"preset": ""})).open_web());
+        assert!(!def(json!({"pin": null})).open_web());
+        assert!(!def(json!({"args": ["-y", "@playwright/mcp@latest"]})).open_web());
+        assert!(!def(json!({"command": "node"})).open_web());
+    }
 }

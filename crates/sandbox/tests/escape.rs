@@ -63,6 +63,102 @@ s.on('connect', () => done('connected'));
 s.on('error', e => done('denied: ' + (e.code || e.message)));
 "#;
 
+/// Asks srt's proxy (the only way out) to open tunnels and reports each answer: 200 = connected, 403 = refused.
+const NET_PROBE: &str = r#"
+const http = require('http');
+const targets = JSON.parse(process.argv[2]);
+const raw = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy;
+const proxy = new URL(raw);
+const headers = {};
+if (proxy.username) {
+  const id = decodeURIComponent(proxy.username) + ':' + decodeURIComponent(proxy.password);
+  headers['Proxy-Authorization'] = 'Basic ' + Buffer.from(id).toString('base64');
+}
+const ask = target => new Promise(done => {
+  const req = http.request({ host: proxy.hostname, port: proxy.port, method: 'CONNECT', path: target, headers, timeout: 20000 });
+  req.on('connect', (res, socket) => { socket.destroy(); done(res.statusCode); });
+  req.on('response', res => { res.resume(); done(res.statusCode); });
+  req.on('error', e => done('error: ' + (e.code || e.message)));
+  req.on('timeout', () => { req.destroy(); done('timeout'); });
+  req.end();
+});
+(async () => {
+  const r = {};
+  for (const t of targets) r[t] = await ask(t);
+  console.log(JSON.stringify(r));
+})();
+"#;
+
+/// Owner 2026-10-20 (browser presets): the open web is any public host, never this computer, its LAN or the cloud
+/// metadata endpoint; a launch without it still reaches only its list.
+fn the_open_web_stays_off_this_computer_and_the_lan(rt: &Runtime, node: &Path, folder: &Path) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || for _ in listener.incoming() {});
+    std::fs::write(folder.join("net-probe.js"), NET_PROBE).unwrap();
+    let public = "example.com:443";
+    let closed = [
+        format!("127.0.0.1:{port}"),
+        format!("localhost:{port}"),
+        format!("[::1]:{port}"),
+        "169.254.169.254:80".to_string(),
+        "2852039166:80".to_string(),
+        "10.0.0.1:80".to_string(),
+        "192.168.0.1:80".to_string(),
+    ];
+    let mut targets = vec![public.to_string()];
+    targets.extend(closed.iter().cloned());
+    let args = vec![
+        folder.join("net-probe.js").to_string_lossy().into_owned(),
+        serde_json::to_string(&targets).unwrap(),
+    ];
+    let env = vec![(
+        "PATH".to_string(),
+        std::env::var("PATH").unwrap_or_default(),
+    )];
+    let folders = vec![folder.to_path_buf()];
+    let network = vec!["*".to_string()];
+    for open_web in [true, false] {
+        let launch = Launch {
+            key: if open_web { "net-open" } else { "net-closed" },
+            program: node,
+            args: &args,
+            env: &env,
+            cwd: folder,
+            folders: &folders,
+            network: &network,
+            readable: &[],
+            read_only: false,
+            open_web,
+        };
+        let out = rt
+            .command(&launch)
+            .expect("confined command")
+            .stdin(Stdio::null())
+            .output()
+            .expect("srt runs");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        eprintln!(
+            "open_web={open_web} exit {:?}\nstdout: {stdout}\nstderr: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let r: Value = stdout
+            .lines()
+            .rev()
+            .find_map(|l| serde_json::from_str(l).ok())
+            .expect("the network probe reported");
+        if open_web {
+            assert_eq!(r[public], 200, "the open web is reachable: {r}");
+        } else {
+            assert_ne!(r[public], 200, "without the open web only the list is: {r}");
+        }
+        for t in &closed {
+            assert_ne!(r[t.as_str()], 200, "{t} must stay closed: {r}");
+        }
+    }
+}
+
 #[test]
 fn a_confined_process_cannot_touch_anything_outside_the_folder() {
     if !enabled() {
@@ -124,6 +220,7 @@ fn a_confined_process_cannot_touch_anything_outside_the_folder() {
         network: &[],
         readable: &[],
         read_only: false,
+        open_web: false,
     };
     eprintln!(
         "policy: {}",
@@ -203,6 +300,8 @@ fn a_confined_process_cannot_touch_anything_outside_the_folder() {
     ] {
         assert_ne!(r[k], "ok", "{k}: {r}");
     }
+
+    the_open_web_stays_off_this_computer_and_the_lan(&rt, &node, &folder);
 
     let _ = std::fs::remove_file(&ssh);
     let _ = std::fs::remove_dir_all(&home_dot);

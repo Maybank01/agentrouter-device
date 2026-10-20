@@ -823,10 +823,15 @@ impl Inner {
 
     async fn add(
         self: &Arc<Self>,
-        def: ServerDef,
+        mut def: ServerDef,
         wait: Duration,
         local: bool,
     ) -> Result<Value, Failure> {
+        // The open web comes only from the cloud catalog (owner 2026-10-20, browser presets): a definition from this
+        // computer (the project's `.agentrouter/mcp.json`, the console's own set) never widens a sandbox.
+        if local {
+            def.network.retain(|d| d != agentrouter_sandbox::OPEN_WEB);
+        }
         let existing = self.servers.lock().unwrap().get(&def.name).cloned();
         if let Some(old) = &existing {
             if old.def == def
