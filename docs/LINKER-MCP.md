@@ -91,6 +91,12 @@ Cloud #2201).
 - The program is **`hostd`** (Host Daemon). Each sandbox runs one `hostd`; the Agent works in a sandbox through its
   `hostd`. The person's PC and a Mac mini run `hostd` the same way. Daytona creates and stops sandboxes.
 - In this document "the host" below means `hostd` and the machine or sandbox it runs on.
+- **Every place is the same kind of place.** Owner 2026-10-20: 「是不是所有的设备都统一了，统一靠hostd来扩展运行边界。甚至MCP都是一样的，可以在沙箱中运行」 —
+  yes. Anything that runs `hostd` (a cloud sandbox, the person's PC, a rented Mac mini) is a place an Agent can work;
+  adding a place means running `hostd` there, nothing else. MCP servers are the same everywhere: the default ones and
+  third-party ones (e.g. Bilibili) run under `hostd`, in a sandbox or on a PC, with the same catalog, credentials and
+  audit (§13).
+- The one-page picture across Cloud and this repository: Cloud `docs/development/ARCHITECTURE-OVERVIEW.md`.
 
 ## 1. Why: the structural causes this replaces
 
