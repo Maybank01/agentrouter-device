@@ -219,7 +219,8 @@ any other (§6), run with the person's rights in 完全访问 (§6.4). The aggre
   along anyway (kill-on-close job objects).
 - **Versions** (DSH's guarded edits): `version` is an opaque token of the file's stat identity (size, mtime ns; on Unix
   also inode and ctime), cheap enough for every `stat`; `expected.sha256` adds a content check. A guarded write checks,
-  then writes; nothing is written on a mismatch.
+  then writes; nothing is written on a mismatch (check and write are not one OS operation: another program writing in
+  the microseconds between them is not caught).
 - `host__write` without `offset` creates or replaces the file atomically (a temporary file next to it renamed over it,
   permissions kept; written in place where the rename is refused) (parents created); with `offset` it writes there,
   after truncating to `offset` when `truncate` is true (chunked transfer: first chunk `offset: 0, truncate: true`).
