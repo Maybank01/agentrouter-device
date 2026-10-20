@@ -10,7 +10,7 @@
 //!
 //! One module per concern: [`files`] (read, write, stat, list), [`search`] (ripgrep), [`run`] (commands, streamed),
 //! [`jobs`] (background commands), [`pty`] (interactive programs),
-//! [`info`] (what this computer is).
+//! [`info`] (what this computer is), [`watch`] (what changed in the folders).
 //! Every call runs on its own thread with a [`Call`]: its progress token (output streams as MCP progress) and its
 //! cancel flag (`notifications/cancelled` ends what it runs).
 
@@ -20,6 +20,7 @@ mod jobs;
 mod pty;
 mod run;
 mod search;
+mod watch;
 
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
@@ -49,6 +50,7 @@ fn tools() -> Value {
     all.extend(jobs::tools());
     all.extend(pty::tools());
     all.extend(info::tools());
+    all.extend(watch::tools());
     Value::Array(all)
 }
 
@@ -59,6 +61,7 @@ struct Host {
     calls: Mutex<HashMap<String, Arc<AtomicBool>>>,
     jobs: jobs::Jobs,
     ptys: pty::Ptys,
+    changes: watch::Changes,
 }
 
 type Notify = Arc<dyn Fn(&Value) + Send + Sync>;
@@ -145,6 +148,7 @@ impl Host {
             calls: Mutex::default(),
             jobs: jobs::Jobs::default(),
             ptys: pty::Ptys::default(),
+            changes: watch::Changes::default(),
         }
     }
 
@@ -155,6 +159,7 @@ impl Host {
         }
         self.jobs.end_all();
         self.ptys.end_all();
+        self.changes.stop();
     }
 
     fn home(&self) -> PathBuf {
@@ -205,6 +210,7 @@ impl Host {
             "pty_resize" => self.pty_resize(args)?,
             "pty_close" => self.pty_close(args)?,
             "info" => self.info()?,
+            "changes" => self.changes(args, call)?,
             other => return Err(format!("没有这个工具：{other}").into()),
         })
     }
@@ -463,6 +469,7 @@ mod tests {
             ("pty_resize", false),
             ("pty_close", false),
             ("info", true),
+            ("changes", true),
         ];
         let list = tools();
         let got: Vec<(&str, bool)> = list
