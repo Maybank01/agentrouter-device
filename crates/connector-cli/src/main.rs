@@ -2,6 +2,7 @@
 //! `mcp-serve workspace` subcommand is the device's workspace MCP service (S1; `mcp_serve.rs`).
 
 mod cli;
+mod console;
 #[path = "mcp_serve.rs"]
 mod mcp_serve;
 

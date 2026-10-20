@@ -15,56 +15,29 @@ use agentrouter_device::device::{Device, Options};
 use agentrouter_device::net::{self, Conn, Runtime};
 use agentrouter_device::util::{data_dir, home_dir, log};
 use agentrouter_device::{
-    audit, checkpoint, deploy, gate, keystore, link, local_agent, mcp, workspace, worktree,
+    audit, deploy, gate, keystore, link, local_agent, mcp, workspace, worktree,
 };
 
 /// Set by Ctrl+C (one handler for the whole run: pairing, then serving).
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
-const USAGE: &str = "AgentRouter 小助手（agentrouter）：把这台电脑链接到 AgentRouter，云端对话里的 AI 通过电脑上的本机工具（MCP 服务）干活
+const USAGE: &str = "AgentRouter（agentrouter）：在任意文件夹里运行 agentrouter link，云端对话里的 Agent 就能在这个文件夹里干活
 
 用法：
-  agentrouter link [选项]       在项目文件夹里运行。第一次：显示配对码，在网页上确认后链接这台电脑；
-                                之后：把当前文件夹加到同一台设备。然后在前台运行（Ctrl+C 断开）
-      --access folders|full|readonly|confirm
-                                访问级别（默认 folders：本机工具在这台电脑上为 AI 干活，不用问你；
-                                会改文件的调用之前自动打检查点，可以撤销；readonly 和 confirm 不运行本机工具）
-      --folder <路径>           链接这个文件夹，而不是当前文件夹（可写多次）
-      --name <名字>  --gateway <网址>
-      --no-run                  只链接，不在前台运行
-      --screen                  同时打开屏幕功能（见 agentrouter screen）
-      --mcp                     同时打开本机工具（默认开；见 agentrouter mcp）
-  agentrouter [run] [--background]
-                                连上网关，等云端对话的请求
-  agentrouter status            链接、文件夹、访问级别、是否在运行、审计日志
-  agentrouter unlink [文件夹]   写了文件夹（. 是当前文件夹）：只取消链接这个文件夹；
-                                不写：在本机删除这台设备的身份
-  agentrouter access <级别> [--folder <路径>]... [--yes]
-  agentrouter screen on|off     屏幕功能（目前只有 Windows）：打开后默认装上 Windows 操作的本机工具
-                                （Windows-MCP），AI 可以截图、操作鼠标键盘、打开和关闭程序；
-                                屏幕上方有提示条，锁屏和 UAC 上不操作
-  agentrouter mcp on|off       本机工具（MCP，默认开）：云端对话在这台电脑上运行的 MCP 服务
-                                （文件、Git、终端、代码理解，屏幕打开时加 Windows 操作，也可以装别的），
-                                它们的工具给云端的 AI 用，不再逐条问你；只在「只限这些文件夹」和「完全访问」级别；
-                                断开、Ctrl+C 或 off 时全部停止
-  agentrouter workspace init [--root <路径>] [--yes]
-                                建工作区（默认 %USERPROFILE%\\Workspaces）并打开：AI 的项目都放在这里；
-                                游戏目录只能作只读引用/部署目标，不能当项目
-  agentrouter workspace project add <名字> | list | baseline <名字>
-                                在工作区里建项目（目录在根下）/ 列出 / 建 git 基线
-  agentrouter workspace worktree create <项目> <会话 id> | list [项目]
-  agentrouter workspace worktree remove <项目> <会话 id> [--delete-branch]
-  agentrouter workspace worktree prune <项目> [--older-hours N] [--delete-branch]
-                                每个会话一个 git worktree；移除默认保留分支（改动记录）
-  agentrouter undo [检查点] [--list] [--yes]
-                                撤销 AI 的改动：不写检查点就撤销当前文件夹最近一轮改动；--list 列出检查点
-  agentrouter audit [条数]       看最近的审计记录（默认 20 条，含参数；密钥不记）
-  agentrouter audit verify      检查审计日志有没有被改过
+  agentrouter link [--read-only] [--yes-servers]
+                                链接当前文件夹（第一次会显示配对码，在网页上确认）。命令开着就一直连着，Ctrl+C 断开。
+                                云端 Agent 只能在这个文件夹里干活：每个本机工具都在系统沙箱里，文件夹外的写、删直接被拒绝。
+      --read-only               这个文件夹只读
+      --yes-servers             不在目录里的本机工具不用逐个问（无人值守的电脑）
+      --gateway <网址>  --name <这台电脑的名字>
+  agentrouter undo [--list] [检查点]
+                                撤销 Agent 在这个文件夹里最近一轮的改动（再运行一次就再往前一轮）；--list 列出检查点
+  agentrouter audit [verify] [条数]
+                                这个文件夹的审计记录（每次调用连参数一起记，密钥不记）；verify 检查有没有被改过
   agentrouter sandbox setup|status|remove
-                                本机工具的隔离环境：每个本机工具只能改链接的文件夹，读不到密钥文件夹；
-                                setup 装好它（Windows 会弹一次管理员确认），remove 全部删掉
-
-（agentrouter-device 是同一个程序的旧名字，用法一样。）
+                                本机工具的隔离环境（Windows 会弹一次管理员确认）
+  agentrouter status            账号、网关、沙箱、当前文件夹
+  agentrouter logout            这台电脑退出链接（删掉本机的链接身份）
 ";
 
 #[derive(Default)]
@@ -82,6 +55,8 @@ struct Flags {
     mcp: Option<bool>,
     root: Option<String>,
     delete_branch: bool,
+    read_only: bool,
+    yes_servers: bool,
     older_hours: Option<u64>,
     positional: Vec<String>,
 }
@@ -108,6 +83,8 @@ fn parse(args: &[String]) -> Result<Flags, String> {
             "--mcp" => flags.mcp = Some(true),
             "--root" => flags.root = Some(value("--root")?),
             "--delete-branch" => flags.delete_branch = true,
+            "--read-only" => flags.read_only = true,
+            "--yes-servers" => flags.yes_servers = true,
             "--older-hours" => {
                 let v = value("--older-hours")?;
                 flags.older_hours = Some(
@@ -176,16 +153,34 @@ pub fn main() {
     };
     let code = match command {
         "run" => run(flags),
-        "link" => cmd_link(flags),
+        "link" => crate::console::link(
+            crate::console::LinkOptions {
+                read_only: flags.read_only,
+                yes_servers: flags.yes_servers,
+                gateway: flags.gateway.clone(),
+                name: flags.name.clone(),
+            },
+            &INTERRUPTED,
+        ),
         "access" => cmd_access(flags),
-        "status" => status(),
+        "status" => crate::console::status(),
+        "logout" => crate::console::logout(),
         "unlink" => unlink(flags),
-        "undo" => undo(flags),
+        "undo" => crate::console::undo(flags.list, flags.positional.first().map(String::as_str)),
         "screen" => cmd_screen(flags),
         "mcp" => cmd_mcp(flags),
         "workspace" => cmd_workspace(flags),
         "agent" => cmd_agent(flags),
-        "audit" => cmd_audit(flags),
+        "audit" => {
+            let verify = flags.positional.first().map(String::as_str) == Some("verify");
+            let n = flags
+                .positional
+                .iter()
+                .find_map(|s| s.parse::<usize>().ok())
+                .unwrap_or(20)
+                .clamp(1, 1000);
+            crate::console::audit_cmd(verify, n)
+        }
         "sandbox" => cmd_sandbox(flags),
         "version" | "--version" | "-V" => {
             println!("agentrouter {}", env!("CARGO_PKG_VERSION"));
@@ -389,104 +384,6 @@ fn serve(foreground: bool, _lock: std::fs::File) -> i32 {
         println!("已断开。");
     }
     code
-}
-
-fn cmd_link(flags: Flags) -> i32 {
-    let mut cfg = Config::load();
-    if let Some(g) = flags.gateway.clone() {
-        cfg.gateway = g;
-    }
-    if let Some(n) = flags.name.clone() {
-        cfg.name = n;
-    }
-    let wanted = if flags.folders.is_empty() {
-        match std::env::current_dir() {
-            Ok(dir) => vec![dir.display().to_string()],
-            Err(e) => {
-                eprintln!("看不到当前文件夹：{e}");
-                return 2;
-            }
-        }
-    } else {
-        flags.folders.clone()
-    };
-    let folders = match canonical_folders(&wanted) {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("{e}");
-            return 2;
-        }
-    };
-    if keystore::is_linked() {
-        let mut added = Vec::new();
-        for f in &folders {
-            if !cfg.folders.iter().any(|x| same_folder(x, f)) {
-                cfg.folders.push(f.clone());
-                added.push(f.clone());
-            }
-        }
-        if let Some(a) = flags.access {
-            cfg.access = a;
-        }
-        if flags.unattended {
-            cfg.unattended = cfg.access != Access::Readonly;
-        }
-        apply_screen(&mut cfg, &flags);
-        if let Err(e) = cfg.save() {
-            eprintln!("设置没有保存：{e}");
-            return 1;
-        }
-        audit::Audit::open(&data_dir().join("audit.log")).record(serde_json::json!({
-            "event": "folders", "added": added, "access": cfg.access.as_str(), "folders": cfg.folders,
-        }));
-        if added.is_empty() {
-            println!("这个文件夹已经链接过了：{}", folders_text(&folders));
-        } else {
-            println!("已把文件夹加到这台设备：{}", added.join("；"));
-        }
-    } else {
-        cfg.access = flags.access.unwrap_or(Access::Folders);
-        cfg.folders = folders;
-        cfg.paused = false;
-        cfg.disconnected = false;
-        cfg.unattended = flags.unattended && cfg.access != Access::Readonly;
-        apply_screen(&mut cfg, &flags);
-        println!(
-            "把这台电脑链接到 AgentRouter：{}\n访问级别：{}\n{}\n文件夹：{}\n",
-            cfg.name,
-            cfg.access.label(),
-            cfg.access.explain(),
-            folders_text(&cfg.folders)
-        );
-        if let Err(e) = cfg.save() {
-            eprintln!("设置没有保存：{e}");
-            return 1;
-        }
-        let result = link::link(&cfg, &INTERRUPTED, |pairing| {
-            println!("{}", link::code_text(pairing));
-        });
-        match result {
-            Ok(device) => {
-                audit::Audit::open(&data_dir().join("audit.log")).record(serde_json::json!({
-                    "event": "linked", "device": device, "access": cfg.access.as_str(), "folders": cfg.folders,
-                }));
-                println!("已链接（{device}）。");
-            }
-            Err(e) => {
-                eprintln!("{e}");
-                return 1;
-            }
-        }
-    }
-    if flags.no_run {
-        println!("运行 agentrouter 让它上线。");
-        return 0;
-    }
-    let Some(lock) = single_instance() else {
-        println!("小助手已经在另一个终端里运行，新的设置马上生效。");
-        return 0;
-    };
-    serve(!flags.background && std::io::stdin().is_terminal(), lock)
 }
 
 fn apply_screen(cfg: &mut Config, flags: &Flags) {
@@ -696,226 +593,6 @@ fn cmd_access(flags: Flags) -> i32 {
         }
         Err(e) => {
             eprintln!("设置没有保存：{e}");
-            1
-        }
-    }
-}
-
-fn status() -> i32 {
-    let cfg = Config::load();
-    match keystore::load() {
-        Some(identity) => println!(
-            "已链接：{}（控制面密钥 {}）",
-            identity.device, identity.control.kid
-        ),
-        None => println!("未链接"),
-    }
-    let running = single_instance().is_none();
-    println!("小助手：{}", if running { "在运行" } else { "没有运行" });
-    println!("网关：{}", cfg.gateway);
-    println!("名字：{}", cfg.name);
-    println!("访问级别：{}", cfg.access.label());
-    println!("文件夹：{}", folders_text(&cfg.folders));
-    if cfg.paused {
-        println!("已暂停");
-    }
-    if cfg.disconnected {
-        println!("已断开（在托盘里点「重新连接」）");
-    }
-    println!("{}", screen_text(&cfg));
-    println!("{}", mcp_text(&cfg));
-    println!("工作区：{}", workspace_text(&cfg));
-    let log = data_dir().join("audit.log");
-    match audit::verify(&log) {
-        Ok(n) => println!("审计日志：{}（{n} 条，完好）", log.display()),
-        Err((line, why)) => println!("审计日志：{}（第 {line} 行有问题：{why}）", log.display()),
-    }
-    0
-}
-
-/// `agentrouter audit [n]` shows the last entries; `agentrouter audit verify` checks the chain.
-fn cmd_audit(flags: Flags) -> i32 {
-    let log = data_dir().join("audit.log");
-    let verify_only = flags.positional.first().map(String::as_str) == Some("verify");
-    if !verify_only {
-        let n = flags
-            .positional
-            .first()
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(20)
-            .clamp(1, 1000);
-        for entry in audit::last_entries(&log, n) {
-            let s = |k: &str| {
-                entry
-                    .get(k)
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string()
-            };
-            let what = if s("action").is_empty() {
-                s("event")
-            } else {
-                s("action")
-            };
-            let mut line = format!("{}  {}  {}  {}", s("at"), s("session"), what, s("outcome"));
-            if let Some(ms) = entry.get("ms").and_then(|v| v.as_u64()) {
-                line.push_str(&format!("  {ms}ms"));
-            }
-            if !s("text").is_empty() {
-                line.push_str(&format!("  {}", s("text")));
-            }
-            if let Some(args) = entry.get("args").filter(|a| !a.is_null()) {
-                line.push_str(&format!("  args={}", clip_line(&args.to_string(), 400)));
-            }
-            println!("{line}");
-        }
-    }
-    let head = audit::head(&log);
-    match audit::verify(&log) {
-        Ok(n) => {
-            println!(
-                "审计日志完好，共 {n} 条（链头 {}）。",
-                head["hash"].as_str().unwrap_or("").get(..12).unwrap_or("")
-            );
-            0
-        }
-        Err((line, why)) => {
-            println!("审计日志第 {line} 行有问题：{why}");
-            1
-        }
-    }
-}
-
-fn clip_line(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        return text.to_string();
-    }
-    let head: String = text.chars().take(max).collect();
-    format!("{head}…")
-}
-
-/// `agentrouter undo`: put a folder back to a checkpoint (DEVICE-PROTOCOL.md §5.7).
-fn undo(flags: Flags) -> i32 {
-    let data = data_dir();
-    let all = checkpoint::list(&data);
-    let here = std::env::current_dir()
-        .ok()
-        .and_then(|d| std::fs::canonicalize(d).ok())
-        // canonicalize gives `\?\F:\…` on Windows; checkpoints store the plain form.
-        .map(|p| std::path::PathBuf::from(gate::display(&p)));
-    let mine = |m: &&checkpoint::Meta| {
-        here.as_deref().is_some_and(|h| {
-            gate::inside(h, Path::new(&m.folder)) || gate::inside(Path::new(&m.folder), h)
-        })
-    };
-    if flags.list {
-        let shown: Vec<&checkpoint::Meta> = all.iter().filter(mine).collect();
-        let shown = if shown.is_empty() {
-            all.iter().collect()
-        } else {
-            shown
-        };
-        if shown.is_empty() {
-            println!("还没有检查点。");
-        }
-        for m in shown.iter().take(20) {
-            println!(
-                "{}  {}  {}{}  {}",
-                m.id,
-                m.at,
-                if m.kind == "git" {
-                    "git"
-                } else {
-                    "文件备份"
-                },
-                if m.partial { "（部分）" } else { "" },
-                m.folder
-            );
-        }
-        return 0;
-    }
-    // Without an id: the newest checkpoint of this folder that has something to undo (a later round
-    // that only ran commands also leaves a checkpoint, and undoing that would change nothing).
-    let plan = match flags.positional.first() {
-        Some(id) => checkpoint::plan(&data, id),
-        None => {
-            let candidates: Vec<&checkpoint::Meta> = all.iter().filter(mine).collect();
-            if candidates.is_empty() {
-                println!("当前文件夹没有检查点（agentrouter undo --list 看全部）。");
-                return 1;
-            }
-            let mut found = None;
-            for m in candidates.iter().take(20) {
-                match checkpoint::plan(&data, &m.id) {
-                    Ok(p) if !p.changes.is_empty() => {
-                        found = Some(Ok(p));
-                        break;
-                    }
-                    Ok(_) => {}
-                    Err(e) => {
-                        found = Some(Err(e));
-                        break;
-                    }
-                }
-            }
-            match found {
-                Some(p) => p,
-                None => {
-                    println!("最近几轮之后文件夹没有变化，不用撤销。");
-                    return 0;
-                }
-            }
-        }
-    };
-    let plan = match plan {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("{e}");
-            return 1;
-        }
-    };
-    if plan.changes.is_empty() {
-        println!("{} 之后没有改动，不用撤销。", plan.meta.id);
-        return 0;
-    }
-    let mut text = format!(
-        "撤销到检查点 {}（{}，{}）会：",
-        plan.meta.id, plan.meta.at, plan.meta.folder
-    );
-    for (what, path) in plan.changes.iter().take(30) {
-        text.push_str(&format!(
-            "
-  {what} {path}"
-        ));
-    }
-    if plan.changes.len() > 30 {
-        text.push_str(&format!(
-            "
-  …共 {} 个文件",
-            plan.changes.len()
-        ));
-    }
-    if plan.meta.partial {
-        text.push_str(
-            "
-（这个检查点不完整：太大的文件没有备份，它们不会被恢复）",
-        );
-    }
-    if !flags.yes && !confirm_in_terminal(&text) {
-        println!("没有撤销。");
-        return 1;
-    }
-    match checkpoint::undo(&data, &plan) {
-        Ok(Some(saved)) => {
-            println!("已撤销。撤销前的状态存成了检查点 {saved}，想反悔：agentrouter undo {saved}");
-            0
-        }
-        Ok(None) => {
-            println!("已撤销。");
-            0
-        }
-        Err(e) => {
-            eprintln!("撤销没有完成：{e}");
             1
         }
     }
