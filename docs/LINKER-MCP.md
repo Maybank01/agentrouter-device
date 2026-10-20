@@ -188,7 +188,8 @@ Unsigned (harmless, read-only shape): `tools/list`, `ping`, notifications. Failu
 
 Every link starts one local server named `host` (`agentrouter mcp-serve host`, the device's own binary; started by the
 console, never by the cloud, so no `y`). It is an ordinary MCP server: confined by the sandbox in folder mode like
-any other (§6), run with the person's rights in 完全访问 (§6.4). The aggregator still has no capabilities.
+any other (§6), run with the person's rights in 完全访问 (§6.4). The aggregator still has no capabilities. It is also
+what a bound cloud session uses as its local machine (below).
 
 | Tool | Arguments | Answer (`structuredContent`) |
 | --- | --- | --- |
@@ -232,6 +233,37 @@ any other (§6), run with the person's rights in 完全访问 (§6.4). The aggre
 - Transfer (`remote_copy`, Cloud) is chunks of `host__read`/`host__write` (4 MiB, base64) relayed by the control
   plane from link to link (or the conversation's cloud sandbox), never through the model; each chunk is one audited
   call on each computer, the copy ends with `sha256` compared on both sides.
+
+#### Bound session: the `host` server as the Agent's local machine (Cloud PROJECT-SERVICE §10.6)
+
+A cloud session may be **bound** to a link (owner 2026-10-20 「实际上更改Agent的视图，就能让Agent有种在用户电脑运行的感觉了」):
+the kernel's own file, search and command tools then act on this computer, through a runner plugin that is a client of
+the `host` server (DSH first: `agentrouter-dsh-world` replaces DSH's `fs`, `subprocess` and `tool-fs-search` rows).
+The device side is only this server; nothing on the device knows or cares whether a call comes from a bound session or
+from `remote_*` tools.
+
+| Kernel need (DSH) | `host` tool |
+| --- | --- |
+| `fs.stat` / `listDir` / `resolve`, prefetch of `AGENTS.md` and read-before-edit files | `host__stat` (many paths, small contents inline), `host__list` |
+| `fs.readText` / `readBytes` / `streamText` | `host__read` (ranges; `version`, `sha256`, `line_ending`, `bom`) |
+| `fs.writeText` / `editText` with `expected` (`replaceIfVersion`, `createIfAbsent`) | `host__write` with `expected` (atomic; `STALE_VERSION` / `EXISTS`) |
+| `glob`, `grep` | `host__search` (`files` / `content`; ripgrep's crates, rg's display paths) |
+| `bash` (streamed), timeouts, abort | `host__exec` with a progress token; `notifications/cancelled` |
+| background jobs (`run_in_background`), their output and kill | `host__job_start` / `job_read` / `job_stop` / `jobs` |
+| persistent terminal, interactive programs | `host__pty_open` / `pty_write` / `pty_read` / `pty_resize` / `pty_close` |
+| "this host is Windows; commands run in PowerShell 7", path form, new-file line ending | `host__info` |
+| per-turn read cache invalidation | `host__changes` (cursor + long poll; `overflow` = drop the cache) |
+
+- **The device stays in charge.** Folder mode or 完全访问, the sandbox, the local `y`, argument-level audit (every call,
+  including each long poll) and checkpoints before every tool without `readOnlyHint` (`write`, `exec`, `job_start`,
+  `job_stop`, `pty_*` except `pty_read`) apply exactly as for any other call; a bound session cannot reach anything the
+  link does not already allow. `agentrouter undo` undoes a bound session's turn like any other.
+- **One native host per session.** A conversation binds one host as the session's "local machine"; other links stay
+  reachable through `remote_*`.
+- **Latency.** A link call costs 30–200 ms: the plugin batches (`stat` with `content_max`, several paths per call),
+  caches reads per turn by `version`/`sha256`, and drops them on its own writes and on `host__changes`.
+- **Not on the device:** the kernel's own transcripts, spill files and session index stay on the Agent host (they are
+  the kernel's state, not the person's files).
 
 ### 3.5 Errors
 
