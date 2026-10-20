@@ -251,6 +251,10 @@ any other (§6), run with the person's rights in 完全访问 (§6.4). The aggre
 | `host__job_read` | `job`, `stdout_offset?`, `stderr_offset?`, `max_bytes?` (≤ 4 MiB, default 1 MiB), `wait_ms?` (≤ 30 000: wait for new output or the end) | `running`, `exit_code`, `signal`, `stdout`/`stderr`: `data` (UTF-8 from the offset), `offset`, `next_offset`, `more`, `dropped` (the last 8 MiB per stream are kept) |
 | `host__job_stop` | `job`, `grace_ms?` (default 2000) | the job's summary after its whole tree ended (SIGTERM, then a kill after the grace); it is forgotten |
 | `host__jobs` | — | `jobs`: `job`, `command`, `cwd`, `pid`, `running`, `exit_code`, `signal`, `ms`, `stdout_bytes`, `stderr_bytes` (≤ 32 running, 64 remembered) |
+| `host__pty_open` | `command?` (default: the person's login shell; PowerShell on Windows), `cwd?`, `cols?` (120), `rows?` (30) | `pty`, `pid`, `cwd`, `shell`: a pseudo-terminal (openpty / ConPTY) for prompts, REPLs, TUIs; ≤ 16 open |
+| `host__pty_write` | `pty`, `data` (keys as typed: `\r` Enter, `\u0003` Ctrl+C), `encoding?` | `written` |
+| `host__pty_read` | `pty`, `offset?`, `max_bytes?` (default 256 KiB), `wait_ms?` (≤ 30 000) | terminal output from the offset (escape sequences included), `next_offset`, `more`, `dropped`, `running`, `exit_code` |
+| `host__pty_resize` / `host__pty_close` | `pty`, `cols`, `rows` / `pty` | the new size / `closed` (the program's whole tree ended) |
 
 - The shell is real: `/bin/sh -lc` on Linux/macOS, PowerShell (`pwsh`, else Windows PowerShell) on Windows; `shell`
   names it. The command's whole process tree ends on timeout (process group / job object). Paths are real; relative ones resolve against the first folder.
@@ -258,9 +262,9 @@ any other (§6), run with the person's rights in 完全访问 (§6.4). The aggre
   `notifications/progress` (`progress` counts up; `message` = the JSON text of `{"stream": "stdout"|"stderr", "data":
   "<utf-8>"}`, pushed every 100 ms or 32 KiB, characters never split, ≤ 16 MiB per stream). `notifications/cancelled`
   for a running call ends the command's whole process tree (answer `cancelled: true`); so does the timeout.
-- **Background jobs live as long as the link.** When the `host` server's input closes (the link ends, the server is
+- **Background jobs and terminals live as long as the link.** When the `host` server's input closes (the link ends, the server is
   stopped: the aggregator closes its input and waits up to 3 s before killing its process group) or it gets a stop
-  signal, it cancels every running call and ends every job's process tree; on Windows a killed server takes its jobs
+  signal, it cancels every running call and ends every job's and terminal's process tree; on Windows a killed server takes its jobs
   along anyway (kill-on-close job objects).
 - `host__write` without `offset` creates or replaces the file (parents created); with `offset` it writes there,
   after truncating to `offset` when `truncate` is true (chunked transfer: first chunk `offset: 0, truncate: true`).

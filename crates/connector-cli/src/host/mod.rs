@@ -9,12 +9,13 @@
 //! through these tools, so they answer in the shapes those tools need (batched metadata, ripgrep semantics, …).
 //!
 //! One module per concern: [`files`] (read, write, stat, list), [`search`] (ripgrep), [`run`] (commands, streamed),
-//! [`jobs`] (background commands).
+//! [`jobs`] (background commands), [`pty`] (interactive programs).
 //! Every call runs on its own thread with a [`Call`]: its progress token (output streams as MCP progress) and its
 //! cancel flag (`notifications/cancelled` ends what it runs).
 
 mod files;
 mod jobs;
+mod pty;
 mod run;
 mod search;
 
@@ -44,6 +45,7 @@ fn tools() -> Value {
     all.extend(files::tools());
     all.extend(search::tools());
     all.extend(jobs::tools());
+    all.extend(pty::tools());
     Value::Array(all)
 }
 
@@ -53,6 +55,7 @@ struct Host {
     /// Cancel flags of the calls running now, by JSON-RPC id.
     calls: Mutex<HashMap<String, Arc<AtomicBool>>>,
     jobs: jobs::Jobs,
+    ptys: pty::Ptys,
 }
 
 type Notify = Arc<dyn Fn(&Value) + Send + Sync>;
@@ -138,6 +141,7 @@ impl Host {
             folders,
             calls: Mutex::default(),
             jobs: jobs::Jobs::default(),
+            ptys: pty::Ptys::default(),
         }
     }
 
@@ -147,6 +151,7 @@ impl Host {
             flag.store(true, Ordering::Relaxed);
         }
         self.jobs.end_all();
+        self.ptys.end_all();
     }
 
     fn home(&self) -> PathBuf {
@@ -191,6 +196,11 @@ impl Host {
             "job_read" => self.job_read(args, call),
             "job_stop" => self.job_stop(args),
             "jobs" => self.jobs_list(),
+            "pty_open" => self.pty_open(args),
+            "pty_write" => self.pty_write(args),
+            "pty_read" => self.pty_read(args, call),
+            "pty_resize" => self.pty_resize(args),
+            "pty_close" => self.pty_close(args),
             other => Err(format!("没有这个工具：{other}")),
         }
     }
@@ -380,33 +390,37 @@ mod tests {
 
     #[test]
     fn the_tool_list_is_neutral_and_says_what_changes_nothing() {
+        // (name, readOnlyHint): only tools that change nothing may skip the aggregator's checkpoint.
+        let expected = [
+            ("exec", false),
+            ("read", true),
+            ("write", false),
+            ("stat", true),
+            ("list", true),
+            ("search", true),
+            ("job_start", false),
+            ("job_read", true),
+            ("job_stop", false),
+            ("jobs", true),
+            ("pty_open", false),
+            ("pty_write", false),
+            ("pty_read", true),
+            ("pty_resize", false),
+            ("pty_close", false),
+        ];
         let list = tools();
-        let tools = list.as_array().unwrap();
-        let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(
-            names,
-            [
-                "exec",
-                "read",
-                "write",
-                "stat",
-                "list",
-                "search",
-                "job_start",
-                "job_read",
-                "job_stop",
-                "jobs"
-            ]
-        );
-        for t in tools {
-            let name = t["name"].as_str().unwrap();
-            let read_only = t["annotations"]["readOnlyHint"].as_bool().unwrap();
-            assert_eq!(
-                read_only,
-                !matches!(name, "exec" | "write" | "job_start" | "job_stop"),
-                "{name}"
-            );
-        }
+        let got: Vec<(&str, bool)> = list
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| {
+                (
+                    t["name"].as_str().unwrap(),
+                    t["annotations"]["readOnlyHint"].as_bool().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(got, expected);
     }
 
     #[test]

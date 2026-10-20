@@ -160,6 +160,76 @@ impl Job {
 }
 
 #[cfg(windows)]
+impl Job {
+    /// Put a running process (by pid) into this job.
+    fn assign_pid(&self, pid: u32) -> std::io::Result<()> {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+        };
+        // SAFETY: the process handle is opened, used once and closed here; the job handle is ours.
+        unsafe {
+            let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
+            if process.is_null() {
+                return Err(std::io::Error::last_os_error());
+            }
+            let ok = AssignProcessToJobObject(self.0, process);
+            let err = std::io::Error::last_os_error();
+            CloseHandle(process);
+            if ok == 0 {
+                return Err(err);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A process started elsewhere (a pseudo-terminal's shell) whose whole tree must end with it: on Unix the process
+/// leads its own process group (or session); on Windows it is put into a kill-on-close job object. Dropping it ends
+/// the tree.
+pub struct Tree {
+    #[cfg(unix)]
+    pid: u32,
+    #[cfg(windows)]
+    job: Option<Job>,
+}
+
+impl Tree {
+    pub fn adopt(pid: u32) -> Result<Tree, String> {
+        #[cfg(unix)]
+        {
+            Ok(Tree { pid })
+        }
+        #[cfg(windows)]
+        {
+            let job = Job::new().map_err(|e| format!("建不了作业对象：{e}"))?;
+            job.assign_pid(pid)
+                .map_err(|e| format!("进程进不了作业对象：{e}"))?;
+            Ok(Tree { job: Some(job) })
+        }
+    }
+
+    pub fn kill(&mut self) {
+        #[cfg(unix)]
+        if self.pid > 1 {
+            // SAFETY: a signal to the process group this process leads; ESRCH when it is gone.
+            unsafe {
+                libc::kill(-(self.pid as i32), libc::SIGKILL);
+            }
+        }
+        #[cfg(windows)]
+        self.job.take();
+    }
+}
+
+impl Drop for Tree {
+    fn drop(&mut self) {
+        self.kill();
+    }
+}
+
+#[cfg(windows)]
 impl Drop for Job {
     fn drop(&mut self) {
         use windows_sys::Win32::Foundation::CloseHandle;
