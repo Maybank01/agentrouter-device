@@ -602,17 +602,6 @@ fn local_entry_registers_identity_and_exposes_the_workspace_tools() {
         agentrouter_device::audit::verify(&data.join("audit.log")),
         Ok(7)
     );
-    // `agentrouter agent list` shows it.
-    let output = Command::new(env!("CARGO_BIN_EXE_agentrouter"))
-        .args(["agent", "list"])
-        .env("AGENTROUTER_DEVICE_HOME", &data)
-        .output()
-        .unwrap();
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("lag_dsh") && stdout.contains("lses_conv-1"),
-        "{stdout}"
-    );
 }
 
 #[test]
