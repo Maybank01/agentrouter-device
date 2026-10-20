@@ -58,6 +58,7 @@ fn without_the_sandbox_a_server_does_not_start_at_all() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[cfg(windows)]
 #[test]
 fn a_command_resolves_to_its_windows_program_not_the_shell_script_beside_it() {
     let dir = std::env::temp_dir().join(format!("ar-mcp-resolve-{}", std::process::id()));

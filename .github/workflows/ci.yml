@@ -109,6 +109,11 @@ jobs:
           - { name: Windows, os: windows-latest }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    # Windows: srt-win's broker starts the sandbox account's runner with CreateProcessWithLogonW, which the hosted
+    # runner refuses (ERROR_ACCESS_DENIED although Secondary Logon runs: the runner's service/job context). The
+    # Windows boundary is verified on a real Windows PC until a self-hosted interactive runner exists; the job still
+    # runs so a change in that behaviour shows up.
+    continue-on-error: ${{ matrix.name == 'Windows' }}
     env:
       AGENTROUTER_SANDBOX_TESTS: "1"
     steps:
