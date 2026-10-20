@@ -68,17 +68,30 @@ pub(super) fn tools() -> Vec<Value> {
 
 /// One stream's kept output: bytes `[start, start + data.len())` of everything it wrote.
 #[derive(Default)]
-struct Kept {
+pub(super) struct Kept {
     start: u64,
     data: Vec<u8>,
 }
 
 impl Kept {
-    fn end(&self) -> u64 {
+    pub(super) fn end(&self) -> u64 {
         self.start + self.data.len() as u64
     }
 
-    fn push(&mut self, bytes: &[u8]) {
+    /// From byte `offset` (clamped to what is kept) at most `max` bytes as UTF-8 (`last`: the stream ended, a
+    /// partial character at its end is shown too): `{data, offset, next_offset, more, dropped}`.
+    pub(super) fn read(&self, offset: u64, max: usize, last: bool) -> Value {
+        let from = offset.clamp(self.start, self.end());
+        let lo = (from - self.start) as usize;
+        let hi = (lo + max).min(self.data.len());
+        let (text, used) = utf8_head(&self.data[lo..hi], last && hi == self.data.len());
+        json!({
+            "data": text, "offset": from, "next_offset": from + used as u64,
+            "dropped": offset < self.start, "more": (from + used as u64) < self.end(),
+        })
+    }
+
+    pub(super) fn push(&mut self, bytes: &[u8]) {
         self.data.extend_from_slice(bytes);
         if self.data.len() > KEEP {
             let drop = self.data.len() - KEEP + KEEP / 4;
@@ -327,20 +340,10 @@ impl Host {
                 .0;
         }
         let ended = state.exit.is_some();
-        let mut streams = Vec::with_capacity(2);
-        for (i, kept) in state.out.iter().enumerate() {
-            let from = offsets[i].clamp(kept.start, kept.end());
-            let lo = (from - kept.start) as usize;
-            let hi = (lo + max).min(kept.data.len());
-            let (text, used) = utf8_head(&kept.data[lo..hi], ended && hi == kept.data.len());
-            streams.push(json!({
-                "data": text, "offset": from, "next_offset": from + used as u64,
-                "dropped": offsets[i] < kept.start, "more": (from + used as u64) < kept.end(),
-            }));
-        }
+        let stdout = state.out[0].read(offsets[0], max, ended);
+        let stderr = state.out[1].read(offsets[1], max, ended);
         let exit = state.exit;
         drop(state);
-        let [stdout, stderr]: [Value; 2] = streams.try_into().unwrap();
         Ok(json!({
             "job": job.id, "running": exit.is_none(),
             "exit_code": exit.and_then(|e| e.0), "signal": exit.and_then(|e| e.1),
