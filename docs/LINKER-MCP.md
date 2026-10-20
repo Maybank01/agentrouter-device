@@ -193,9 +193,9 @@ any other (§6), run with the person's rights in 完全访问 (§6.4). The aggre
 | Tool | Arguments | Answer (`structuredContent`) |
 | --- | --- | --- |
 | `host__exec` | `command`, `cwd?` (default: the first folder), `timeout_s?` (1–600, default 120) | `exit_code` (null on timeout, cancel or a signal), `signal` (Unix), `timed_out`, `cancelled`, `stdout`, `stderr` (each ≤ 256 KiB, a clip marker inside), `cwd`, `shell`, `ms`; streamed while it runs (below) |
-| `host__read` | `path`, `offset?`, `length?` (≤ 4 MiB, default whole file up to that), `encoding?` `utf8`/`base64`, `sha256?` | `path` (absolute, real), `size`, `offset`, `length`, `eof`, `encoding`, `data`, `sha256` (whole file, when asked) |
-| `host__write` | `path`, `data`, `encoding?` `utf8`/`base64`, `offset?`, `truncate?` | `path`, `size`, `written` |
-| `host__stat` | `paths` (≤ 1000), `content_max?` (≤ 256 KiB) | `entries`: per path `path` (real), `exists`, `kind` `file`/`dir`/`symlink`/`other`, `size`, `mtime_ms`, `readonly`, `symlink?`, `error?`; files up to `content_max` also `data` + `encoding` (utf8, else base64; ≤ 4 MiB per call) |
+| `host__read` | `path`, `offset?`, `length?` (≤ 4 MiB, default whole file up to that), `encoding?` `utf8`/`base64`, `sha256?` | `path` (absolute, real), `size`, `offset`, `length`, `eof`, `encoding`, `data`, `version`, `mtime_ms`, `sha256` (whenever the whole file was read; else when asked), whole text files also `line_ending` (`lf`/`crlf`/`mixed`/null) and `bom` |
+| `host__write` | `path`, `data`, `encoding?` `utf8`/`base64`, `offset?`, `truncate?`, `expected?` `{version, sha256?}` / `{absent: true}` | `path`, `size`, `written`, `created`, `version`, `mtime_ms`, `sha256` (whole-file writes); a failed guard is `isError` with `structuredContent` `{code: STALE_VERSION / EXISTS, message, version}` |
+| `host__stat` | `paths` (≤ 1000), `content_max?` (≤ 256 KiB) | `entries`: per path `path` (real), `exists`, `kind` `file`/`dir`/`symlink`/`other`, `size`, `mtime_ms`, `readonly`, `version` (files and folders), `symlink?`, `error?`; files up to `content_max` also `data` + `encoding` (utf8, else base64; ≤ 4 MiB per call) |
 | `host__list` | `path` or `paths` (≤ 64), `depth?` (1–16, default 1), `hidden?` (default true), `ignore?` (.gitignore/.ignore like ripgrep, default false), `limit?` (default 5000) | `listings`: per folder `path`, `entries` (`name` relative, `kind`, `size`, `mtime_ms`; sorted by name, pre-order), `truncated`; or `error` |
 | `host__search` | `mode` `files` (= `rg --files`) / `content` (= `rg --regexp`, default), `pattern`, `path?`, `cwd?`, `globs?` (rg `--glob`, `!` excludes), `hidden?`, `no_ignore?`, `ignore_case?`, `fixed_strings?`, `sort?` `path`/`modified`, `max_results?` (default 10 000), `max_line_bytes?` (default 2000), `timeout_s?` | `root`; files: `paths`; content: `matches` (`path`, `line_number`, `text` without its line ending, or base64 `bytes` for non-UTF-8, `clipped?`), `files`; both `count` (all), `truncated`, `timed_out`. ripgrep's own crates: .gitignore/.ignore/.rgignore inside a git repo, hidden skipped, NUL = binary (walked files skipped, a named file converted), BOM-sniffed UTF-16, Rust regex; paths as `rg` prints them; order = path (or mtime ascending) |
 | `host__job_start` | `command`, `cwd?` | `job` (`job-<n>`), `pid`, `cwd`, `shell`: the command keeps running in the background (its own process group / kill-on-close job object) |
@@ -217,7 +217,11 @@ any other (§6), run with the person's rights in 完全访问 (§6.4). The aggre
   stopped: the aggregator closes its input and waits up to 3 s before killing its process group) or it gets a stop
   signal, it cancels every running call and ends every job's and terminal's process tree; on Windows a killed server takes its jobs
   along anyway (kill-on-close job objects).
-- `host__write` without `offset` creates or replaces the file (parents created); with `offset` it writes there,
+- **Versions** (DSH's guarded edits): `version` is an opaque token of the file's stat identity (size, mtime ns; on Unix
+  also inode and ctime), cheap enough for every `stat`; `expected.sha256` adds a content check. A guarded write checks,
+  then writes; nothing is written on a mismatch.
+- `host__write` without `offset` creates or replaces the file atomically (a temporary file next to it renamed over it,
+  permissions kept; written in place where the rename is refused) (parents created); with `offset` it writes there,
   after truncating to `offset` when `truncate` is true (chunked transfer: first chunk `offset: 0, truncate: true`).
 - A write the OS refuses answers `isError` with the OS text (the console shows 拦下：在文件夹外).
 - Answers carry the bytes once: `structuredContent` has `data`; the text copy replaces any `data` over 64 KiB with a

@@ -1,5 +1,12 @@
 //! Files by their real path: `read`, `write` (chunked transfers), and the batched metadata a bound session needs
 //! (`stat` of many paths in one call, optionally with small files' content; `list` of directories, to a depth).
+//!
+//! Versions, for guarded edits (DSH's `replaceIfVersion` / `createIfAbsent`): every `read`, `stat` and `write` answer
+//! carries `version`, an opaque token of the file's stat identity (size, modification time in ns, and on Unix inode
+//! and change time) that is cheap to compute, and whole-file reads and writes also carry its `sha256`. A `write` with
+//! `expected` happens only if the file is still that version (and, when given, still has that sha256) or still
+//! absent; otherwise it fails with code `STALE_VERSION` / `EXISTS` and the current version. Whole-file writes replace
+//! the file atomically (a temporary file renamed over it, permissions kept).
 
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -8,7 +15,7 @@ use serde_json::{Value, json};
 
 use agentrouter_device::util::{b64, b64_decode};
 
-use super::{CHUNK_MAX, Host, arg_bool, arg_paths, arg_str, shown, tool};
+use super::{CHUNK_MAX, Fail, Host, arg_bool, arg_paths, arg_str, shown, tool};
 
 /// Paths in one `stat`.
 const STAT_MAX: usize = 1000;
@@ -26,7 +33,7 @@ pub(super) fn tools() -> Vec<Value> {
     vec![
         tool(
             "read",
-            "Read a file by its real path (relative = inside the first folder): utf8 text or base64 bytes, a range with offset/length (at most 4 MiB), sha256 of the whole file on request.",
+            "Read a file by its real path (relative = inside the first folder): utf8 text or base64 bytes, a range with offset/length (at most 4 MiB). Answers its version (and sha256 when the whole file was read, or on request), and for whole text files the line ending and BOM.",
             json!({"type": "object", "properties": {
                 "path": {"type": "string"},
                 "offset": {"type": "integer", "minimum": 0},
@@ -38,13 +45,18 @@ pub(super) fn tools() -> Vec<Value> {
         ),
         tool(
             "write",
-            "Write a file by its real path (parents are created). Without offset: create or replace. With offset: write there (truncate: cut the file to offset first). data is utf8 text or base64 bytes (at most 4 MiB).",
+            "Write a file by its real path (parents are created). Without offset: create or replace atomically. With offset: write there (truncate: cut the file to offset first). data is utf8 text or base64 bytes (at most 4 MiB). expected guards it: {version, sha256?} = only if the file is still that version, {absent: true} = only if it does not exist (else STALE_VERSION / EXISTS with the current version).",
             json!({"type": "object", "properties": {
                 "path": {"type": "string"},
                 "data": {"type": "string"},
                 "encoding": {"type": "string", "enum": ["utf8", "base64"]},
                 "offset": {"type": "integer", "minimum": 0},
                 "truncate": {"type": "boolean"},
+                "expected": {"type": "object", "properties": {
+                    "version": {"type": "string"},
+                    "sha256": {"type": "string"},
+                    "absent": {"type": "boolean"},
+                }},
             }, "required": ["path", "data"]}),
             false,
         ),
@@ -96,6 +108,97 @@ fn kind(ft: std::fs::FileType) -> &'static str {
     }
 }
 
+/// The opaque version of a file: its stat identity, cheap to compute on every `stat` (DSH's local backend does the
+/// same). Content changes that keep size and modification time (same ns) are caught by `sha256` in `expected`.
+pub(super) fn version(meta: &std::fs::Metadata) -> String {
+    let mtime_ns = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    #[cfg(unix)]
+    let extra = {
+        use std::os::unix::fs::MetadataExt;
+        format!(
+            "-{:x}-{:x}.{:x}",
+            meta.ino(),
+            meta.ctime(),
+            meta.ctime_nsec()
+        )
+    };
+    #[cfg(not(unix))]
+    let extra = String::new();
+    format!("v1-{:x}-{mtime_ns:x}{extra}", meta.len())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// The line ending a text uses (`crlf`, `lf`, `mixed`, or none for one line) and whether it starts with a BOM.
+fn line_ending(text: &str) -> (Value, bool) {
+    let crlf = text.matches("\r\n").count();
+    let lf = text.matches('\n').count() - crlf;
+    let ending = match (crlf, lf) {
+        (0, 0) => Value::Null,
+        (_, 0) => json!("crlf"),
+        (0, _) => json!("lf"),
+        _ => json!("mixed"),
+    };
+    (ending, text.starts_with('\u{feff}'))
+}
+
+/// Replace `path` with `bytes` atomically: a temporary file next to it, renamed over it (its permissions kept). Where
+/// the rename is refused (Windows: the file is open elsewhere without delete sharing) it is written in place.
+fn replace(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let old = std::fs::metadata(path).ok();
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let tmp = path.with_file_name(format!(
+        ".{name}.agentrouter-{}-{:x}.tmp",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0)
+    ));
+    let written = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        file.write_all(bytes)?;
+        file.flush()?;
+        if let Some(old) = &old {
+            let _ = std::fs::set_permissions(&tmp, old.permissions());
+        }
+        Ok::<_, std::io::Error>(())
+    })();
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&tmp);
+        // A folder where a new file cannot be made next to it: write in place.
+        return if old.is_some() {
+            std::fs::write(path, bytes)
+        } else {
+            Err(e)
+        };
+    }
+    match std::fs::rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            let _ = std::fs::remove_file(&tmp);
+            std::fs::write(path, bytes)
+        }
+    }
+}
+
 /// Bytes as utf8 text when they are, else base64.
 fn inline(bytes: Vec<u8>) -> (String, &'static str) {
     match String::from_utf8(bytes) {
@@ -127,6 +230,7 @@ impl Host {
         let mut bytes = vec![0u8; length as usize];
         file.read_exact(&mut bytes)
             .map_err(|e| format!("读不了 {}：{e}", shown(&path)))?;
+        let bytes_read = if base64 { bytes.clone() } else { Vec::new() };
         let data = if base64 {
             b64(&bytes)
         } else {
@@ -147,17 +251,31 @@ impl Host {
             }
         };
         let length = if base64 { length } else { data.len() as u64 };
+        let meta = file.metadata().map_err(|e| e.to_string())?;
         let mut answer = json!({
             "path": shown(&path), "size": size, "offset": offset, "length": length,
             "eof": offset + length >= size, "encoding": if base64 { "base64" } else { "utf8" }, "data": data,
+            "version": version(&meta), "mtime_ms": mtime_ms(&meta),
         });
-        if arg_bool(args, "sha256") {
+        let whole = offset == 0 && length == size;
+        if whole {
+            answer["sha256"] = json!(sha256_hex(if base64 {
+                &bytes_read
+            } else {
+                answer["data"].as_str().unwrap_or("").as_bytes()
+            }));
+            if !base64 {
+                let (ending, bom) = line_ending(answer["data"].as_str().unwrap_or(""));
+                answer["line_ending"] = ending;
+                answer["bom"] = json!(bom);
+            }
+        } else if arg_bool(args, "sha256") {
             answer["sha256"] = json!(sha256_file(&path)?);
         }
         Ok(answer)
     }
 
-    pub(super) fn write(&self, args: &Value) -> Result<Value, String> {
+    pub(super) fn write(&self, args: &Value) -> Result<Value, Fail> {
         let path = self.resolve(arg_str(args, "path").unwrap_or(""))?;
         let data = arg_str(args, "data").unwrap_or("");
         let bytes = if arg_str(args, "encoding") == Some("base64") {
@@ -166,18 +284,20 @@ impl Host {
             data.as_bytes().to_vec()
         };
         if bytes.len() as u64 > CHUNK_MAX {
-            return Err(format!(
-                "一次最多写 {} 字节；大文件分块写（offset）",
-                CHUNK_MAX
-            ));
+            return Err(format!("一次最多写 {} 字节；大文件分块写（offset）", CHUNK_MAX).into());
+        }
+        let before = std::fs::metadata(&path).ok().filter(|m| m.is_file());
+        if let Some(expected) = args.get("expected").filter(|e| e.is_object()) {
+            check_expected(&path, before.as_ref(), expected)?;
         }
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("建不了 {}：{e}", shown(parent)))?;
         }
         let fail = |e: std::io::Error| format!("写不了 {}：{e}", shown(&path));
-        match args.get("offset").and_then(Value::as_u64) {
-            None => std::fs::write(&path, &bytes).map_err(fail)?,
+        let offset = args.get("offset").and_then(Value::as_u64);
+        match offset {
+            None => replace(&path, &bytes).map_err(fail)?,
             Some(offset) => {
                 let mut file = std::fs::OpenOptions::new()
                     .create(true)
@@ -192,8 +312,15 @@ impl Host {
                 file.write_all(&bytes).map_err(fail)?;
             }
         }
-        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-        Ok(json!({"path": shown(&path), "size": size, "written": bytes.len()}))
+        let meta = std::fs::metadata(&path).map_err(fail)?;
+        let mut answer = json!({
+            "path": shown(&path), "size": meta.len(), "written": bytes.len(), "created": before.is_none(),
+            "version": version(&meta), "mtime_ms": mtime_ms(&meta),
+        });
+        if offset.is_none() {
+            answer["sha256"] = json!(sha256_hex(&bytes));
+        }
+        Ok(answer)
     }
 
     /// Many paths' metadata in one round trip (a PC link is 30–200 ms per call). Per-path failures are entries,
@@ -222,7 +349,7 @@ impl Host {
             let mut entry = match std::fs::metadata(&real) {
                 Ok(meta) => json!({
                     "path": shown(&real), "exists": true, "kind": kind(meta.file_type()), "size": meta.len(),
-                    "mtime_ms": mtime_ms(&meta), "readonly": meta.permissions().readonly(),
+                    "mtime_ms": mtime_ms(&meta), "readonly": meta.permissions().readonly(), "version": version(&meta),
                 }),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     if symlink {
@@ -334,6 +461,50 @@ fn list_one(
     Ok(json!({"path": shown(dir), "entries": entries, "truncated": truncated}))
 }
 
+/// A guarded write's precondition: still absent, or still the version (and content) the caller read.
+fn check_expected(
+    path: &Path,
+    before: Option<&std::fs::Metadata>,
+    expected: &Value,
+) -> Result<(), Fail> {
+    let current = before.map(version);
+    if expected.get("absent").and_then(Value::as_bool) == Some(true) {
+        return match current {
+            None => Ok(()),
+            Some(v) => Err(Fail::coded(
+                "EXISTS",
+                format!("{} 已经存在：先读它，再按版本改", shown(path)),
+                json!({"version": v}),
+            )),
+        };
+    }
+    let Some(current) = current else {
+        return Err(Fail::coded(
+            "STALE_VERSION",
+            format!("{} 已经不在了", shown(path)),
+            json!({"version": null}),
+        ));
+    };
+    let stale = |why: &str| {
+        Fail::coded(
+            "STALE_VERSION",
+            format!("{} 在读过之后{why}：重新读，再改", shown(path)),
+            json!({"version": current}),
+        )
+    };
+    if let Some(want) = expected.get("version").and_then(Value::as_str)
+        && want != current
+    {
+        return Err(stale("被改过了"));
+    }
+    if let Some(want) = expected.get("sha256").and_then(Value::as_str)
+        && !want.eq_ignore_ascii_case(&sha256_file(path)?)
+    {
+        return Err(stale("内容变了"));
+    }
+    Ok(())
+}
+
 pub(super) fn sha256_file(path: &Path) -> Result<String, String> {
     use sha2::{Digest, Sha256};
     let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
@@ -380,6 +551,70 @@ mod tests {
         );
         assert_eq!(back["eof"], json!(true));
         assert_eq!(back["sha256"].as_str().unwrap().len(), 64);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reads_carry_the_version_and_guarded_writes_respect_it() {
+        let dir = temp("guard");
+        let host = host_in(&dir);
+        std::fs::write(dir.join("a.txt"), "one\r\ntwo\r\n").unwrap();
+        let read = host.read(&json!({"path": "a.txt"})).unwrap();
+        let v1 = read["version"].as_str().unwrap().to_string();
+        assert_eq!(read["line_ending"], "crlf");
+        assert_eq!(read["bom"], false);
+        assert_eq!(
+            read["sha256"].as_str().unwrap(),
+            sha256_hex(b"one\r\ntwo\r\n")
+        );
+        let stat = host.stat(&json!({"paths": ["a.txt"]})).unwrap();
+        assert_eq!(stat["entries"][0]["version"], v1.as_str());
+        // The version read: the write goes through and answers the new version.
+        let w = host
+            .write(&json!({"path": "a.txt", "data": "one\r\n", "expected": {"version": v1}}))
+            .unwrap();
+        assert_eq!(w["created"], false);
+        let v2 = w["version"].as_str().unwrap().to_string();
+        assert_ne!(v1, v2);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.txt")).unwrap(),
+            "one\r\n"
+        );
+        // The old version again: refused with the current one, nothing written.
+        let stale = host
+            .write(&json!({"path": "a.txt", "data": "x", "expected": {"version": v1}}))
+            .unwrap_err();
+        assert_eq!(stale.code, Some("STALE_VERSION"));
+        assert_eq!(stale.data["version"], v2.as_str());
+        let wrong_hash = host
+            .write(
+                &json!({"path": "a.txt", "data": "x", "expected": {"version": v2, "sha256": "00"}}),
+            )
+            .unwrap_err();
+        assert_eq!(wrong_hash.code, Some("STALE_VERSION"));
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.txt")).unwrap(),
+            "one\r\n"
+        );
+        // Create only if absent.
+        let exists = host
+            .write(&json!({"path": "a.txt", "data": "x", "expected": {"absent": true}}))
+            .unwrap_err();
+        assert_eq!(exists.code, Some("EXISTS"));
+        let created = host
+            .write(&json!({"path": "new/b.txt", "data": "b", "expected": {"absent": true}}))
+            .unwrap();
+        assert_eq!(created["created"], true);
+        let gone = host
+            .write(&json!({"path": "missing.txt", "data": "x", "expected": {"version": v2}}))
+            .unwrap_err();
+        assert_eq!(gone.code, Some("STALE_VERSION"));
+        // The atomic replace leaves no temporary file behind.
+        let names: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.iter().all(|n| !n.ends_with(".tmp")), "{names:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
