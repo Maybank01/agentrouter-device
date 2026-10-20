@@ -51,6 +51,20 @@ fn os_version() -> Option<String> {
     }
 }
 
+/// Where temporary files go for commands here (in folder mode the sandbox points these at its scratch folder).
+fn temp_dir() -> String {
+    ["TMPDIR", "TEMP", "TMP"]
+        .iter()
+        .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
+        .unwrap_or_else(|| {
+            if cfg!(windows) {
+                String::new()
+            } else {
+                "/tmp".into()
+            }
+        })
+}
+
 fn on_path(names: &[&str]) -> Option<String> {
     names.iter().find_map(|n| {
         let exe = if cfg!(windows) {
@@ -101,7 +115,7 @@ impl Host {
             "case_insensitive_paths": windows || cfg!(target_os = "macos"),
             "folders": self.folders.iter().map(|f| shown(f)).collect::<Vec<_>>(),
             "home": shown(&self.home()),
-            "temp_dir": shown(&std::env::temp_dir()),
+            "temp_dir": temp_dir(),
             "programs": programs,
             "version": env!("CARGO_PKG_VERSION"),
         }))
