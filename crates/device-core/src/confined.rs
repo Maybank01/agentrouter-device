@@ -332,6 +332,7 @@ pub fn run(
             exit_code: if timed_out { None } else { exit_code },
             timed_out,
             duration_ms: started.elapsed().as_millis() as u64,
+            ..Outcome::default()
         })
     }
 }

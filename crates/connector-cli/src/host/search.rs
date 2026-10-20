@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 
 use agentrouter_device::util::b64;
 
-use super::{Host, arg_bool, arg_str, shown, tool};
+use super::{Call, Host, arg_bool, arg_str, shown, tool};
 
 const RESULTS_DEFAULT: u64 = 10_000;
 const RESULTS_MAX: u64 = 100_000;
@@ -134,7 +134,7 @@ impl Sink for Matches<'_> {
 }
 
 impl Host {
-    pub(super) fn search(&self, args: &Value) -> Result<Value, String> {
+    pub(super) fn search(&self, args: &Value, call: &Call) -> Result<Value, String> {
         let content = match arg_str(args, "mode").unwrap_or("content") {
             "content" => true,
             "files" => false,
@@ -219,6 +219,9 @@ impl Host {
                 timed_out = true;
                 break;
             }
+            if call.cancelled() {
+                return Err("已取消".into());
+            }
             let Ok(entry) = item else { continue };
             if !entry.file_type().is_some_and(|t| t.is_file()) {
                 continue;
@@ -295,6 +298,9 @@ impl Host {
                 timed_out = true;
                 break;
             }
+            if call.cancelled() {
+                return Err("已取消".into());
+            }
             let before = count;
             let mut sink = Matches {
                 path: display.show(path),
@@ -320,8 +326,13 @@ impl Host {
 
 #[cfg(test)]
 mod tests {
+    use super::super::Call;
     use super::super::tests::{host_in, temp};
     use super::*;
+
+    fn search(host: &Host, args: Value) -> Result<Value, String> {
+        host.search(&args, &Call::detached())
+    }
 
     fn tree() -> PathBuf {
         let dir = temp("search");
@@ -360,7 +371,7 @@ mod tests {
     fn content_search_follows_ripgreps_rules() {
         let dir = tree();
         let host = host_in(&dir);
-        let out = host.search(&json!({"pattern": "needle"})).unwrap();
+        let out = search(&host, json!({"pattern": "needle"})).unwrap();
         // .gitignore'd build/, the hidden file and the binary file are skipped; UTF-16 is transcoded.
         assert_eq!(
             paths(&out, "matches"),
@@ -371,13 +382,17 @@ mod tests {
         assert_eq!(out["count"], 3);
         assert_eq!(out["files"], 3);
         // Named path: shown under it; a glob narrows; hidden/no_ignore widen.
-        let src = host
-            .search(&json!({"pattern": "needle", "path": "src", "globs": ["*.ts"]}))
-            .unwrap();
+        let src = search(
+            &host,
+            json!({"pattern": "needle", "path": "src", "globs": ["*.ts"]}),
+        )
+        .unwrap();
         assert_eq!(paths(&src, "matches"), ["src/nested/b.ts"]);
-        let wide = host
-            .search(&json!({"pattern": "needle", "hidden": true, "no_ignore": true, "globs": ["!.git"]}))
-            .unwrap();
+        let wide = search(
+            &host,
+            json!({"pattern": "needle", "hidden": true, "no_ignore": true, "globs": ["!.git"]}),
+        )
+        .unwrap();
         assert_eq!(
             paths(&wide, "matches"),
             [
@@ -389,19 +404,13 @@ mod tests {
             ]
         );
         // A binary file named directly is searched (NULs converted).
-        let named = host
-            .search(&json!({"pattern": "needle", "path": "bin.dat"}))
-            .unwrap();
+        let named = search(&host, json!({"pattern": "needle", "path": "bin.dat"})).unwrap();
         assert_eq!(paths(&named, "matches"), ["bin.dat"]);
         // Rust regex flavour; a literal newline is refused like rg.
-        let re = host
-            .search(&json!({"pattern": r"^const \w+ = \d$"}))
-            .unwrap();
+        let re = search(&host, json!({"pattern": r"^const \w+ = \d$"})).unwrap();
         assert_eq!(paths(&re, "matches"), ["src/nested/b.ts"]);
-        assert!(host.search(&json!({"pattern": "a\nb"})).is_err());
-        let capped = host
-            .search(&json!({"pattern": "needle", "max_results": 1}))
-            .unwrap();
+        assert!(search(&host, json!({"pattern": "a\nb"})).is_err());
+        let capped = search(&host, json!({"pattern": "needle", "max_results": 1})).unwrap();
         assert_eq!(capped["matches"].as_array().unwrap().len(), 1);
         assert_eq!(capped["truncated"], true);
         assert_eq!(capped["count"], 3);
@@ -412,9 +421,7 @@ mod tests {
     fn files_mode_is_rg_files_with_globs_and_sorting() {
         let dir = tree();
         let host = host_in(&dir);
-        let out = host
-            .search(&json!({"mode": "files", "globs": ["*.rs", "*.ts"]}))
-            .unwrap();
+        let out = search(&host, json!({"mode": "files", "globs": ["*.rs", "*.ts"]})).unwrap();
         assert_eq!(paths(&out, "paths"), ["src/a.rs", "src/nested/b.ts"]);
         // DSH's glob: --no-ignore --hidden with the VCS folders excluded, oldest first.
         let old = std::time::SystemTime::now() - Duration::from_secs(3600);
@@ -424,12 +431,12 @@ mod tests {
             .unwrap()
             .set_modified(old)
             .unwrap();
-        let dsh = host
-            .search(
-                &json!({"mode": "files", "globs": ["**/*.{ts,rs,js}", "!**/.git", "!**/.git/**"],
+        let dsh = search(
+            &host,
+            json!({"mode": "files", "globs": ["**/*.{ts,rs,js}", "!**/.git", "!**/.git/**"],
                 "hidden": true, "no_ignore": true, "sort": "modified"}),
-            )
-            .unwrap();
+        )
+        .unwrap();
         let got = paths(&dsh, "paths");
         assert_eq!(got[0], "src/nested/b.ts");
         assert!(got.contains(&"build/out.js".to_string()));
