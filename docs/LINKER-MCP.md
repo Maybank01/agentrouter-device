@@ -201,6 +201,8 @@ any other (§6), run with the person's rights in 完全访问 (§6.4). The aggre
 - `host__write` without `offset` creates or replaces the file (parents created); with `offset` it writes there,
   after truncating to `offset` when `truncate` is true (chunked transfer: first chunk `offset: 0, truncate: true`).
 - A write the OS refuses answers `isError` with the OS text (the console shows 拦下：在文件夹外).
+- Answers carry the bytes once: `structuredContent` has `data`; the text copy replaces a `data` over 64 KiB with a
+  marker, so a 4 MiB base64 chunk fits the 8 MiB frame. `host__read` without `length` reads at most 4 MiB.
 - Transfer (`remote_copy`, Cloud) is chunks of `host__read`/`host__write` (4 MiB, base64) relayed by the control
   plane from link to link (or the conversation's cloud sandbox), never through the model; each chunk is one audited
   call on each computer, the copy ends with `sha256` compared on both sides.

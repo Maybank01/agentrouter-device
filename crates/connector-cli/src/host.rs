@@ -152,7 +152,7 @@ impl Host {
         let length = args
             .get("length")
             .and_then(Value::as_u64)
-            .unwrap_or(size - offset)
+            .unwrap_or(CHUNK_MAX)
             .min(size - offset)
             .min(CHUNK_MAX);
         let base64 = args.get("encoding").and_then(Value::as_str) == Some("base64");
@@ -269,8 +269,18 @@ fn answer(id: &Value, result: Value) -> Value {
 
 fn tool_result(outcome: Result<Value, String>) -> Value {
     match outcome {
+        // The bytes go once (structuredContent): the text copy leaves a big `data` out, so a 4 MiB base64 chunk
+        // stays under the 8 MiB link frame.
         Ok(v) => {
-            json!({"content": [{"type": "text", "text": v.to_string()}], "structuredContent": v, "isError": false})
+            let mut text = v.clone();
+            if let Some(o) = text.as_object_mut()
+                && o.get("data")
+                    .and_then(Value::as_str)
+                    .is_some_and(|s| s.len() > 64 << 10)
+            {
+                o.insert("data".into(), json!("(in structuredContent)"));
+            }
+            json!({"content": [{"type": "text", "text": text.to_string()}], "structuredContent": v, "isError": false})
         }
         Err(e) => json!({"content": [{"type": "text", "text": e}], "isError": true}),
     }
