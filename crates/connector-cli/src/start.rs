@@ -6,7 +6,9 @@
 //! - the device name is the computer's name (`Config::name`);
 //! - the first time, the browser opens the pairing page with the code filled in, so the person only confirms there;
 //!   the paired identity stays in the key store (no expiry), so later starts connect without pairing;
-//! - 完全访问 (`--full`) for this test build, said in one line (the Windows folder sandbox is unverified, device #66).
+//! - folder mode on every OS: the local tools work only in that folder, inside the OS sandbox (owner 2026-10-10
+//!   「folder-scoped full freedom」; the test builds used 完全访问 only while the Windows folder sandbox did not work,
+//!   device #66/#112). 完全访问 stays the person's explicit choice (`agentrouter start --full`), said in one line.
 //!
 //! Started from a terminal with arguments, nothing here runs (`cli.rs`).
 
@@ -186,9 +188,9 @@ pub fn show_pairing(pairing: &agentrouter_device::net::Pairing) {
     }
 }
 
-/// Double-click start: choose (or reuse) the folder, then the console link in 完全访问.
-pub fn run(interrupted: &'static AtomicBool) -> i32 {
-    let code = start(interrupted);
+/// Double-click start: choose (or reuse) the folder, then the console link (folder mode; `full` = 完全访问).
+pub fn run(full: bool, interrupted: &'static AtomicBool) -> i32 {
+    let code = start(full, interrupted);
     // A window Windows opened for us closes with the process: keep it until the person has read why it stopped.
     if code != 0 && own_console() {
         line("\n按回车关闭这个窗口。");
@@ -200,7 +202,7 @@ pub fn run(interrupted: &'static AtomicBool) -> i32 {
     code
 }
 
-fn start(interrupted: &'static AtomicBool) -> i32 {
+fn start(full: bool, interrupted: &'static AtomicBool) -> i32 {
     line("AgentRouter · 把这台电脑连到 AgentRouter（测试版）");
     let mut cfg = Config::load();
     let folder = match working_folder(&mut cfg) {
@@ -211,14 +213,16 @@ fn start(interrupted: &'static AtomicBool) -> i32 {
         }
     };
     line(&format!("  这台电脑    {}", cfg.name));
-    line(
-        "  注意        窗口开着的时候，云端 Agent 能读写这台电脑上的所有文件（完全访问）；不用的时候关掉这个窗口。",
-    );
+    line(if full {
+        "  注意        窗口开着的时候，云端 Agent 能读写这台电脑上的所有文件（完全访问）；不用的时候关掉这个窗口。"
+    } else {
+        "  访问        云端 Agent 只能在这个文件夹里干活，文件夹外的改动由系统拦下；关掉窗口就断开。"
+    });
     crate::console::link(
         crate::console::LinkOptions {
             dirs: vec![shown(&folder)],
             read_only: false,
-            full: true,
+            full,
             yes_servers: false,
             gateway: None,
             name: None,
