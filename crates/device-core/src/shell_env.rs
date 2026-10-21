@@ -23,8 +23,7 @@
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 #[cfg(unix)]
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::sync::{Arc, Mutex};
 #[cfg(unix)]
@@ -353,7 +352,13 @@ mod tests {
 
     #[cfg(unix)]
     fn home_with_profile(tag: &str, profile: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("ar-shell-env-{tag}-{}", std::process::id()));
+        // Under the build's target folder (never the system temp one, docs/AV-HYGIENE.md): `<target>/debug/deps/<exe>`.
+        let exe = std::env::current_exe().unwrap();
+        let target = exe.ancestors().nth(3).expect("target folder");
+        let dir = target
+            .join("tmp")
+            .join("ar-shell-env-unit")
+            .join(format!("{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(".profile"), profile).unwrap();
         dir
