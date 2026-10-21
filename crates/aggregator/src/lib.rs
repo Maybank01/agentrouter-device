@@ -383,6 +383,17 @@ impl Aggregator {
         self.inner.audit.lock().unwrap().head()
     }
 
+    /// Running environments (Cloud VISION §3.1: one Agent's workplace on this host): the conversations with an open
+    /// MCP session here.
+    pub fn environments(&self) -> usize {
+        let sessions = self.inner.sessions.lock().unwrap();
+        let mut conversations: Vec<&str> =
+            sessions.values().map(|s| s.conversation.as_str()).collect();
+        conversations.sort_unstable();
+        conversations.dedup();
+        conversations.len()
+    }
+
     /// One MCP message of session `s` from the link.
     pub fn on_message(&self, s: &str, m: Value) {
         self.inner.on_message(s, m);

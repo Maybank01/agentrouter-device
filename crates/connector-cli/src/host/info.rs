@@ -9,7 +9,7 @@ use super::{Host, shell_name, shown, tool};
 pub(super) fn tools() -> Vec<Value> {
     vec![tool(
         "info",
-        "This computer: OS and architecture, the shell commands run in (PowerShell on Windows, /bin/sh elsewhere), path separator, default line ending for new files, case-insensitive paths, the linked folders (the first is home), temp dir, and common programs on PATH.",
+        "This computer: OS and architecture, the shell commands run in (PowerShell on Windows, /bin/sh elsewhere), path separator, default line ending for new files, case-insensitive paths, the linked folders (the first is home), temp dir, common programs on PATH, capacity (cores, memory, disk, GPUs, environments) and labels (tools, runtimes, the owner's own).",
         json!({"type": "object", "properties": {}}),
         true,
     )]
@@ -85,6 +85,7 @@ fn on_path(names: &[&str]) -> Option<String> {
 impl Host {
     pub(super) fn info(&self) -> Result<Value, String> {
         let windows = cfg!(windows);
+        let cfg = agentrouter_device::config::Config::load();
         let shell_program = if windows {
             shown(&agentrouter_device::shell::default_shell().program)
         } else {
@@ -117,6 +118,8 @@ impl Host {
             "home": shown(&self.home()),
             "temp_dir": temp_dir(),
             "programs": programs,
+            "capacity": agentrouter_device::capacity::capacity(&self.home(), cfg.max_environments),
+            "labels": agentrouter_device::capacity::labels(&cfg.labels),
             "version": env!("CARGO_PKG_VERSION"),
         }))
     }

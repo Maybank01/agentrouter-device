@@ -6,6 +6,7 @@
 //! communication design, HOSTD-MCP §4).
 
 pub mod audit;
+pub mod capacity;
 pub mod command_text;
 pub mod config;
 pub mod confine;
