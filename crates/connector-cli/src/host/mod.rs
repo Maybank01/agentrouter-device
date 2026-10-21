@@ -166,7 +166,7 @@ impl Host {
         self.jobs.end_all();
         self.ptys.end_all();
         self.changes.stop();
-        self.out.remove_all();
+        // The output folder stays: a reconnect or a reboot keeps its paths; only the Agent removes files (#102).
     }
 
     fn home(&self) -> PathBuf {
@@ -175,6 +175,20 @@ impl Host {
             .cloned()
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_default()
+    }
+
+    /// The paths a call names (`path`, `paths`) that are in the output folder mark their scope used.
+    fn note_output_use(&self, args: &Value) {
+        let named = args.get("path").and_then(Value::as_str).into_iter().chain(
+            args.get("paths")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str),
+        );
+        for raw in named.filter(|p| !p.trim().is_empty()) {
+            self.out.used(&self.absolute(raw));
+        }
     }
 
     /// The path as named, made absolute: relative ones are inside the first folder.
@@ -200,7 +214,11 @@ impl Host {
     }
 
     fn call(&self, tool: &str, args: &Value, call: &Call) -> Result<Value, Fail> {
-        Ok(match tool {
+        // Reading output files is the scope's last use in the accounting (#102).
+        if matches!(tool, "read" | "stat" | "list" | "search") {
+            self.note_output_use(args);
+        }
+        let mut answer = match tool {
             "exec" => self.exec(args, call)?,
             "read" => self.read(args)?,
             "write" => self.write(args)?,
@@ -220,8 +238,18 @@ impl Host {
             "changes" => self.changes(args, call)?,
             "spill_write" => self.spill_write(args)?,
             "out_release" => self.out_release(args)?,
+            "out_status" => self.out_status()?,
             other => return Err(format!("没有这个工具：{other}").into()),
-        })
+        };
+        // A call that may add output carries the folder's accounting once a threshold is crossed (#102): the runner
+        // turns it into the environment's `environment.storage_low` event; nothing is deleted here.
+        if matches!(tool, "exec" | "job_start" | "job_read" | "spill_write")
+            && let Some(low) = self.out.notice()
+            && let Some(obj) = answer.as_object_mut()
+        {
+            obj.insert("storage_low".into(), low);
+        }
+        Ok(answer)
     }
 }
 
@@ -480,6 +508,7 @@ mod tests {
             ("info", true),
             ("changes", true),
             ("spill_write", false),
+            ("out_status", true),
             ("out_release", false),
         ];
         let list = tools();
