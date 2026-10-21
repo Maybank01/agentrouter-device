@@ -45,7 +45,7 @@ pub(super) fn tools() -> Vec<Value> {
         ),
         tool(
             "write",
-            "Write a file by its real path (parents are created). Without offset: create or replace atomically. With offset: write there (truncate: cut the file to offset first). data is utf8 text or base64 bytes (at most 4 MiB). expected guards it: {version, sha256?} = only if the file is still that version, {absent: true} = only if it does not exist (else STALE_VERSION / EXISTS with the current version).",
+            "Write a file by its real path (parents are created). Without offset: create or replace atomically. With offset: write there (truncate: cut the file to offset first). data is utf8 text or base64 bytes (at most 4 MiB). expected guards it: {version, sha256?} = only if the file is still that version, {absent: true} = only if it does not exist (else STALE_VERSION / EXISTS with the current version). executable (whole-file writes, Unix) sets the file's mode to 755 / 644; without it a replaced file keeps its permissions.",
             json!({"type": "object", "properties": {
                 "path": {"type": "string"},
                 "data": {"type": "string"},
@@ -57,12 +57,13 @@ pub(super) fn tools() -> Vec<Value> {
                     "sha256": {"type": "string"},
                     "absent": {"type": "boolean"},
                 }},
+                "executable": {"type": "boolean"},
             }, "required": ["path", "data"]}),
             false,
         ),
         tool(
             "stat",
-            "Metadata of many paths in one call (kind, size, mtime, readonly, symlink); a missing path is exists:false, not an error. content_max > 0 also returns the content of files up to that size (utf8, else base64).",
+            "Metadata of many paths in one call (kind, size, mtime, readonly, executable, symlink and its link target); a missing path is exists:false, not an error. content_max > 0 also returns the content of files up to that size (utf8, else base64).",
             json!({"type": "object", "properties": {
                 "paths": {"type": "array", "items": {"type": "string"}, "maxItems": STAT_MAX},
                 "content_max": {"type": "integer", "minimum": 0, "maximum": STAT_CONTENT_MAX},
@@ -71,7 +72,7 @@ pub(super) fn tools() -> Vec<Value> {
         ),
         tool(
             "list",
-            "List directories (path or paths): entries sorted by name with kind, size and mtime; depth > 1 walks down (names are relative paths). hidden (default true) includes dot entries; ignore (default false) applies .gitignore/.ignore like ripgrep. Symlinks are not followed.",
+            "List directories (path or paths): entries sorted by name with kind, size, mtime, executable (files, Unix) and link (symlinks: the target); depth > 1 walks down (names are relative paths). hidden (default true) includes dot entries; ignore (default false) applies .gitignore/.ignore like ripgrep. Symlinks are not followed.",
             json!({"type": "object", "properties": {
                 "path": {"type": "string"},
                 "paths": {"type": "array", "items": {"type": "string"}, "maxItems": LIST_PATHS_MAX},
@@ -94,6 +95,45 @@ pub(super) fn mtime_ms(meta: &std::fs::Metadata) -> Value {
         Ok(d) => json!(d.as_millis() as i64),
         Err(e) => json!(-(e.duration().as_millis() as i64)),
     }
+}
+
+/// Whether a file is executable (any x bit), on Unix; `None` elsewhere (no such bit) and for non-files.
+pub(super) fn executable(meta: &std::fs::Metadata) -> Option<bool> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        meta.is_file()
+            .then(|| meta.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = meta;
+        None
+    }
+}
+
+/// Sets a file's mode to 755 or 644 (Unix; elsewhere nothing to set).
+fn set_executable(path: &Path, on: bool) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            path,
+            std::fs::Permissions::from_mode(if on { 0o755 } else { 0o644 }),
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, on);
+        Ok(())
+    }
+}
+
+/// A symlink's target as written (not resolved).
+fn link_target(path: &Path) -> Option<String> {
+    std::fs::read_link(path)
+        .ok()
+        .map(|t| t.to_string_lossy().into_owned())
 }
 
 fn kind(ft: std::fs::FileType) -> &'static str {
@@ -297,7 +337,12 @@ impl Host {
         let fail = |e: std::io::Error| format!("写不了 {}：{e}", shown(&path));
         let offset = args.get("offset").and_then(Value::as_u64);
         match offset {
-            None => replace(&path, &bytes).map_err(fail)?,
+            None => {
+                replace(&path, &bytes).map_err(fail)?;
+                if let Some(on) = args.get("executable").and_then(Value::as_bool) {
+                    set_executable(&path, on).map_err(fail)?;
+                }
+            }
             Some(offset) => {
                 let mut file = std::fs::OpenOptions::new()
                     .create(true)
@@ -319,6 +364,9 @@ impl Host {
         });
         if offset.is_none() {
             answer["sha256"] = json!(sha256_hex(&bytes));
+        }
+        if let Some(x) = executable(&meta) {
+            answer["executable"] = json!(x);
         }
         Ok(answer)
     }
@@ -362,6 +410,13 @@ impl Host {
             };
             if symlink {
                 entry["symlink"] = json!(true);
+                if let Some(target) = link_target(&named) {
+                    entry["link"] = json!(target);
+                }
+            } else if let Ok(meta) = std::fs::metadata(&real)
+                && let Some(x) = executable(&meta)
+            {
+                entry["executable"] = json!(x);
             }
             let size = entry["size"].as_u64().unwrap_or(u64::MAX);
             if content_max > 0 && entry["kind"] == "file" && size <= content_max && size <= budget {
@@ -453,8 +508,16 @@ fn list_one(
         if let Ok(meta) = entry.metadata() {
             if meta.is_file() {
                 e["size"] = json!(meta.len());
+                if let Some(x) = executable(&meta) {
+                    e["executable"] = json!(x);
+                }
             }
             e["mtime_ms"] = mtime_ms(&meta);
+        }
+        if entry.path_is_symlink()
+            && let Some(target) = link_target(entry.path())
+        {
+            e["link"] = json!(target);
         }
         entries.push(e);
     }
@@ -641,6 +704,44 @@ mod tests {
         assert_eq!(e[3]["kind"], "dir");
         assert_eq!(e[4]["exists"], false);
         assert!(e[4].get("error").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_executable_bit_and_link_targets_are_reported_and_set() {
+        let dir = temp("modes");
+        let host = host_in(&dir);
+        let w = host
+            .write(&json!({"path": "run.sh", "data": "#!/bin/sh\n", "executable": true}))
+            .unwrap();
+        assert_eq!(w["executable"], true);
+        host.write(&json!({"path": "a.txt", "data": "a"})).unwrap();
+        std::os::unix::fs::symlink("a.txt", dir.join("l")).unwrap();
+        let stat = host
+            .stat(&json!({"paths": ["run.sh", "a.txt", "l"]}))
+            .unwrap();
+        let e = stat["entries"].as_array().unwrap();
+        assert_eq!(e[0]["executable"], true);
+        assert_eq!(e[1]["executable"], false);
+        assert_eq!(e[2]["link"], "a.txt");
+        let list = host.list(&json!({"path": "."})).unwrap();
+        let entries = list["listings"][0]["entries"].as_array().unwrap();
+        let by = |n: &str| entries.iter().find(|e| e["name"] == n).unwrap().clone();
+        assert_eq!(by("run.sh")["executable"], true);
+        assert_eq!(by("a.txt")["executable"], false);
+        assert_eq!(by("l")["link"], "a.txt");
+        // A replace without the argument keeps the mode; with it, the mode follows.
+        host.write(&json!({"path": "run.sh", "data": "#!/bin/sh\nexit 0\n"}))
+            .unwrap();
+        assert_eq!(
+            host.stat(&json!({"paths": ["run.sh"]})).unwrap()["entries"][0]["executable"],
+            true
+        );
+        let off = host
+            .write(&json!({"path": "run.sh", "data": "x", "executable": false}))
+            .unwrap();
+        assert_eq!(off["executable"], false);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
