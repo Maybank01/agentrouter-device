@@ -22,6 +22,7 @@ pub mod mcp_pkg;
 pub mod net;
 pub mod protocol;
 pub mod shell;
+pub mod shell_env;
 pub mod util;
 pub mod workspace;
 pub mod worktree;

@@ -263,6 +263,17 @@ what a bound cloud session uses as its local machine (below).
 | `host__out_status` | — | `folder`, `total_bytes`, `free_bytes`, `warn_bytes`, `min_free_bytes`, `low`, `scopes` (largest first: `scope`, `bytes`, `files`, `last_used_ms`, `path`) |
 | `host__out_release` | `scope` | `released` — deletes that scope's files; only when the Agent decides so |
 
+**The person's terminal environment (#95, Cloud #2383).** `host__exec`, jobs and PTYs start with the environment of
+the person's login shell, not `hostd`'s own: `hostd` runs `$SHELL -i -l -c` once (as VS Code resolves the shell
+environment: markers around `env -0`, stdin `/dev/null`, no terminal, a 10 s limit, `AGENTROUTER_RESOLVING_ENVIRONMENT=1`
+for start-up files that want to skip work) and keeps it in memory; it captures again when a start-up file of that shell
+changes. So `PATH` from `~/.zshrc` (nvm, mise, pyenv, Homebrew), exported variables and `SSH_AUTH_SOCK` are there as in
+the person's terminal. `hostd`'s own proxy variables, `TMPDIR` and `AGENTROUTER_*` win (a sandbox's way out). In folder
+mode the capture runs inside the same OS sandbox, so it reads only what the sandbox allows; a credential agent's socket
+is reachable only if the sandbox allows it (owner decision pending). On failure the commands keep `hostd`'s environment;
+`AGENTROUTER_SHELL_ENV=off` turns it off. Windows: a process the person starts already has their registry variables;
+nothing is captured. Values are never logged.
+
 **The output folder (Cloud #2435, device #100, #102).** A job's stream past its window and an oversize tool result stay
 here; only the tail and the path travel. The folder outlives the link (reconnects and reboots keep every path). Nothing in
 it is deleted automatically — not on link end, not when the Agent moves away, not by age or size (owner 2026-10-21

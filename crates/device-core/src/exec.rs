@@ -330,6 +330,10 @@ pub fn spawn_shell(command: &str, cwd: &Path) -> Result<Spawned, String> {
     let stdin = Stdio::null();
     #[cfg(not(windows))]
     let stdin = Stdio::piped();
+    // The person's terminal environment (their shell's start-up files: PATH, version managers, SSH_AUTH_SOCK…), #95.
+    if let Some(env) = crate::shell_env::for_command() {
+        cmd.env_clear().envs(env);
+    }
     cmd.current_dir(cwd)
         .stdin(stdin)
         .stdout(Stdio::piped())

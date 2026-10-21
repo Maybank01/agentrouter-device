@@ -123,9 +123,9 @@ pub fn find_windows_powershell() -> Option<PathBuf> {
     })
 }
 
-/// A program named on PATH (an `.exe` name is expected on Windows).
+/// A program named on the person's PATH (their shell's, `crate::shell_env`; an `.exe` name is expected on Windows).
 pub fn find_on_path(name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
+    let path = crate::shell_env::var_os("PATH")?;
     std::env::split_paths(&path).find_map(|dir| existing(&dir.join(name)))
 }
 
