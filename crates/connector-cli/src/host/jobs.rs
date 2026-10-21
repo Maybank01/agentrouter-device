@@ -21,10 +21,11 @@ use serde_json::{Value, json};
 
 use agentrouter_device::exec::{self, Spawned};
 
+use super::out::{Out, Spill};
 use super::run::{PUSH_BYTES, PUSH_EVERY, utf8_head};
 use super::{Call, Host, arg_str, shell_name, shown, tool};
 
-/// Output kept per stream of a job; older bytes are dropped (a read from before them says so).
+/// Output kept in memory per stream of a job; older bytes are read from the stream's copy in the output folder.
 const KEEP: usize = 8 << 20;
 const READ_DEFAULT: u64 = 1 << 20;
 const READ_MAX: u64 = 4 << 20;
@@ -34,6 +35,9 @@ const START_WAIT_MAX_MS: u64 = exec::TIMEOUT_MAX_MS;
 /// The caller's own label of a job (Cloud: the session that started it), shown by `jobs`, so a caller that lost track of
 /// its jobs (a restart) can find and end them.
 const TAG_MAX: usize = 128;
+/// A stream's copy stops at this size unless the caller asks for less (DSH's own `maxSpillBytes` default).
+const SPILL_MAX: u64 = 64 << 20;
+const TOTAL_SPILL_MAX: u64 = 1 << 30;
 /// After the process ended, how long its output pipes may stay open (a grandchild holding them) before the answer.
 const DRAIN: Duration = Duration::from_millis(200);
 const RUNNING_MAX: usize = 32;
@@ -44,13 +48,20 @@ pub(super) fn tools() -> Vec<Value> {
     vec![
         tool(
             "job_start",
-            "Start a command in the background in this computer's shell (dev servers, watchers, long builds); it keeps running after this call. Read its output with job_read, end it with job_stop. Jobs end with the link. wait_ms waits for its end first (output streams as progress like exec; a job that ended inside the wait is forgotten).",
+            "Start a command in the background in this computer's shell (dev servers, watchers, long builds); it keeps running after this call. Read its output with job_read, end it with job_stop. Jobs end with the link. wait_ms waits for its end first (output streams as progress like exec; a job that ended inside the wait is forgotten). A stream past output.<stream>.window bytes is answered as its last window plus spill_path, its complete copy in this environment's output folder (scope: the session's folder there).",
             json!({"type": "object", "properties": {
                 "command": {"type": "string"},
                 "cwd": {"type": "string"},
                 "wait_ms": {"type": "integer", "minimum": 0, "maximum": START_WAIT_MAX_MS},
                 "tag": {"type": "string", "maxLength": TAG_MAX},
-            }, "required": ["command"]}),
+                "scope": {"type": "string", "maxLength": 64},
+                "output": {"type": "object", "properties": {
+                    "stdout": {"$ref": "#/$defs/stream"}, "stderr": {"$ref": "#/$defs/stream"},
+                }},
+            }, "required": ["command"], "$defs": {"stream": {"type": "object", "properties": {
+                "window": {"type": "integer", "minimum": 1},
+                "spill_max": {"type": "integer", "minimum": 1},
+            }}}}),
             false,
         ),
         tool(
@@ -83,11 +94,18 @@ pub(super) fn tools() -> Vec<Value> {
     ]
 }
 
-/// One stream's kept output: bytes `[start, start + data.len())` of everything it wrote.
+/// One stream's kept output: bytes `[start, start + data.len())` of everything it wrote, and (device #100, Cloud
+/// #2435) its complete copy in the environment's output folder once it grew past the caller's `window` (or half of
+/// [`KEEP`]): nothing is dropped, and a caller that takes only a window reads the tail plus the copy's path.
 #[derive(Default)]
 pub(super) struct Kept {
     start: u64,
     data: Vec<u8>,
+    /// The caller takes at most this much inline: once the stream spilled, reads from before `end - window` start there.
+    window: Option<u64>,
+    spill: Option<Spill>,
+    /// Where the copy goes when it is needed: (folder, scope, file name, size cap). None: never (a terminal's screen).
+    spill_to: Option<(Arc<Out>, String, String, u64)>,
 }
 
 impl Kept {
@@ -95,21 +113,80 @@ impl Kept {
         self.start + self.data.len() as u64
     }
 
-    /// From byte `offset` (clamped to what is kept) at most `max` bytes as UTF-8 (`last`: the stream ended, a
-    /// partial character at its end is shown too): `{data, offset, next_offset, more, dropped}`.
+    fn spills_at(&self) -> u64 {
+        let half = (KEEP / 2) as u64;
+        self.window.unwrap_or(half).min(half)
+    }
+
+    /// Whether a windowed caller is past its window (its output is in the copy; nothing to stream as progress).
+    fn past_window(&self) -> bool {
+        self.window.is_some() && self.spill.is_some()
+    }
+
+    /// From byte `offset` at most `max` bytes as UTF-8 (`last`: the stream ended, a partial character at its end is
+    /// shown too): `{data, offset, next_offset, more, dropped}`, plus `spill_path` (the complete copy) once there is
+    /// one. A windowed stream that spilled answers from `end - window` at the earliest; bytes before what memory keeps
+    /// come from the copy.
     pub(super) fn read(&self, offset: u64, max: usize, last: bool) -> Value {
-        let from = offset.clamp(self.start, self.end());
-        let lo = (from - self.start) as usize;
-        let hi = (lo + max).min(self.data.len());
-        let (text, used) = utf8_head(&self.data[lo..hi], last && hi == self.data.len());
-        json!({
-            "data": text, "offset": from, "next_offset": from + used as u64,
-            "dropped": offset < self.start, "more": (from + used as u64) < self.end(),
-        })
+        let end = self.end();
+        let mut from = offset.min(end);
+        if let (Some(w), Some(_)) = (self.window, &self.spill) {
+            from = from.max(end.saturating_sub(w));
+        }
+        let from_file = from < self.start && self.spill.as_ref().is_some_and(|s| from < s.written);
+        let chunk: Vec<u8> = if from_file {
+            let s = self.spill.as_ref().unwrap();
+            s.read_at(from, max.min((self.start.min(s.written) - from) as usize))
+        } else {
+            from = from.max(self.start);
+            let lo = (from - self.start) as usize;
+            let hi = (lo + max).min(self.data.len());
+            self.data[lo..hi].to_vec()
+        };
+        // A jump may land inside a character: start at the next one.
+        let skip = if from != offset {
+            chunk
+                .iter()
+                .take(3)
+                .take_while(|b| (**b & 0xC0) == 0x80)
+                .count()
+        } else {
+            0
+        };
+        let at_end = from + chunk.len() as u64 == end;
+        let (text, used) = utf8_head(&chunk[skip..], last && at_end);
+        let next = from + (skip + used) as u64;
+        let covered = self.spill.as_ref().is_some_and(|s| s.written >= from);
+        let mut part = json!({
+            "data": text, "offset": from + skip as u64, "next_offset": next,
+            "dropped": offset < from && !covered, "more": next < end,
+        });
+        if let Some(s) = &self.spill {
+            part["spill_path"] = json!(s.shown());
+            part["spill_bytes"] = json!(s.written);
+            if s.full {
+                part["spill_full"] = json!(true);
+            }
+        }
+        part
     }
 
     pub(super) fn push(&mut self, bytes: &[u8]) {
         self.data.extend_from_slice(bytes);
+        if let Some(s) = self.spill.as_mut() {
+            s.write(bytes);
+        } else if self.spill_to.is_some() && self.end() > self.spills_at() {
+            let (out, scope, name, max) = self.spill_to.take().unwrap();
+            if let Ok((path, file)) = out.create(&scope, &name) {
+                let mut s = Spill::new(path, file, max);
+                if self.start == 0 {
+                    s.write(&self.data);
+                } else {
+                    s.full = true;
+                }
+                self.spill = Some(s);
+            }
+        }
         if self.data.len() > KEEP {
             let drop = self.data.len() - KEEP + KEEP / 4;
             self.data.drain(..drop);
@@ -250,6 +327,27 @@ fn pump(job: &Arc<Job>, stream: impl std::io::Read + Send + 'static, i: usize) {
 }
 
 impl Host {
+    /// A job stream's output: the caller's `output.<stream>.window` / `spill_max`, its copy in `scope`'s folder.
+    fn kept_for(&self, args: &Value, n: u64, i: usize) -> Kept {
+        let name = ["stdout", "stderr"][i];
+        let want = args.get("output").and_then(|o| o.get(name));
+        let num = |k: &str| {
+            want.and_then(|w| w.get(k))
+                .and_then(Value::as_u64)
+                .filter(|v| *v > 0)
+        };
+        Kept {
+            window: num("window"),
+            spill_to: Some((
+                self.out.clone(),
+                arg_str(args, "scope").unwrap_or("").to_string(),
+                format!("job-{n}-{name}.txt"),
+                num("spill_max").unwrap_or(SPILL_MAX).min(TOTAL_SPILL_MAX),
+            )),
+            ..Kept::default()
+        }
+    }
+
     pub(super) fn job_start(&self, args: &Value, call: &Call) -> Result<Value, String> {
         let command = arg_str(args, "command").unwrap_or("");
         if command.trim().is_empty() {
@@ -293,6 +391,7 @@ impl Host {
             spawned: Mutex::new(Some(spawned)),
             state: Mutex::new(State {
                 open: u8::from(stdout.is_some()) + u8::from(stderr.is_some()),
+                out: [0, 1].map(|i| self.kept_for(args, n, i)),
                 ..State::default()
             }),
             changed: Condvar::new(),
@@ -410,7 +509,7 @@ impl Host {
             // lose the race with it on the way (the aggregator and the client drop progress of a call that answered).
             if streams && !done {
                 for (i, name) in [(0usize, "stdout"), (1usize, "stderr")] {
-                    if state.out[i].end() <= sent[i] {
+                    if state.out[i].end() <= sent[i] || state.out[i].past_window() {
                         continue;
                     }
                     let part = state.out[i].read(sent[i], PUSH_BYTES * 4, done);
@@ -739,5 +838,63 @@ mod tests {
         host.jobs.end_all();
         assert!(ids(&host).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Device #100 / Cloud #2435: a stream past the caller's window answers its tail plus the complete copy's path;
+    /// nothing is dropped, and the copy goes when its scope is released.
+    #[test]
+    fn long_output_stays_in_the_output_folder_and_only_the_window_travels() {
+        let dir = temp("jobs-spill");
+        let host = host_in(&dir);
+        let command = if cfg!(windows) {
+            "1..200000 | ForEach-Object { $_ }"
+        } else {
+            "seq 1 200000"
+        };
+        let r = host
+            .job_start(
+                &json!({"command": command, "wait_ms": 60_000, "scope": "ses-t",
+                    "output": {"stdout": {"window": 1000}}}),
+                &Call::detached(),
+            )
+            .unwrap();
+        assert_eq!(r["running"], false, "{r}");
+        let out = &r["stdout"];
+        let data = out["data"].as_str().unwrap();
+        assert!(
+            data.len() <= 1000 && data.trim_end().ends_with("200000"),
+            "{data}"
+        );
+        assert_eq!(out["dropped"], false);
+        let path = out["spill_path"].as_str().expect("a copy");
+        let full = std::fs::read_to_string(path).unwrap().replace("\r\n", "\n");
+        let want: String = (1..=200000).map(|n| format!("{n}\n")).collect();
+        assert_eq!(full, want);
+        assert!(host.out_release(&json!({"scope": "ses-t"})).unwrap()["released"] == true);
+        assert!(!std::path::Path::new(path).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Without a window, more than memory keeps is read back from the copy (no "dropped").
+    #[test]
+    fn output_beyond_memory_is_read_from_the_copy() {
+        let mut k = Kept {
+            spill_to: Some((
+                Arc::new(Out::at(temp("kept-spill"))),
+                "s".into(),
+                "x.txt".into(),
+                SPILL_MAX,
+            )),
+            ..Kept::default()
+        };
+        let line = [b'x'; 1 << 20];
+        for _ in 0..10 {
+            k.push(&line);
+        }
+        assert!(k.start > 0);
+        let r = k.read(0, 16, false);
+        assert_eq!(r["dropped"], false);
+        assert_eq!(r["data"], "x".repeat(16));
+        assert_eq!(r["offset"], 0);
     }
 }
