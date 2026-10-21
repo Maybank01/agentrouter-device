@@ -880,7 +880,7 @@ mod tests {
     fn output_beyond_memory_is_read_from_the_copy() {
         let mut k = Kept {
             spill_to: Some((
-                Arc::new(Out::at(temp("kept-spill"))),
+                Arc::new(Out::at(temp("kept-spill"), 1 << 30, 0)),
                 "s".into(),
                 "x.txt".into(),
                 SPILL_MAX,

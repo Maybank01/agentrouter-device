@@ -259,6 +259,18 @@ what a bound cloud session uses as its local machine (below).
 | `host__pty_resize` / `host__pty_close` | `pty`, `cols`, `rows` / `pty` | the new size / `closed` (the program's whole tree ended) |
 | `host__info` | — | `os`, `family`, `arch`, `os_version`, `shell` (`pwsh`/`powershell`/`sh`) + `shell_program`, `path_separator`, `path_list_separator`, `line_ending` (default for new files: `crlf` on Windows, `lf` elsewhere), `case_insensitive_paths`, `folders`, `home`, `temp_dir`, `programs` (git, node, npm, python, pwsh, bash, rg on PATH, or null), `version` |
 | `host__changes` | `cursor?` (none: start watching, answer the baseline), `wait_ms?` (≤ 30 000: long poll), `max?` | `feed` (2: a change after an answered cursor is never folded into an earlier one — cache only with a version you know), `cursor` (pass it next time), `changes` (`path`, `kind` `create`/`modify`/`rename`/`remove`/`metadata`/`any`), `overflow` (changes were missed: drop every cached read), `watching` (per folder `ok`/`error`), `error` |
+| `host__spill_write` | `data`, `scope?`, `name?`, `path?` (append to a file it returned) | `path`, `bytes` — text kept in the environment's output folder (`<temp>/agentrouter-out/<scope>/`) |
+| `host__out_status` | — | `folder`, `total_bytes`, `free_bytes`, `warn_bytes`, `min_free_bytes`, `low`, `scopes` (largest first: `scope`, `bytes`, `files`, `last_used_ms`, `path`) |
+| `host__out_release` | `scope` | `released` — deletes that scope's files; only when the Agent decides so |
+
+**The output folder (Cloud #2435, device #100, #102).** A job's stream past its window and an oversize tool result stay
+here; only the tail and the path travel. The folder outlives the link (reconnects and reboots keep every path). Nothing in
+it is deleted automatically — not on link end, not when the Agent moves away, not by age or size (owner 2026-10-21
+「然后事件清理，这个应该是像CC一样，发现空间不够了，通知Agent可以清理了。我认为自动清理这个还是不要做，因为很可能误删」).
+When the folder passes `AGENTROUTER_OUT_WARN` (default `1G`) or the disk's free space falls under
+`AGENTROUTER_OUT_MIN_FREE` (default `2G`), the next `exec`/`job_start`/`job_read`/`spill_write` answer carries
+`storage_low` (the `host__out_status` answer) once per crossing; the runner turns it into the environment's
+`environment.storage_low` event and the Agent decides what to delete.
 
 - The shell is real: `/bin/sh -lc` on Linux/macOS, PowerShell (`pwsh`, else Windows PowerShell) on Windows; `shell`
   names it. The command's whole process tree ends on timeout (process group / job object). Paths are real; relative ones resolve against the first folder.

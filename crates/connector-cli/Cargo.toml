@@ -50,7 +50,7 @@ rustls = ["agentrouter-device-core/rustls", "agentrouter-hostd-link/rustls"]
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_System_Console", "Win32_Foundation"] }
+windows-sys = { workspace = true, features = ["Win32_System_Console", "Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [build-dependencies]
 embed-resource = "3"
