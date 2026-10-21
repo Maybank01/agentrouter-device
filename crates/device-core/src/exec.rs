@@ -301,9 +301,17 @@ impl Drop for Spawned {
     }
 }
 
-/// The device's shell running `command` in `cwd` (PowerShell on Windows, `/bin/sh -lc` elsewhere): stdout and
-/// stderr piped, stdin as given. The caller validates `cwd` first.
-pub fn spawn_shell(command: &str, cwd: &Path, stdin: Stdio) -> Result<Spawned, String> {
+/// What the Unix login shell runs: the command text read from its stdin, then the command itself with stdin
+/// `/dev/null`. The command never travels as one `-c` argument (workspace AGENTS.md "No data through command lines",
+/// Cloud #2413): Linux refuses one argument past 128 KiB (MAX_ARG_STRLEN), and an Agent's heredoc that writes a file is
+/// one command. No file either: a sandboxed host server may have no writable temp folder.
+#[cfg(unix)]
+pub const UNIX_RUNNER: &str = r#"c=$(cat) && exec </dev/null && eval "$c""#;
+
+/// The device's shell running `command` in `cwd` (PowerShell on Windows, `/bin/sh -l` elsewhere): stdout and stderr
+/// piped, the command's stdin `/dev/null`. On Unix the command text goes to the shell on its stdin ([`UNIX_RUNNER`]).
+/// The caller validates `cwd` first.
+pub fn spawn_shell(command: &str, cwd: &Path) -> Result<Spawned, String> {
     #[cfg(windows)]
     let shell = crate::shell::default_shell();
     #[cfg(windows)]
@@ -315,9 +323,13 @@ pub fn spawn_shell(command: &str, cwd: &Path, stdin: Stdio) -> Result<Spawned, S
     #[cfg(not(windows))]
     let mut cmd = {
         let mut c = Command::new("/bin/sh");
-        c.arg("-lc").arg(command);
+        c.arg("-lc").arg(UNIX_RUNNER);
         c
     };
+    #[cfg(windows)]
+    let stdin = Stdio::null();
+    #[cfg(not(windows))]
+    let stdin = Stdio::piped();
     cmd.current_dir(cwd)
         .stdin(stdin)
         .stdout(Stdio::piped())
@@ -354,6 +366,15 @@ pub fn spawn_shell(command: &str, cwd: &Path, stdin: Stdio) -> Result<Spawned, S
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("命令起不来（{}）：{e}", cwd.display()))?;
+    // The command text, written from a thread (it may be larger than the pipe) and closed so the shell's `cat` ends.
+    #[cfg(not(windows))]
+    if let Some(mut input) = child.stdin.take() {
+        let text = command.to_owned();
+        std::thread::spawn(move || {
+            use std::io::Write;
+            let _ = input.write_all(text.as_bytes());
+        });
+    }
     #[cfg(windows)]
     let job = match Job::new() {
         Ok(job) => match job.assign(&child) {
@@ -443,7 +464,7 @@ pub fn run_streaming(
     on_event: &mut dyn FnMut(Event<'_>),
 ) -> Result<Outcome, String> {
     let started = Instant::now();
-    let mut spawned = spawn_shell(command, cwd, Stdio::null())?;
+    let mut spawned = spawn_shell(command, cwd)?;
     let (tx, rx) = std::sync::mpsc::channel();
     if let Some(out) = spawned.child.stdout.take() {
         pump(out, Stream::Stdout, tx.clone());
@@ -572,5 +593,19 @@ mod tests {
         let out = run(command, cwd, Duration::from_millis(300)).unwrap();
         assert!(out.timed_out, "{out:?}");
         assert!(started.elapsed() < Duration::from_secs(4));
+    }
+
+    /// A command past Linux's 128 KiB single-argument limit runs (its text goes on the shell's stdin, never as
+    /// `-c <command>`), and the command itself still reads an empty stdin (Cloud #2413).
+    #[cfg(unix)]
+    #[test]
+    fn a_command_past_the_argument_limit_runs_and_reads_no_stdin() {
+        let cwd = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let body = "x".repeat(300_000);
+        let command = format!("printf %s '{body}' | wc -c\ncat | wc -c\nexit 4");
+        let out = run(&command, cwd, Duration::from_secs(20)).unwrap();
+        assert_eq!(out.exit_code, Some(4), "{out:?}");
+        let lines: Vec<&str> = out.stdout.split_whitespace().collect();
+        assert_eq!(lines, ["300000", "0"]);
     }
 }
