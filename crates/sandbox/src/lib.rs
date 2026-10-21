@@ -13,6 +13,10 @@
 //!   [`Runtime::setup`]); write access is explicit ACEs on the folder and the scratch folder, network is a WFP
 //!   fence keyed on that account. srt-win gives the child a fresh environment and runs it through `cmd /c`, so the
 //!   device starts [`ENTRY_JS`] in the sandbox, which starts the real server with its arguments and environment.
+//!   srt-win's broker starts its runner **as that account from `srt-win.exe`**, before srt grants anything for a
+//!   session, so the installed runtime folder carries a read+execute ACE for the account ([`Runtime::setup`],
+//!   checked on every start). Without it Windows refuses the start with "Access is denied" (device #66): the data
+//!   folder is in the person's profile, which the account cannot read.
 //!
 //! Policy (§6.1): write = folders + scratch (TEMP and the npm/uv/pip caches point there); `.git/hooks` and
 //! `.git/config` stay unwritable (srt's mandatory denies, plus explicit ones); reads are allowed except the
@@ -269,7 +273,7 @@ impl Runtime {
         }
         #[cfg(windows)]
         {
-            if !windows_provisioned(&self.srt_win())? {
+            if windows_sandbox_sid(&self.srt_win())?.is_none() {
                 let range = format!("{}-{}", WINDOWS_PROXY_PORTS.0, WINDOWS_PROXY_PORTS.1);
                 let out = Command::new(self.srt_win())
                     .args(["install", "--proxy-port-range", &range])
@@ -286,11 +290,11 @@ impl Runtime {
                         ));
                     }
                 }
-                if !windows_provisioned(&self.srt_win())? {
-                    return Err("隔离账户没建成（srt-win status 仍然没有它）".into());
-                }
                 done.push("建好了 Windows 隔离账户 srt-sandbox 和它的网络限制".into());
             }
+            let sid = windows_sandbox_sid(&self.srt_win())?
+                .ok_or_else(|| "隔离账户没建成（srt-win status 仍然没有它）".to_string())?;
+            self.windows_runtime_readable(&sid)?;
         }
         Ok(done)
     }
@@ -299,7 +303,9 @@ impl Runtime {
     pub fn remove(&self) -> Result<Vec<String>, String> {
         let mut done = Vec::new();
         #[cfg(windows)]
-        if self.srt_win().is_file() && windows_provisioned(&self.srt_win()).unwrap_or(true) {
+        if self.srt_win().is_file()
+            && windows_sandbox_sid(&self.srt_win()).map_or(true, |s| s.is_some())
+        {
             let out = Command::new(self.srt_win())
                 .arg("uninstall")
                 .output()
@@ -375,9 +381,11 @@ impl Runtime {
         #[cfg(not(windows))]
         self.probe(&node)?;
         #[cfg(windows)]
-        match windows_provisioned(&self.srt_win()) {
-            Ok(true) => {}
-            Ok(false) => {
+        match windows_sandbox_sid(&self.srt_win()) {
+            Ok(Some(sid)) => self
+                .windows_runtime_readable(&sid)
+                .map_err(|e| Unavailable::new(e, NEXT_SETUP))?,
+            Ok(None) => {
                 return Err(Unavailable::new("Windows 隔离账户还没建", NEXT_SETUP));
             }
             Err(e) => return Err(Unavailable::new(e, NEXT_SETUP)),
@@ -386,6 +394,40 @@ impl Runtime {
             node,
             cli: self.cli(),
         })
+    }
+
+    /// The sandbox account may read and run the installed runtime (`srt-win.exe` is started as that account; see the
+    /// module docs, #66). One inheriting read+execute ACE for the account's SID on the runtime folder, set with the
+    /// person's own rights (they own the data folder; no elevation); once per process and folder, as `icacls`
+    /// rewrites the whole tree. The data folder above it stays unreadable to the account.
+    #[cfg(windows)]
+    fn windows_runtime_readable(&self, sid: &str) -> Result<(), String> {
+        static DONE: std::sync::Mutex<Vec<(PathBuf, String)>> = std::sync::Mutex::new(Vec::new());
+        let dir = self.dir();
+        let key = (dir.clone(), sid.to_string());
+        let mut done = DONE.lock().unwrap_or_else(|e| e.into_inner());
+        if done.contains(&key) {
+            return Ok(());
+        }
+        let args = icacls_read_grant(&dir, sid)?;
+        let icacls = std::env::var_os("SystemRoot")
+            .map(|r| PathBuf::from(r).join("System32").join("icacls.exe"))
+            .filter(|p| p.is_file())
+            .unwrap_or_else(|| PathBuf::from("icacls.exe"));
+        let out = Command::new(icacls)
+            .args(&args)
+            .output()
+            .map_err(|e| format!("icacls 起不来：{e}"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "隔离账户读不了隔离环境 {}（icacls：{}{}）",
+                shown(&dir),
+                String::from_utf8_lossy(&out.stdout).trim(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        done.push(key);
+        Ok(())
     }
 
     /// One real confined no-op (once per process): the binaries can be present and srt still unable to confine
@@ -865,11 +907,12 @@ fn node() -> Result<PathBuf, String> {
     .clone()
 }
 
-/// The `srt-sandbox` account and its credential exist (`srt-win status`, no elevation needed).
+/// The `srt-sandbox` account's SID when the account and its credential exist (`srt-win status`, no elevation
+/// needed); `None` when it is not provisioned.
 #[cfg(windows)]
-fn windows_provisioned(srt_win: &Path) -> Result<bool, String> {
+fn windows_sandbox_sid(srt_win: &Path) -> Result<Option<String>, String> {
     if !srt_win.is_file() {
-        return Ok(false);
+        return Ok(None);
     }
     let out = Command::new(srt_win)
         .arg("status")
@@ -881,12 +924,70 @@ fn windows_provisioned(srt_win: &Path) -> Result<bool, String> {
             String::from_utf8_lossy(&out.stdout).trim()
         )
     })?;
-    Ok(v["user"]["user"]["exists"] == true && v["user"]["cred_present"] == true)
+    if v["user"]["user"]["exists"] != true || v["user"]["cred_present"] != true {
+        return Ok(None);
+    }
+    match v["user"]["user"]["sid"].as_str() {
+        Some(sid) => Ok(Some(sid.to_string())),
+        None => Err("srt-win status 没给出隔离账户的 SID".into()),
+    }
+}
+
+/// `icacls <dir> /grant:r *<sid>:(OI)(CI)RX /Q`: replace this SID's explicit grant on `dir` with read+execute,
+/// inherited by everything below. Only a well-formed SID is passed on.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn icacls_read_grant(dir: &Path, sid: &str) -> Result<Vec<std::ffi::OsString>, String> {
+    let well_formed = sid.starts_with("S-1-")
+        && sid[4..]
+            .split('-')
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+    if !well_formed {
+        return Err(format!("隔离账户的 SID 格式不对：{sid}"));
+    }
+    Ok(vec![
+        dir.as_os_str().to_os_string(),
+        "/grant:r".into(),
+        format!("*{sid}:(OI)(CI)RX").into(),
+        "/Q".into(),
+    ])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_runtime_read_grant_names_one_sid_and_inherits() {
+        let args = icacls_read_grant(
+            Path::new("C:\\data\\sandbox\\srt-0.0.80"),
+            "S-1-5-21-1-2-3-1001",
+        )
+        .unwrap();
+        let args: Vec<String> = args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            [
+                "C:\\data\\sandbox\\srt-0.0.80",
+                "/grant:r",
+                "*S-1-5-21-1-2-3-1001:(OI)(CI)RX",
+                "/Q"
+            ]
+        );
+        for bad in [
+            "",
+            "S-1-",
+            "S-1-5-21-1-x",
+            "S-1-5-21-1-2 /T",
+            "Everyone",
+            "S-1-5--1",
+            "S-1-5-21-1-2-3-1001:F",
+        ] {
+            assert!(icacls_read_grant(Path::new("C:\\d"), bad).is_err(), "{bad}");
+        }
+    }
 
     fn launch_in(dir: &Path) -> (Runtime, PathBuf) {
         let data = dir.join("data");
