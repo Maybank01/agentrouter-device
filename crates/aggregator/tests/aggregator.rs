@@ -398,10 +398,18 @@ async fn a_confined_server_end_to_end() {
     let added = h
         .call("mcs_1", 2, "ags_a", "link__server_add", json!({"name": "fake", "command": "node", "args": [fake.to_string_lossy()], "waitMs": 120000}))
         .await;
-    assert_eq!(
-        added["result"]["structuredContent"]["state"], "ready",
-        "{added}"
-    );
+    if added["result"]["structuredContent"]["state"] != "ready" {
+        let logs = h
+            .call(
+                "mcs_1",
+                3,
+                "ags_a",
+                "link__server_logs",
+                json!({"name": "fake"}),
+            )
+            .await;
+        panic!("not ready: {added}\nlogs: {logs}");
+    }
     let listed = h.request("mcs_1", 3, "tools/list", json!({})).await;
     let names: Vec<&str> = listed["result"]["tools"]
         .as_array()
