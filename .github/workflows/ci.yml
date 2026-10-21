@@ -63,10 +63,12 @@ jobs:
             "$exe | $($v.CompanyName) | $($v.ProductName) | $($v.FileVersion) | $($v.FileDescription)"
             if (-not $v.CompanyName -or -not $v.ProductName -or -not $v.FileVersion -or -not $v.FileDescription) { throw "$exe has no complete version resource" }
           }
+      # A pull request has only the test build (no release build there, #108).
       - name: No arguments from a terminal prints the usage (the double-click start is only for a console of its own)
         shell: pwsh
         run: |
-          $out = & target/release/agentrouter.exe | Out-String
+          $exe = if ('${{ github.event_name }}' -eq 'pull_request') { 'target/debug/agentrouter.exe' } else { 'target/release/agentrouter.exe' }
+          $out = & $exe | Out-String
           if ($LASTEXITCODE -ne 0 -or $out -notmatch 'agentrouter start') { throw "agentrouter.exe without arguments did not print the usage: $out" }
       - name: npm packages (built and installed from local tarballs; publishing is M2)
         if: github.event_name != 'pull_request'
