@@ -31,6 +31,9 @@ const READ_MAX: u64 = 4 << 20;
 const WAIT_MAX_MS: u64 = 30_000;
 /// `job_start`'s wait for the end, at most (as long as one `exec`).
 const START_WAIT_MAX_MS: u64 = exec::TIMEOUT_MAX_MS;
+/// The caller's own label of a job (Cloud: the session that started it), shown by `jobs`, so a caller that lost track of
+/// its jobs (a restart) can find and end them.
+const TAG_MAX: usize = 128;
 /// After the process ended, how long its output pipes may stay open (a grandchild holding them) before the answer.
 const DRAIN: Duration = Duration::from_millis(200);
 const RUNNING_MAX: usize = 32;
@@ -46,6 +49,7 @@ pub(super) fn tools() -> Vec<Value> {
                 "command": {"type": "string"},
                 "cwd": {"type": "string"},
                 "wait_ms": {"type": "integer", "minimum": 0, "maximum": START_WAIT_MAX_MS},
+                "tag": {"type": "string", "maxLength": TAG_MAX},
             }, "required": ["command"]}),
             false,
         ),
@@ -127,6 +131,7 @@ struct State {
 pub(super) struct Job {
     id: String,
     command: String,
+    tag: Option<String>,
     cwd: PathBuf,
     pid: u32,
     started: Instant,
@@ -187,7 +192,7 @@ impl Job {
     fn summary(&self) -> Value {
         let state = self.state.lock().unwrap();
         json!({
-            "job": self.id, "command": self.command, "cwd": shown(&self.cwd), "pid": self.pid,
+            "job": self.id, "command": self.command, "tag": self.tag, "cwd": shown(&self.cwd), "pid": self.pid,
             "running": state.exit.is_none(),
             "exit_code": state.exit.and_then(|e| e.0), "signal": state.exit.and_then(|e| e.1),
             "ms": state.ended_ms.unwrap_or_else(|| self.started.elapsed().as_millis() as u64),
@@ -279,6 +284,9 @@ impl Host {
         let job = Arc::new(Job {
             id: format!("job-{n}"),
             command: command.to_string(),
+            tag: arg_str(args, "tag")
+                .filter(|t| !t.is_empty() && t.len() <= TAG_MAX)
+                .map(str::to_string),
             cwd: cwd.clone(),
             pid: spawned.child.id(),
             started: Instant::now(),
@@ -596,6 +604,7 @@ mod tests {
         assert_eq!(ids(&host).get(&id), Some(&true));
         let listed = host.jobs_list().unwrap();
         assert_eq!(listed["jobs"][0]["job"], id.as_str());
+        assert_eq!(listed["jobs"][0]["tag"], Value::Null);
         let t = Instant::now();
         let stopped = host.job_stop(&json!({"job": id, "grace_ms": 500})).unwrap();
         assert_eq!(stopped["running"], false);
@@ -656,8 +665,12 @@ mod tests {
             "echo one; sleep 30"
         };
         let r = host
-            .job_start(&json!({"command": command, "wait_ms": 1500}), &call)
+            .job_start(
+                &json!({"command": command, "wait_ms": 1500, "tag": "ags_1"}),
+                &call,
+            )
             .unwrap();
+        assert_eq!(host.jobs_list().unwrap()["jobs"][0]["tag"], "ags_1");
         assert_eq!(r["running"], true);
         assert_eq!(r["forgotten"], false);
         let streamed: String = seen
