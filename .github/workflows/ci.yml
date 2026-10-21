@@ -120,11 +120,8 @@ jobs:
           - { name: Windows, os: windows-latest }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
-    # Windows: srt-win's broker starts the sandbox account's runner with CreateProcessWithLogonW, which the hosted
-    # runner refuses (ERROR_ACCESS_DENIED although Secondary Logon runs: the runner's service/job context). The
-    # Windows boundary is verified on a real Windows PC until a self-hosted interactive runner exists; the job still
-    # runs so a change in that behaviour shows up.
-    continue-on-error: ${{ matrix.name == 'Windows' }}
+    # Windows: the tests run outside the step's job object (.github/scripts/outside-job.ps1, #66): srt-win's broker
+    # asks CreateProcessWithLogonW to break away from the caller's job, which the runner's job does not allow.
     env:
       AGENTROUTER_SANDBOX_TESTS: "1"
     steps:
@@ -141,7 +138,7 @@ jobs:
           sudo apt-get install -yq bubblewrap socat ripgrep
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       # srt-win starts the sandbox account's processes with CreateProcessWithLogonW, which needs Secondary Logon
-      # (disabled on the hosted image; on people's PCs it is on by default).
+      # (stopped on the hosted image; on people's PCs it starts on demand).
       - name: Windows Secondary Logon service
         if: runner.os == 'Windows'
         shell: pwsh
@@ -149,8 +146,20 @@ jobs:
           Set-Service -Name seclogon -StartupType Manual
           Start-Service -Name seclogon
           Get-Service -Name seclogon
-      - run: cargo test -p agentrouter-sandbox -- --nocapture
+      - if: runner.os != 'Windows'
+        run: cargo test -p agentrouter-sandbox -- --nocapture
       - name: The aggregator runs a real MCP server confined (issue #46)
+        if: runner.os != 'Windows'
         run: cargo test -p agentrouter-aggregator -- --nocapture
       - name: The whole chain through the real CLI, and the escape cases (issue #50)
+        if: runner.os != 'Windows'
         run: cargo test -p agentrouter-device-cli --test link_e2e -- --nocapture
+      # The same three, outside the step's job object (#66). Built first in the step, so compile output stays here.
+      - name: Windows sandbox, aggregator and link chain (outside the runner's job object, #66)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo test --no-run -p agentrouter-sandbox -p agentrouter-aggregator -p agentrouter-device-cli --tests
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          & .github/scripts/outside-job.ps1 -Command 'cargo test -p agentrouter-sandbox -- --nocapture && cargo test -p agentrouter-aggregator -- --nocapture && cargo test -p agentrouter-device-cli --test link_e2e -- --nocapture'
+          exit $LASTEXITCODE
