@@ -278,7 +278,7 @@ impl Host {
                 }
             }
         }
-        let mut spawned = exec::spawn_shell(command, &cwd, std::process::Stdio::null())?;
+        let mut spawned = exec::spawn_shell(command, &cwd)?;
         let (stdout, stderr) = (spawned.child.stdout.take(), spawned.child.stderr.take());
         let n = self.jobs.next.fetch_add(1, Ordering::Relaxed) + 1;
         let job = Arc::new(Job {
