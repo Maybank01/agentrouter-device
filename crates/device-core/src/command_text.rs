@@ -406,6 +406,7 @@ mod tests {
                     "-Command",
                     &probe,
                 ])
+                .env("PSModulePath", crate::util::child_ps_module_path())
                 .output()
                 .unwrap();
             let text = String::from_utf8_lossy(&out.stdout);
