@@ -1,7 +1,7 @@
 {
   "name": "agentrouter-sandbox-runtime",
   "private": true,
-  "description": "The pinned Anthropic sandbox-runtime (srt) the AgentRouter device runs every local MCP server under (docs/LINKER-MCP.md §6).",
+  "description": "The pinned Anthropic sandbox-runtime (srt) the AgentRouter device runs every local MCP server under (docs/HOSTD-MCP.md §6).",
   "license": "Apache-2.0",
   "dependencies": {
     "@anthropic-ai/sandbox-runtime": "0.0.80"

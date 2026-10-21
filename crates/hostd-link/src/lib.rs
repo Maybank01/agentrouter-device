@@ -1,5 +1,5 @@
-//! The Linker (docs/LINKER-MCP.md §3.1, §3.2, §3.6, issue #45): the stable outbound link of one running
-//! `agentrouter link`. It owns the device identity's token, one WebSocket to `wss://<gateway>/device/v2/link`,
+//! hostd's link layer (formerly the Linker; docs/HOSTD-MCP.md §3.1, §3.2, §3.6, issue #45): the stable outbound
+//! link of one running `agentrouter link`. It owns the device identity's token, one WebSocket to `wss://<gateway>/device/v2/link`,
 //! reconnects with backoff and jitter, treats 75 s of silence as a dead link, and sends the audit chain head with
 //! every heartbeat. It has **no capabilities**: it only moves MCP JSON-RPC messages between the gateway and
 //! whoever consumes [`Event`]s (the MCP aggregator), inside the two-field envelope `{s, m}`.
@@ -12,7 +12,7 @@
 //!          gateway → device  {"op": "welcome", "link": "lnk_…"} | {"op": "error", "code", "message"} | {"op": "revoked", "reason"}
 //!          either way        {"op": "close", "s": "<session>"}
 //!          device → gateway  {"op": "audit_head", "seq": n, "hash": "<sha256>"}
-//!          (`link` also carries `folders`, `readOnly`, `full` and `placement`: `pc` | `cloud`, LINKER-MCP §13.1)
+//!          (`link` also carries `folders`, `readOnly`, `full` and `placement`: `pc` | `cloud`, HOSTD-MCP §13.1)
 //! ```
 //!
 //! Calls in flight when the link drops are not replayed: an answer produced while the link is down is dropped
@@ -32,7 +32,7 @@ use tokio::time::{Instant, sleep, timeout};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
-/// The link protocol version this Linker speaks.
+/// The link protocol version this link layer speaks.
 pub const VERSION: i64 = 2;
 /// The path of the link endpoint on the gateway.
 pub const PATH: &str = "/device/v2/link";
@@ -69,7 +69,7 @@ pub struct LinkInfo {
     pub folders: Vec<String>,
     /// 完全访问 (`agentrouter link --full`, chosen on the computer only).
     pub full: bool,
-    /// Where this `hostd` runs (LINKER-MCP §13.1): `pc` (the person's computer) or `cloud` (a cloud sandbox,
+    /// Where this `hostd` runs (HOSTD-MCP §13.1): `pc` (the person's computer) or `cloud` (a cloud sandbox,
     /// started by its entrypoint with a platform-issued host token).
     pub placement: String,
 }
@@ -134,7 +134,7 @@ pub fn keystore_tokens(gateway: String) -> TokenSource {
     })
 }
 
-/// A token the platform issued for this host (a cloud sandbox, LINKER-MCP §13.1): no pairing, no device key. Read
+/// A token the platform issued for this host (a cloud sandbox, HOSTD-MCP §13.1): no pairing, no device key. Read
 /// from the file (re-read before every connection, so the platform can rotate it) or, without a file, the fixed value.
 pub fn host_token(file: Option<std::path::PathBuf>, value: Option<String>) -> TokenSource {
     Arc::new(move || {
@@ -165,13 +165,13 @@ pub struct Options {
 pub enum Event {
     /// Welcomed by the gateway (every successful (re)connect).
     Up { link: String },
-    /// The link is down; the Linker tries again after `retry_in`.
+    /// The link is down; the link layer tries again after `retry_in`.
     Down { reason: String, retry_in: Duration },
     /// One MCP message of a session.
     Data { s: String, m: Value },
     /// The cloud ended a session.
     Close { s: String },
-    /// The Linker stopped for good (after this, no more events).
+    /// The link layer stopped for good (after this, no more events).
     Ended(End),
 }
 
@@ -235,7 +235,7 @@ impl Handle {
     }
 }
 
-/// Start the Linker on the current tokio runtime.
+/// Start the link layer on the current tokio runtime.
 pub fn start(options: Options) -> (Handle, mpsc::UnboundedReceiver<Event>) {
     let (out_tx, out_rx) = mpsc::unbounded_channel();
     let (event_tx, event_rx) = mpsc::unbounded_channel();
@@ -484,7 +484,7 @@ enum Inbound {
     Lost(String),
 }
 
-/// Codes after which retrying is pointless: the Linker ends with [`End::Refused`].
+/// Codes after which retrying is pointless: the link layer ends with [`End::Refused`].
 const FINAL_CODES: &[&str] = &[
     "DEVICE_OUTDATED",
     "LINK_DISABLED",

@@ -1,5 +1,5 @@
 //! Talking to the gateway over HTTPS: pairing and the short-lived token for a link. The link itself (the one
-//! outbound WebSocket, reconnects, frames) is the `agentrouter-linker` crate.
+//! outbound WebSocket, reconnects, frames) is the `agentrouter-hostd-link` crate.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};

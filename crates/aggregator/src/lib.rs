@@ -1,7 +1,7 @@
-//! The MCP aggregator (docs/LINKER-MCP.md §2, §3.3–§3.5, §5, §7; issue #46): everything the cloud Agent can do in
+//! The MCP aggregator (docs/HOSTD-MCP.md §2, §3.3–§3.5, §5, §7; issue #46): everything the cloud Agent can do in
 //! the linked folder comes from local MCP servers, and this crate makes them **one MCP endpoint** towards the link.
 //!
-//! - Towards the link: one MCP server session per `s` (official Rust SDK `rmcp`, over the Linker's `{s, m}` frames).
+//! - Towards the link: one MCP server session per `s` (official Rust SDK `rmcp`, over the link layer's `{s, m}` frames).
 //!   `initialize` binds the session to a conversation; it and every `tools/call` must carry the control plane's
 //!   signature v3 in `params._meta` ([`sig`]); `tools/list`, `ping` and notifications need none.
 //! - Towards the servers: an `rmcp` client per server, each server process started by the sandbox launcher (the OS
@@ -225,7 +225,7 @@ pub struct Config {
     pub folder_name: String,
     pub read_only: bool,
     /// 完全访问 (`agentrouter link --full`, chosen on this computer only): servers run without the sandbox, with the
-    /// person's own rights (docs/LINKER-MCP.md §6.4).
+    /// person's own rights (docs/HOSTD-MCP.md §6.4).
     pub full: bool,
     /// The device data folder (packages, audit; hidden from every sandbox).
     pub data_dir: PathBuf,
@@ -233,7 +233,7 @@ pub struct Config {
     pub control: ControlKey,
     /// `--yes-servers`: custom servers are accepted without asking (a local flag only).
     pub yes_servers: bool,
-    /// `hostd` in a cloud sandbox (LINKER-MCP §13.1): the sandbox is the boundary (set `full` too), the folders are the
+    /// `hostd` in a cloud sandbox (HOSTD-MCP §13.1): the sandbox is the boundary (set `full` too), the folders are the
     /// session's mounted views and stay fixed (`link__folder_add` answers `DENIED_BY_USER`), nobody is asked anything.
     pub cloud: bool,
 }
@@ -1513,7 +1513,7 @@ impl ServerHandler for SessionHandler {
     }
 }
 
-/// The rmcp transport of one session: messages come from the Linker's frames, answers go back through it.
+/// The rmcp transport of one session: messages come from the link layer's frames, answers go back through it.
 struct LinkTransport {
     rx: mpsc::UnboundedReceiver<RxJsonRpcMessage<RoleServer>>,
     s: String,

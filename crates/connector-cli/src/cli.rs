@@ -1,6 +1,6 @@
 //! `agentrouter` (also installed as `agentrouter-device`): console mode. Run `agentrouter link` in any folder and
-//! the cloud Agent works in that folder for as long as the command runs (docs/LINKER-MCP.md §8; `console.rs`).
-//! `agentrouter mcp-serve local` (main.rs) is the local-Agent entry, kept pending its own design (LINKER-MCP §4).
+//! the cloud Agent works in that folder for as long as the command runs (docs/HOSTD-MCP.md §8; `console.rs`).
+//! `agentrouter mcp-serve local` (main.rs) is the local-Agent entry, kept pending its own design (HOSTD-MCP §4).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -10,6 +10,7 @@ use agentrouter_device::util::data_dir;
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
 const USAGE: &str = "AgentRouter（agentrouter）：在任意文件夹里运行 agentrouter link，云端对话里的 Agent 就能在这个文件夹里干活
+link 启动 hostd（宿主守护进程）；agentrouter hostd 是同一条命令
 
 用法：
   agentrouter link [文件夹…] [--read-only | --full] [--yes-servers]
@@ -64,6 +65,10 @@ fn parse(args: &[String]) -> Result<Flags, String> {
             "--yes-servers" => flags.yes_servers = true,
             "--placement" => flags.placement = Some(value("--placement")?),
             "--token-file" => flags.token_file = Some(value("--token-file")?),
+            "--help" | "-h" => {
+                println!("{USAGE}");
+                std::process::exit(0);
+            }
             other if other.starts_with("--") => return Err(format!("不认识的选项：{other}")),
             other => flags.positional.push(other.to_string()),
         }
@@ -90,6 +95,12 @@ pub fn main() {
             eprintln!("{e}\n\n{USAGE}");
             std::process::exit(2);
         }
+    };
+    // `hostd` is the program's name (docs/HOSTD-MCP.md §0.3, #80); `link` stays the command people know.
+    let command = if command == "hostd" {
+        "link".to_string()
+    } else {
+        command
     };
     let code = match command.as_str() {
         "link" if flags.placement.as_deref() == Some("cloud") => crate::cloud::link(
@@ -149,7 +160,7 @@ pub fn main() {
     std::process::exit(code);
 }
 
-/// `agentrouter sandbox setup|status|remove` (docs/LINKER-MCP.md §6, #42).
+/// `agentrouter sandbox setup|status|remove` (docs/HOSTD-MCP.md §6, #42).
 fn cmd_sandbox(flags: Flags) -> i32 {
     let rt = agentrouter_sandbox::Runtime::new(&data_dir());
     let report = |done: Result<Vec<String>, String>| match done {

@@ -1,6 +1,6 @@
 //! The device protocol primitives (pairing and token strings, canonical JSON for digests, Ed25519 keys as raw
 //! base64url, the replay cache). Requests themselves are MCP with the link signature v3 in `params._meta`
-//! (docs/LINKER-MCP.md §3.3; checked by the aggregator); the signed device action set is gone (#49).
+//! (docs/HOSTD-MCP.md §3.3; checked by the aggregator); the signed device action set is gone (#49).
 
 use std::collections::HashMap;
 use std::fmt;

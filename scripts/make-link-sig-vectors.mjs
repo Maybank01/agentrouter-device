@@ -1,4 +1,4 @@
-// Generates the shared test vectors of the link request signature v3 (docs/LINKER-MCP.md §3.3): the device
+// Generates the shared test vectors of the link request signature v3 (docs/HOSTD-MCP.md §3.3): the device
 // aggregator (crates/aggregator/tests/sig_vectors.rs) and the Cloud devices module (protocol.ts) both check
 // against the same file. Deterministic: a fixed Ed25519 seed (Ed25519 signatures are deterministic) and fixed
 // nonces/expiries. Run: node scripts/make-link-sig-vectors.mjs > crates/aggregator/tests/link-sig-v3-vectors.json

@@ -21,7 +21,7 @@ path = "src/alias.rs"
 agentrouter-aggregator.workspace = true
 agentrouter-checkpoint.workspace = true
 agentrouter-device-core.workspace = true
-agentrouter-linker.workspace = true
+agentrouter-hostd-link.workspace = true
 agentrouter-sandbox.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
@@ -40,11 +40,11 @@ portable-pty = "0.9.0"
 notify = "8.2.0"
 
 # TLS: native-tls by default (the person's PC); `--no-default-features --features rustls` for the static Linux
-# build of hostd that cloud sandboxes run (musl, no OpenSSL; LINKER-MCP §13.1, .github/workflows/hostd.yml).
+# build of hostd that cloud sandboxes run (musl, no OpenSSL; HOSTD-MCP §13.1, .github/workflows/hostd.yml).
 [features]
 default = ["native-tls"]
-native-tls = ["agentrouter-device-core/native-tls", "agentrouter-linker/native-tls"]
-rustls = ["agentrouter-device-core/rustls", "agentrouter-linker/rustls"]
+native-tls = ["agentrouter-device-core/native-tls", "agentrouter-hostd-link/native-tls"]
+rustls = ["agentrouter-device-core/rustls", "agentrouter-hostd-link/rustls"]
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

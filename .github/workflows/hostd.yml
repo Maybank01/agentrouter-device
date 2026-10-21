@@ -1,4 +1,4 @@
-# hostd for cloud sandboxes (issue #82, docs/LINKER-MCP.md §13.1): a static Linux build of the
+# hostd for cloud sandboxes (issue #82, docs/HOSTD-MCP.md §13.1): a static Linux build of the
 # `agentrouter` binary (musl, rustls, no OpenSSL, no glibc) for x86_64 and aarch64. Pull requests build and smoke it;
 # every push to main that changes the program also publishes it as a GitHub pre-release `hostd-v<version>-<sha7>`
 # with the binaries and SHA256SUMS, so the Cloud sandbox image pins one by tag + sha256. Not an npm/client release.
@@ -101,7 +101,7 @@ jobs:
           notes=$(printf '%s\n' \
             "Static Linux build of hostd (the \`agentrouter\` binary; musl, rustls) for cloud sandboxes, commit ${GITHUB_SHA}." \
             "Start: \`hostd-<arch>-linux-musl link --placement cloud <folder>…\` with AGENTROUTER_HOST_TOKEN_FILE (or AGENTROUTER_HOST_TOKEN), AGENTROUTER_CONTROL_KEY, AGENTROUTER_GATEWAY, AGENTROUTER_HOST_ID." \
-            "See docs/LINKER-MCP.md §13.1. Pin by tag + SHA256SUMS." \
+            "See docs/HOSTD-MCP.md §13.1. Pin by tag + SHA256SUMS." \
             "" '```' "$(cat SHA256SUMS)" '```')
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$tag" hostd-x86_64-linux-musl hostd-aarch64-linux-musl SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY"

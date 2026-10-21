@@ -31,7 +31,7 @@ jobs:
       - run: cargo fmt --all --check
       - name: AV hygiene (docs/AV-HYGIENE.md)
         run: bash scripts/av-hygiene.sh
-      # The desktop shell (app/) is frozen: outside the workspace, not built (docs/LINKER-MCP.md §0).
+      # The desktop shell (app/) is frozen: outside the workspace, not built (docs/HOSTD-MCP.md §0).
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 
@@ -91,7 +91,7 @@ jobs:
           path: dist/
           retention-days: 14
 
-  # The OS boundary every local MCP server runs in (issue #42, docs/LINKER-MCP.md §6): installs the pinned srt,
+  # The OS boundary every local MCP server runs in (issue #42, docs/HOSTD-MCP.md §6): installs the pinned srt,
   # provisions the Windows sandbox account, and proves that writes, deletes, hook plants, ~/.ssh reads and direct
   # connections from a confined process (and its child shell) fail. Only here: it changes the runner machine.
   sandbox:
