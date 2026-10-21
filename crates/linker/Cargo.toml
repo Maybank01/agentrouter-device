@@ -13,10 +13,11 @@ name = "agentrouter_linker"
 [dependencies]
 agentrouter-device-core.workspace = true
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+base64 = "0.23"
 getrandom = "0.4"
 serde_json.workspace = true
 sha2 = "0.11"
-tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
+tokio = { workspace = true, features = ["rt", "macros", "sync", "time", "net", "io-util"] }
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake"] }
 
 # TLS: the system's (native-tls; Schannel / Secure Transport / OpenSSL) by default; rustls with the bundled web PKI

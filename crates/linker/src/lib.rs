@@ -18,6 +18,8 @@
 //! Calls in flight when the link drops are not replayed: an answer produced while the link is down is dropped
 //! (the gateway already answered `LINK_LOST`). Sessions themselves outlive a drop on the aggregator side.
 
+pub mod proxy;
+
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -333,6 +335,32 @@ async fn run(
     let _ = events.send(Event::Ended(end));
 }
 
+/// The WebSocket to the gateway: through the proxy the environment names (proxy.rs; a cloud sandbox's only egress),
+/// else directly.
+async fn open(
+    url: &str,
+    config: WebSocketConfig,
+) -> Result<
+    (
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+        tokio_tungstenite::tungstenite::handshake::client::Response,
+    ),
+    tokio_tungstenite::tungstenite::Error,
+> {
+    #[cfg(any(feature = "native-tls", feature = "rustls"))]
+    if let Some(proxy) = proxy::proxy_for(url, |name| std::env::var(name).ok()) {
+        let stream = proxy
+            .tunnel()
+            .await
+            .map_err(tokio_tungstenite::tungstenite::Error::Io)?;
+        return tokio_tungstenite::client_async_tls_with_config(url, stream, Some(config), None)
+            .await;
+    }
+    tokio_tungstenite::connect_async_with_config(url, Some(config), true).await
+}
+
 async fn connection(
     options: &Options,
     info: &SharedInfo,
@@ -354,7 +382,7 @@ async fn connection(
     let config = WebSocketConfig::default()
         .max_message_size(Some(FRAME_MAX))
         .max_frame_size(Some(FRAME_MAX));
-    let connect = tokio_tungstenite::connect_async_with_config(url.as_str(), Some(config), true);
+    let connect = open(&url, config);
     let mut ws = match timeout(Duration::from_secs(20), connect).await {
         Ok(Ok((ws, _))) => ws,
         Ok(Err(e)) => return Conn::Lost(format!("连不上网关：{e}")),
