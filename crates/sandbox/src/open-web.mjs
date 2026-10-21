@@ -2,7 +2,7 @@
 // 「可以开放到完整的互联网」, browser presets only). Written next to the pinned srt and started instead of its cli.js
 // with the same arguments.
 //
-// srt 0.0.80 has no "any host" entry for allowedDomains; a host no list decides goes to the ask callback, the second
+// srt (0.0.80, 0.0.81) has no "any host" entry for allowedDomains; a host no list decides goes to the ask callback, the second
 // argument of SandboxManager.initialize (README "Asking about a host no rule decides"), which the CLI leaves empty.
 // This file hands the CLI's initialize a callback that allows public destinations only:
 // - a hostname is allowed unless it is a loopback name or this computer resolves it to a refused address; srt's

@@ -65,7 +65,7 @@ pub struct LinkInfo {
     /// Always `cli` for the console.
     pub app: String,
     pub version: String,
-    /// `srt@0.0.80` when the sandbox is ready, else empty (always empty in 完全访问).
+    /// `srt@0.0.81` when the sandbox is ready, else empty (always empty in 完全访问).
     pub sandbox: String,
     pub read_only: bool,
     /// The linked folders' real absolute paths, the first is home (owner 2026-10-20: real paths, several folders).

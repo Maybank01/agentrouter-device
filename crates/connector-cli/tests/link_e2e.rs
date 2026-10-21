@@ -23,6 +23,16 @@ use agentrouter_device::util::{b64url_decode, now_ms};
 use serde_json::{Value, json};
 use tungstenite::Message;
 
+/// Where the device keeps its data on a person's PC: on Windows `%LOCALAPPDATA%`, which srt's profile read grant
+/// passes through (the temp folder it leaves unreadable to the sandbox account, device #66); elsewhere the temp folder.
+fn test_root() -> PathBuf {
+    #[cfg(windows)]
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        return PathBuf::from(local);
+    }
+    std::env::temp_dir()
+}
+
 fn enabled() -> bool {
     std::env::var("AGENTROUTER_SANDBOX_TESTS").is_ok_and(|v| v == "1")
 }
@@ -162,7 +172,7 @@ fn a_linked_folder_end_to_end_and_the_boundary_holds() {
         eprintln!("skipped: set AGENTROUTER_SANDBOX_TESTS=1 (CI runners only)");
         return;
     }
-    let base = std::env::temp_dir().join(format!("agentrouter-e2e-{}", std::process::id()));
+    let base = test_root().join(format!("agentrouter-e2e-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     for d in [
         "data",

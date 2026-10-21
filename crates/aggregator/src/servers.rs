@@ -505,7 +505,7 @@ async fn start_once(
             agentrouter_device::util::child_ps_module_path(),
         ));
     }
-    let readable = vec![agg.cfg.data_dir.join("mcp-packages")];
+    let readable = vec![agg.sandbox.packages_dir()];
     let launch = agentrouter_sandbox::Launch {
         key: &format!("{}\u{1}{}", def.name, agg.cfg.link),
         program: &program,

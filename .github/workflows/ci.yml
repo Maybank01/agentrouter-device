@@ -120,11 +120,9 @@ jobs:
           - { name: Windows, os: windows-latest }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
-    # Windows: srt-win's broker starts the sandbox account's runner with CreateProcessWithLogonW, which the hosted
-    # runner refuses (ERROR_ACCESS_DENIED although Secondary Logon runs: the runner's service/job context). The
-    # Windows boundary is verified on a real Windows PC until a self-hosted interactive runner exists; the job still
-    # runs so a change in that behaviour shows up.
-    continue-on-error: ${{ matrix.name == 'Windows' }}
+    # Windows (#66): `sandbox setup` gives the sandbox account srt's profile read grant and read+execute on the runtime
+    # (before: "Access is denied", then EPERM on every path under the profile). The boundary test blocks like on the
+    # other two.
     env:
       AGENTROUTER_SANDBOX_TESTS: "1"
     steps:
@@ -141,7 +139,7 @@ jobs:
           sudo apt-get install -yq bubblewrap socat ripgrep
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       # srt-win starts the sandbox account's processes with CreateProcessWithLogonW, which needs Secondary Logon
-      # (disabled on the hosted image; on people's PCs it is on by default).
+      # (stopped on the hosted image; on people's PCs it starts on demand).
       - name: Windows Secondary Logon service
         if: runner.os == 'Windows'
         shell: pwsh
@@ -150,7 +148,11 @@ jobs:
           Start-Service -Name seclogon
           Get-Service -Name seclogon
       - run: cargo test -p agentrouter-sandbox -- --nocapture
+      # Windows: srt-win gives a sandboxed child an empty stdin (by design, upstream R14), so a stdio MCP server cannot
+      # get its requests yet; the stdin relay is device #112. Until then these two report without failing the job.
       - name: The aggregator runs a real MCP server confined (issue #46)
+        continue-on-error: ${{ runner.os == 'Windows' }}
         run: cargo test -p agentrouter-aggregator -- --nocapture
       - name: The whole chain through the real CLI, and the escape cases (issue #50)
+        continue-on-error: ${{ runner.os == 'Windows' }}
         run: cargo test -p agentrouter-device-cli --test link_e2e -- --nocapture

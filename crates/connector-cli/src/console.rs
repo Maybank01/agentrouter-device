@@ -532,7 +532,9 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
                 .iter()
                 .any(|p| p.message.contains("Node.js") || p.message.contains("命名空间"))
         {
-            line("  沙箱     第一次要准备隔离环境（下载一次，Windows 会弹一次管理员确认）…");
+            line(
+                "  沙箱     第一次要准备隔离环境（下载一次；Windows 会弹一次管理员确认，可能要几分钟）…",
+            );
             if let Err(e) = sandbox.setup() {
                 line(&format!("  沙箱     没准备好：{e}"));
             }

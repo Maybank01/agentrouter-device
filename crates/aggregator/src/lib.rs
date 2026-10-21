@@ -334,7 +334,9 @@ impl Aggregator {
         let folders = cfg.folders.clone();
         let inner = Arc::new(Inner {
             sandbox: agentrouter_sandbox::Runtime::new(&cfg.data_dir),
-            packages: Packages::new(cfg.data_dir.join("mcp-packages")),
+            packages: Packages::new(
+                agentrouter_sandbox::Runtime::new(&cfg.data_dir).packages_dir(),
+            ),
             cfg,
             audit: Mutex::new(audit),
             hooks,
