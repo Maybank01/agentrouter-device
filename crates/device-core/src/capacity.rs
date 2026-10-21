@@ -245,7 +245,7 @@ mod tests {
 
     #[test]
     fn capacity_and_load_describe_this_machine() {
-        let home = std::env::temp_dir();
+        let home = crate::util::home_dir();
         let c = capacity(&home, None);
         assert!(c["cores"].as_u64().unwrap() >= 1, "{c}");
         assert!(c["memory_mb"].as_u64().unwrap() > 0, "{c}");
