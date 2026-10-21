@@ -301,48 +301,25 @@ impl Drop for Spawned {
     }
 }
 
-/// What the Unix login shell runs: the command text read from its stdin, then the command itself with stdin
-/// `/dev/null`. The command never travels as one `-c` argument (workspace AGENTS.md "No data through command lines",
-/// Cloud #2413): Linux refuses one argument past 128 KiB (MAX_ARG_STRLEN), and an Agent's heredoc that writes a file is
-/// one command. No file either: a sandboxed host server may have no writable temp folder.
-#[cfg(unix)]
-pub const UNIX_RUNNER: &str = r#"c=$(cat) && exec </dev/null && eval "$c""#;
-
 /// The device's shell running `command` in `cwd` (PowerShell on Windows, `/bin/sh -l` elsewhere): stdout and stderr
-/// piped, the command's stdin `/dev/null`. On Unix the command text goes to the shell on its stdin ([`UNIX_RUNNER`]).
-/// The caller validates `cwd` first.
+/// piped. The command text goes to the shell on its stdin, never as an argument, and the command itself reads an
+/// empty stdin ([`crate::command_text`]). The caller validates `cwd` first.
 pub fn spawn_shell(command: &str, cwd: &Path) -> Result<Spawned, String> {
-    #[cfg(windows)]
-    let shell = crate::shell::default_shell();
-    #[cfg(windows)]
-    let mut cmd = {
-        let mut c = Command::new(&shell.program);
-        c.args(shell.args(command));
-        c
-    };
-    #[cfg(not(windows))]
-    let mut cmd = {
-        let mut c = Command::new("/bin/sh");
-        c.arg("-lc").arg(UNIX_RUNNER);
-        c
-    };
-    #[cfg(windows)]
-    let stdin = Stdio::null();
-    #[cfg(not(windows))]
-    let stdin = Stdio::piped();
+    let start = crate::command_text::one_shot(command);
+    let mut cmd = Command::new(&start.program);
+    cmd.args(&start.args);
     // The person's terminal environment (their shell's start-up files: PATH, version managers, SSH_AUTH_SOCK…), #95.
     if let Some(env) = crate::shell_env::for_command() {
         cmd.env_clear().envs(env);
     }
     cmd.current_dir(cwd)
-        .stdin(stdin)
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     // A connector started from PowerShell 7 inherits its PSModulePath; a *Windows PowerShell 5.1*
     // child must not resolve Microsoft.PowerShell.Utility from PowerShell 7 (Get-FileHash missing).
     // When `pwsh` itself is the selected shell, its environment is left alone for module discovery.
-    #[cfg(windows)]
-    if !shell.is_pwsh() {
+    if start.windows_powershell {
         cmd.env("PSModulePath", crate::util::child_ps_module_path());
     }
     // Its own process group on Unix, so a timeout ends the shell *and* what it started (the shell may
@@ -370,10 +347,8 @@ pub fn spawn_shell(command: &str, cwd: &Path) -> Result<Spawned, String> {
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("命令起不来（{}）：{e}", cwd.display()))?;
-    // The command text, written from a thread (it may be larger than the pipe) and closed so the shell's `cat` ends.
-    #[cfg(not(windows))]
-    if let Some(mut input) = child.stdin.take() {
-        let text = command.to_owned();
+    // The command text, written from a thread (it may be larger than the pipe) and closed so the shell's read ends.
+    if let (Some(mut input), Some(text)) = (child.stdin.take(), start.stdin) {
         std::thread::spawn(move || {
             use std::io::Write;
             let _ = input.write_all(text.as_bytes());
