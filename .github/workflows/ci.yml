@@ -137,7 +137,7 @@ jobs:
         shell: bash
         run: |
           for tool in node npm npx corepack uv uvx; do
-            which -a "$tool" 2>/dev/null | sort -u | while read -r p; do sudo mv "$p" "$p.hidden-by-ci"; done
+            { which -a "$tool" 2>/dev/null || true; } | sort -u | while read -r p; do sudo mv "$p" "$p.hidden-by-ci"; done
           done
           hash -r
           for tool in node npx uvx; do
