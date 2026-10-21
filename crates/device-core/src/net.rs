@@ -28,16 +28,23 @@ impl std::fmt::Display for HttpError {
 }
 
 fn agent() -> ureq::Agent {
-    ureq::Agent::config_builder()
-        .tls_config(
-            ureq::tls::TlsConfig::builder()
-                .provider(ureq::tls::TlsProvider::NativeTls)
-                .build(),
-        )
+    let config = ureq::Agent::config_builder()
         .http_status_as_error(false)
-        .timeout_global(Some(Duration::from_secs(20)))
-        .build()
-        .new_agent()
+        .timeout_global(Some(Duration::from_secs(20)));
+    // The binary picks the TLS backend (connector-cli features): the system's on PCs, rustls in the static build.
+    #[cfg(feature = "native-tls")]
+    let config = config.tls_config(
+        ureq::tls::TlsConfig::builder()
+            .provider(ureq::tls::TlsProvider::NativeTls)
+            .build(),
+    );
+    #[cfg(all(feature = "rustls", not(feature = "native-tls")))]
+    let config = config.tls_config(
+        ureq::tls::TlsConfig::builder()
+            .provider(ureq::tls::TlsProvider::Rustls)
+            .build(),
+    );
+    config.build().new_agent()
 }
 
 /// Gateways the device talks to: a domain name over TLS (no raw IP addresses), or this computer for

@@ -628,7 +628,7 @@ tools and their answers (§3.7), `link__*` management tools, errors, audit forma
 | | Person's PC | Machine we rent (Mac mini; later GPU boxes) | Cloud Daytona sandbox |
 | --- | --- | --- | --- |
 | Started by | the person (`agentrouter link …`) | a service on the machine, under a dedicated OS account per tenant lease | the sandbox's entrypoint (`hostd` is baked into the empty snapshot, Cloud PROJECT-SERVICE §7.8) |
-| Identity | device key paired by the person (§4) | device key paired by us (ops), leased to one person's session tree at a time | **no pairing:** a key pair generated in the sandbox at start; the control plane registers its public key through the lifecycle call and issues a host token bound to (sandbox id, session tree), revoked at destroy |
+| Identity | device key paired by the person (§4) | device key paired by us (ops), leased to one person's session tree at a time | **no pairing, no device key:** the control plane issues a host token bound to (sandbox id, session tree) at create and revokes it at destroy; it is the `hello` token (no challenge/token exchange). The control plane's signing key is passed in at start (§13.1.1) |
 | Boundary | folder mode: `srt` OS sandbox (§6); 完全访问: the person's own rights (§6.4) | 完全访问 inside the lease account (the account and the machine are the boundary); wiped between leases | **the sandbox is the boundary:** servers run without `srt`, like 完全访问 inside the container |
 | Folders | named by the person; more only with a local `y` (§5) | the lease's working folders | the session's mounted views (workspace manifest, Cloud PROJECT-SERVICE); `link__folder_add` answers `DENIED_BY_USER` |
 | Who decides server installs | the person: catalog presets run, custom ones need `y` (§5) | platform policy (as cloud) | platform policy: catalog presets named by the session's definition or the person's list; the person's own custom entries only in that person's sandboxes (§13.3) |
@@ -636,7 +636,7 @@ tools and their answers (§3.7), `link__*` management tools, errors, audit forma
 | Undo | checkpoints + journal (§7.2) | checkpoints | off: the project service's per-turn changesets are the undo |
 | Audit | §7.1 + `audit_head` | same | same (the chain head is the only copy outside the sandbox that matters) |
 
-- `hello.link` gains `placement: "pc" | "machine" | "cloud"` (planned field; Cloud shows hosts by placement and never
+- `hello.link` carries `placement: "pc" | "cloud"` (`machine` later; Cloud shows hosts by placement and never
   offers a `cloud` host to anyone outside its session tree).
 - **What Daytona keeps:** lifecycle (create / start / stop / snapshot / destroy), starting `hostd` at boot, and the
   port proxy for previews until the gateway gives each sandbox its own addresses. Agent execution and files stop using
@@ -644,6 +644,41 @@ tools and their answers (§3.7), `link__*` management tools, errors, audit forma
   like on a PC. Cloud PROJECT-SERVICE §10.8 is the Cloud side of this split.
 - A cloud host dials out to the same gateway endpoint as a PC (`/device/v2/link`), so the relay, the MCP client and
   the DSH plugin have one path; the sandbox needs no inbound port either.
+
+#### 13.1.1 Running `hostd` in a cloud sandbox (issue #82)
+
+The sandbox entrypoint runs the static Linux build (below) once per sandbox, in the background, for the sandbox's life:
+
+```sh
+AGENTROUTER_HOST_TOKEN_FILE=/run/agentrouter/host-token \
+AGENTROUTER_CONTROL_KEY=<control plane Ed25519 public key, base64url (or {"kid","publicKey"} JSON)> \
+AGENTROUTER_GATEWAY=https://agent-gateway-dev.agentrouter.top \
+AGENTROUTER_HOST_ID=<sandbox id> \
+AGENTROUTER_DEVICE_HOME=/var/lib/agentrouter \
+  hostd link --placement cloud /workspace/<view> [/workspace/<view2> …]
+```
+
+| Input | Meaning |
+| --- | --- |
+| `AGENTROUTER_HOST_TOKEN_FILE` (or `--token-file`) | The platform-issued host token, re-read before every (re)connect, so the platform may rotate it in place. |
+| `AGENTROUTER_HOST_TOKEN` | Alternative to the file; removed from `hostd`'s environment at start, so no server or command the Agent runs inherits it. |
+| `AGENTROUTER_CONTROL_KEY` | The control plane's signing key (on a PC it is pinned at pairing); every request is verified against it (§3.3). Required. |
+| `AGENTROUTER_GATEWAY` (or `--gateway`) | The gateway; default the Dev gateway. Same `/device/v2/link` endpoint as a PC. |
+| `AGENTROUTER_HOST_ID` | The sandbox id; the link id is `link_id("cloud:<id>", first folder)` (stable across `hostd` restarts in the same sandbox). Default: the host name. |
+| folders (arguments) | The session's mounted views, absolute; the first is home. Fixed for the session. |
+
+Behaviour: `hello.link` = `{placement: "cloud", app: "hostd", full: true, sandbox: ""}`; the `host` server starts
+unconfined at once; no checkpoints or journal; no prompt ever (custom servers and `link__folder_add` answer
+`DENIED_BY_USER`); audit and `audit_head` as on a PC (data under `AGENTROUTER_DEVICE_HOME`); the log is one line per
+event on stdout; SIGTERM/SIGINT stop it (exit 0), a revoked token or a refused link exits 1, missing inputs exit 2.
+
+**The build:** `.github/workflows/hostd.yml` builds the `agentrouter` binary for `x86_64-unknown-linux-musl` and
+`aarch64-unknown-linux-musl` (static, rustls with bundled web PKI roots — no OpenSSL, no CA bundle needed; the PC build
+keeps native-tls). Every merge to `main` that changes the program publishes a GitHub pre-release
+`hostd-v<crate version>-<sha7>` with `hostd-x86_64-linux-musl`, `hostd-aarch64-linux-musl` and `SHA256SUMS`:
+`https://github.com/Maybank01/agentrouter-device/releases/download/<tag>/hostd-<arch>-linux-musl`. The Cloud sandbox
+image pins one tag and checks the sha256. Locally: `cargo build --release -p agentrouter-device-cli --bin agentrouter
+--no-default-features --features rustls --target x86_64-unknown-linux-musl` (needs `musl-gcc` for `ring`).
 
 ### 13.2 The default-installed bundle, re-evaluated now that `host` exists
 
@@ -703,7 +738,7 @@ pinned in the catalog; a bump is a catalog change with re-vetting (licence, arch
 | Repo | Task |
 | --- | --- |
 | device | #80: rename to `hostd` (binary, crates, console text, this file) once #69–#77 merge; `agentrouter link` stays |
-| device | `placement: cloud`: `hostd` started from a sandbox entrypoint, platform-issued key + token, no `srt`, no checkpoints, no `y`, `link__folder_add` refused |
+| device | ~~`placement: cloud`~~ done (#82, §13.1.1): `hostd` started from a sandbox entrypoint, platform-issued token, no `srt`, no checkpoints, no `y`, `link__folder_add` refused; static musl build per merge |
 | device | Lazy start of bundle/catalog servers from recorded tool names (`serena`) |
 | device | Credentials in a signed server start: env for that process only, redacted everywhere |
 | cloud | Catalog as data + `mcp_catalog` tool; definitions' `mcp` field compiled into installs (AGENT-DEFINITION §3.7) |

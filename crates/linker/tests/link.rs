@@ -27,6 +27,7 @@ fn info() -> LinkInfo {
         read_only: false,
         folders: vec!["/work/my-mod".into()],
         full: false,
+        placement: "pc".into(),
     }
 }
 
@@ -85,6 +86,7 @@ async fn hello_frames_heartbeat_reconnect_and_ends() {
     assert_eq!(hello["link"]["folder"], "my-mod");
     assert_eq!(hello["link"]["app"], "cli");
     assert_eq!(hello["link"]["sandbox"], "srt@0.0.80");
+    assert_eq!(hello["link"]["placement"], "pc");
     assert!(
         hello["link"].get("path").is_none(),
         "no absolute path leaves the device"

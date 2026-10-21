@@ -2,6 +2,7 @@
 //! subcommand is the local-Agent stdio MCP entry (`mcp_serve.rs`), kept pending its design (LINKER-MCP §4).
 
 mod cli;
+mod cloud;
 mod console;
 mod host;
 #[path = "mcp_serve.rs"]

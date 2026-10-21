@@ -39,6 +39,13 @@ portable-pty = "0.9.0"
 # File-change notifications (inotify, FSEvents, ReadDirectoryChangesW): notify-rs/notify, CC0-1.0.
 notify = "8.2.0"
 
+# TLS: native-tls by default (the person's PC); `--no-default-features --features rustls` for the static Linux
+# build of hostd that cloud sandboxes run (musl, no OpenSSL; LINKER-MCP §13.1, .github/workflows/hostd.yml).
+[features]
+default = ["native-tls"]
+native-tls = ["agentrouter-device-core/native-tls", "agentrouter-linker/native-tls"]
+rustls = ["agentrouter-device-core/rustls", "agentrouter-linker/rustls"]
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

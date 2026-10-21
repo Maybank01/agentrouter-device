@@ -20,6 +20,10 @@ const USAGE: &str = "AgentRouter（agentrouter）：在任意文件夹里运行 
       --full                    完全访问：本机工具用你的账户权限，整台电脑都能读写（只能在这台电脑上打开）
       --yes-servers             不在目录里的本机工具不用逐个问（无人值守的电脑）
       --gateway <网址>  --name <这台电脑的名字>
+  agentrouter link --placement cloud <文件夹…> [--token-file <文件>] [--gateway <网址>]
+                                云端沙箱里的 hostd（由沙箱启动，不配对、不问人）：平台发的主机令牌
+                                （AGENTROUTER_HOST_TOKEN_FILE 或 AGENTROUTER_HOST_TOKEN）、平台签名公钥
+                                （AGENTROUTER_CONTROL_KEY）；沙箱本身就是边界，没有系统沙箱和检查点
   agentrouter undo [--list] [--journal] [检查点]
                                 撤销 Agent 在这个文件夹里最近一轮的改动（再运行一次就再往前一轮）；--list 列出检查点；
                                 --journal 放回完全访问时 Agent 改过的文件的旧版
@@ -40,6 +44,8 @@ struct Flags {
     read_only: bool,
     full: bool,
     yes_servers: bool,
+    placement: Option<String>,
+    token_file: Option<String>,
     positional: Vec<String>,
 }
 
@@ -56,6 +62,8 @@ fn parse(args: &[String]) -> Result<Flags, String> {
             "--full" => flags.full = true,
             "--journal" => flags.journal = true,
             "--yes-servers" => flags.yes_servers = true,
+            "--placement" => flags.placement = Some(value("--placement")?),
+            "--token-file" => flags.token_file = Some(value("--token-file")?),
             other if other.starts_with("--") => return Err(format!("不认识的选项：{other}")),
             other => flags.positional.push(other.to_string()),
         }
@@ -84,6 +92,18 @@ pub fn main() {
         }
     };
     let code = match command.as_str() {
+        "link" if flags.placement.as_deref() == Some("cloud") => crate::cloud::link(
+            crate::cloud::CloudOptions {
+                dirs: flags.positional.clone(),
+                gateway: flags.gateway.clone(),
+                token_file: flags.token_file.clone(),
+            },
+            &INTERRUPTED,
+        ),
+        "link" if flags.placement.as_deref().is_some_and(|p| p != "pc") => {
+            eprintln!("--placement 只能是 pc 或 cloud");
+            2
+        }
         "link" => crate::console::link(
             crate::console::LinkOptions {
                 dirs: flags.positional.clone(),

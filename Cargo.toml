@@ -12,9 +12,10 @@ repository = "https://github.com/Maybank01/agentrouter-device"
 publish = false
 
 [workspace.dependencies]
-agentrouter-device-core = { path = "crates/device-core" }
+# TLS backend features are chosen by the binary (connector-cli: native-tls by default, rustls for the static build).
+agentrouter-device-core = { path = "crates/device-core", default-features = false }
 agentrouter-sandbox = { path = "crates/sandbox" }
-agentrouter-linker = { path = "crates/linker" }
+agentrouter-linker = { path = "crates/linker", default-features = false }
 agentrouter-aggregator = { path = "crates/aggregator" }
 agentrouter-checkpoint = { path = "crates/checkpoint" }
 serde = { version = "1", features = ["derive"] }

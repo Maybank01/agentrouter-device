@@ -1,0 +1,112 @@
+# hostd for cloud sandboxes (issue #82, docs/LINKER-MCP.md §13.1): a static Linux build of the
+# `agentrouter` binary (musl, rustls, no OpenSSL, no glibc) for x86_64 and aarch64. Pull requests build and smoke it;
+# every push to main that changes the program also publishes it as a GitHub pre-release `hostd-v<version>-<sha7>`
+# with the binaries and SHA256SUMS, so the Cloud sandbox image pins one by tag + sha256. Not an npm/client release.
+name: hostd (static Linux)
+
+on:
+  push:
+    branches: [main]
+    paths: ["crates/**", "Cargo.toml", "Cargo.lock", ".github/workflows/hostd.yml"]
+  pull_request:
+    paths: ["crates/**", "Cargo.toml", "Cargo.lock", ".github/workflows/hostd.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hostd-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: hostd ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl, arch: x86_64, os: ubuntu-latest }
+          - { target: aarch64-unknown-linux-musl, arch: aarch64, os: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: musl C compiler (ring)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq musl-tools
+      - name: Build
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CC_aarch64_unknown_linux_musl: musl-gcc
+        run: >-
+          cargo build --release --locked -p agentrouter-device-cli --bin agentrouter
+          --no-default-features --features rustls --target ${{ matrix.target }}
+      - name: Static, runs, no OpenSSL
+        run: |
+          bin=target/${{ matrix.target }}/release/agentrouter
+          file "$bin"
+          file "$bin" | grep -Eq 'statically linked|static-pie linked'
+          if ldd "$bin" 2>/dev/null | grep -q '=>'; then echo "dynamically linked"; exit 1; fi
+          "$bin" version
+          # Cloud mode refuses to start without its platform inputs (exit 2), and never waits for a prompt.
+          set +e; timeout 10 "$bin" link --placement cloud /tmp </dev/null; code=$?; set -e
+          test "$code" = 2
+      - name: Collect
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name=="agentrouter-device-cli") | .version')
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/agentrouter "dist/hostd-${{ matrix.arch }}-linux-musl"
+          (cd dist && sha256sum "hostd-${{ matrix.arch }}-linux-musl" | tee "hostd-${{ matrix.arch }}-linux-musl.sha256")
+          echo "$version" > dist/VERSION
+      - uses: actions/upload-artifact@v7
+        with:
+          name: hostd-${{ matrix.arch }}-linux-musl
+          path: dist/
+          retention-days: 30
+
+  publish:
+    name: Publish pre-release
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+          pattern: hostd-*
+          merge-multiple: true
+      - name: Release hostd-v<version>-<sha7>
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd artifacts
+          version=$(cat VERSION)
+          tag="hostd-v${version}-${GITHUB_SHA::7}"
+          cat hostd-*.sha256 > SHA256SUMS
+          cat SHA256SUMS
+          notes=$(printf '%s\n' \
+            "Static Linux build of hostd (the \`agentrouter\` binary; musl, rustls) for cloud sandboxes, commit ${GITHUB_SHA}." \
+            "Start: \`hostd-<arch>-linux-musl link --placement cloud <folder>…\` with AGENTROUTER_HOST_TOKEN_FILE (or AGENTROUTER_HOST_TOKEN), AGENTROUTER_CONTROL_KEY, AGENTROUTER_GATEWAY, AGENTROUTER_HOST_ID." \
+            "See docs/LINKER-MCP.md §13.1. Pin by tag + SHA256SUMS." \
+            "" '```' "$(cat SHA256SUMS)" '```')
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" hostd-x86_64-linux-musl hostd-aarch64-linux-musl SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$tag" hostd-x86_64-linux-musl hostd-aarch64-linux-musl SHA256SUMS \
+              --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false \
+              --title "hostd ${version} (${GITHUB_SHA::7})" --notes "$notes"
+          fi
