@@ -468,6 +468,19 @@ call answers `SANDBOX_UNAVAILABLE` with a `next` that tells the person what to r
   Every start checks both. A later `sandbox setup` refreshes the profile grant, so items created
   since the last run become readable. `agentrouter sandbox remove` (`srt-win uninstall`) removes the
   grant. FAT/exFAT folders and network shares cannot carry ACEs: `SANDBOX_UNAVAILABLE` for them.
+
+  **Stdio (device #112).** srt-win gives a sandboxed child an empty stdin by design (upstream R14: the
+  broker uses the runner's stdin for its own launch spec and pumps back only stdout and stderr). A stdio
+  MCP server, the host server included, would read end-of-file and exit before `initialize`. So for
+  every confined server the device creates a **named pipe** first (`\\.\pipe\agentrouter-<128 random
+  bits>`): one instance (`FILE_FLAG_FIRST_PIPE_INSTANCE`), no remote clients, a protected DACL whose
+  only entry lets the sandbox account read and write it. The name goes in the launch file. The sandbox
+  entry connects to it as the client (the sandbox side holds only client ends, as with srt's own pipes)
+  and relays it to the server's stdin and from its stdout. stderr stays on srt's pumped stderr, and the
+  aggregator speaks MCP over the pipe. A second client cannot connect. Limit: all confined servers run
+  as the one sandbox account, so they are not isolated from **each other** on Windows (one could read
+  another's launch file in `<data>-scratch` before the entry deletes it, or open its processes). The
+  boundary is between the servers and the person's files, secrets and network, as on the other OSes.
 - **macOS:** Seatbelt profile generated per link; no setup step.
 - **Linux:** needs `bwrap` and unprivileged user namespaces (Ubuntu 24.04+ AppArmor may block them; the
   `next` says how to allow it).

@@ -148,11 +148,9 @@ jobs:
           Start-Service -Name seclogon
           Get-Service -Name seclogon
       - run: cargo test -p agentrouter-sandbox -- --nocapture
-      # Windows: srt-win gives a sandboxed child an empty stdin (by design, upstream R14), so a stdio MCP server cannot
-      # get its requests yet; the stdin relay is device #112. Until then these two report without failing the job.
+      # Windows: srt-win gives a sandboxed child an empty stdin (by design, upstream R14); a server's stdin and stdout
+      # travel over a named pipe the sandbox entry connects to (#112). Both steps block on every OS.
       - name: The aggregator runs a real MCP server confined (issue #46)
-        continue-on-error: ${{ runner.os == 'Windows' }}
         run: cargo test -p agentrouter-aggregator -- --nocapture
       - name: The whole chain through the real CLI, and the escape cases (issue #50)
-        continue-on-error: ${{ runner.os == 'Windows' }}
         run: cargo test -p agentrouter-device-cli --test link_e2e -- --nocapture

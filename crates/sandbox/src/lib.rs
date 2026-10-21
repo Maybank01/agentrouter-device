@@ -159,6 +159,33 @@ pub struct Runtime {
 struct Ready {
     node: PathBuf,
     cli: PathBuf,
+    /// The sandbox account (`srt-win status`).
+    #[cfg(windows)]
+    sid: String,
+}
+
+/// A confined stdio server ([`Runtime::stdio_command`]): its command and, on Windows, the pipe its stdin and stdout
+/// travel over.
+pub struct Confined {
+    pub command: Command,
+    pub pipe: Option<StdioPipe>,
+}
+
+/// The server end of the named pipe that carries a confined server's stdin and stdout on Windows (#112). srt-win
+/// hands a sandboxed child an empty stdin by design (upstream R14) and uses the runner's stdin for its own launch
+/// spec, so a stdio server inside the sandbox would read end-of-file and exit before its first request. Instead
+/// [`ENTRY_JS`] connects to this pipe from inside the sandbox — the sandbox side holds only a client end, as with
+/// srt's own pipes — and relays it to the server's stdin and from its stdout; stderr stays on srt's pumped stderr.
+///
+/// The pipe exists before the command starts: one instance only (`FILE_FLAG_FIRST_PIPE_INSTANCE`, so a pipe someone
+/// else created under the name is refused), no remote clients, and a protected DACL whose one entry lets the sandbox
+/// account read and write it. Its name (128 random bits) is in the launch file only. Never on another OS.
+pub struct StdioPipe {
+    /// Created with `FILE_FLAG_OVERLAPPED` (what tokio's `NamedPipeServer::from_raw_handle` asks for).
+    #[cfg(windows)]
+    pub handle: std::os::windows::io::OwnedHandle,
+    #[cfg(not(windows))]
+    _never: std::convert::Infallible,
 }
 
 impl Runtime {
@@ -416,7 +443,7 @@ impl Runtime {
         #[cfg(not(windows))]
         self.probe(&node)?;
         #[cfg(windows)]
-        {
+        let sid = {
             let install =
                 windows_install(&self.srt_win()).map_err(|e| Unavailable::new(e, NEXT_SETUP))?;
             let sid = match install.sid {
@@ -441,10 +468,13 @@ impl Runtime {
                 }
                 Err(e) => return Err(Unavailable::new(e, NEXT_SETUP)),
             }
-        }
+            sid
+        };
         Ok(Ready {
             node,
             cli: self.cli(),
+            #[cfg(windows)]
+            sid,
         })
     }
 
@@ -713,8 +743,21 @@ impl Runtime {
         Ok(policy)
     }
 
-    /// The confined command for one server: stdio, cwd and environment are set; the caller pipes stdio and spawns.
+    /// The confined command for one program: cwd and environment are set; the caller pipes stdio and spawns. On
+    /// Windows the program's stdin is empty (srt-win); a server that reads requests on stdin uses
+    /// [`Runtime::stdio_command`].
     pub fn command(&self, launch: &Launch) -> Result<Command, Unavailable> {
+        self.confined(launch, false).map(|c| c.command)
+    }
+
+    /// The confined command for a stdio server (an MCP server): as [`Runtime::command`], and on Windows its stdin and
+    /// stdout travel over [`Confined::pipe`], which the caller connects and uses instead of the child's own stdio
+    /// (#112). Elsewhere `pipe` is `None` and the child's stdio is the server's.
+    pub fn stdio_command(&self, launch: &Launch) -> Result<Confined, Unavailable> {
+        self.confined(launch, true)
+    }
+
+    fn confined(&self, launch: &Launch, stdio_pipe: bool) -> Result<Confined, Unavailable> {
         let ready = self.ready()?;
         let policy = self.policy(launch)?;
         let scratch = self.scratch(launch.key);
@@ -767,6 +810,8 @@ impl Runtime {
         };
         let mut cmd = Command::new(&ready.node);
         cmd.arg(&srt).arg("--settings").arg(&policy_file);
+        #[cfg_attr(not(windows), allow(unused_mut))]
+        let mut pipe = None;
         if cfg!(windows) {
             let entry = scratch.join("entry.cjs");
             std::fs::write(&entry, ENTRY_JS).map_err(|e| {
@@ -777,7 +822,8 @@ impl Runtime {
                 "launch-{}.json",
                 nonce.iter().map(|b| format!("{b:02x}")).collect::<String>()
             ));
-            let spec = json!({
+            #[cfg_attr(not(windows), allow(unused_mut))]
+            let mut spec = json!({
                 "program": shown(launch.program),
                 "args": launch.args,
                 "env": env
@@ -786,6 +832,17 @@ impl Runtime {
                     .collect::<serde_json::Map<String, Value>>(),
                 "cwd": shown(launch.cwd),
             });
+            #[cfg(windows)]
+            if stdio_pipe {
+                let (name, handle) = windows_stdio_pipe(&ready.sid).map_err(|e| {
+                    Unavailable::new(
+                        format!("建不了本机工具的输入输出通道：{e}"),
+                        "请重新运行 agentrouter；仍然不行就在 agentrouter-device 仓库报告这一行。",
+                    )
+                })?;
+                spec["pipe"] = Value::String(name);
+                pipe = Some(StdioPipe { handle });
+            }
             std::fs::write(&launch_file, spec.to_string())
                 .map_err(|e| Unavailable::new(format!("写不了启动文件：{e}"), NEXT_SETUP))?;
             // `cmd /d /s /c "<line>"` inside the sandbox: quoted paths only, nothing cmd would expand.
@@ -808,12 +865,99 @@ impl Runtime {
         } else {
             cmd.arg("--").arg(launch.program).args(launch.args);
         }
+        #[cfg(not(windows))]
+        let _ = stdio_pipe;
         cmd.current_dir(launch.cwd);
         for (k, v) in &env {
             cmd.env(k, v);
         }
-        Ok(cmd)
+        Ok(Confined { command: cmd, pipe })
     }
+}
+
+/// A new [`StdioPipe`] for one server: its name and the server end. The DACL is protected (nothing inherited) and has
+/// one entry: read and write data and attributes for the sandbox account (`FILE_GENERIC_READ | FILE_GENERIC_WRITE`,
+/// what a client's `GENERIC_READ | GENERIC_WRITE` open asks for; another instance cannot be made anyway, as the pipe
+/// allows one). The device itself needs no entry: it holds the server end from the creation. The low mandatory label
+/// keeps the open working should srt ever run the child below medium integrity.
+#[cfg(windows)]
+fn windows_stdio_pipe(
+    sandbox_sid: &str,
+) -> Result<(String, std::os::windows::io::OwnedHandle), String> {
+    use std::os::windows::io::{FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::Foundation::{INVALID_HANDLE_VALUE, LocalFree};
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    };
+    use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX,
+    };
+    use windows_sys::Win32::System::Pipes::{
+        CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
+    };
+
+    if !sandbox_sid.starts_with("S-1-")
+        || !sandbox_sid[4..]
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == '-')
+    {
+        return Err(format!("隔离账户的 SID 不对：{sandbox_sid}"));
+    }
+    let wide = |s: &str| {
+        s.encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<u16>>()
+    };
+    let sddl = wide(&format!("D:P(A;;0x12019f;;;{sandbox_sid})S:(ML;;NW;;;LW)"));
+    let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    // SAFETY: `sddl` is NUL-terminated; on success `sd` is a LocalAlloc'd descriptor freed below.
+    if unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.as_ptr(),
+            SDDL_REVISION_1,
+            &mut sd,
+            std::ptr::null_mut(),
+        )
+    } == 0
+    {
+        return Err(format!("安全描述符：{}", std::io::Error::last_os_error()));
+    }
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: sd,
+        bInheritHandle: 0,
+    };
+    let random: [u8; 16] = random();
+    let name = format!(
+        r"\\.\pipe\agentrouter-{}",
+        random
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    );
+    let wide_name = wide(&name);
+    // SAFETY: the name is NUL-terminated and `attributes` (with `sd`) lives across the call.
+    let handle = unsafe {
+        CreateNamedPipeW(
+            wide_name.as_ptr(),
+            PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+            1,
+            64 * 1024,
+            64 * 1024,
+            0,
+            &attributes,
+        )
+    };
+    let error = std::io::Error::last_os_error();
+    // SAFETY: `sd` came from ConvertStringSecurityDescriptorToSecurityDescriptorW and is not used again.
+    unsafe { LocalFree(sd) };
+    if handle == INVALID_HANDLE_VALUE || handle.is_null() {
+        return Err(format!("CreateNamedPipeW：{error}"));
+    }
+    // SAFETY: a valid handle that nothing else owns.
+    Ok((name, unsafe { OwnedHandle::from_raw_handle(handle) }))
 }
 
 /// A child's output, or None (killed) after `timeout`.

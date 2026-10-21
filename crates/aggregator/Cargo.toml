@@ -22,5 +22,9 @@ tokio-util = { version = "0.7", default-features = false }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[target.'cfg(windows)'.dependencies]
+# Named pipes: a confined server's stdio on Windows (#112).
+tokio = { workspace = true, features = ["net"] }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util"] }
