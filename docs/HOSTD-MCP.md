@@ -338,6 +338,29 @@ from `remote_*` tools.
 - **Not on the device:** the kernel's own transcripts, spill files and session index stay on the Agent host (they are
   the kernel's state, not the person's files).
 
+### 3.8 Preview streams: a dev server on the host in the web preview (Cloud #2387, #2246)
+
+One preview mechanism for every host (agreed on Cloud #2246): Control's preview proxy (per-target origin, single-use
+enter link, cookie; Cloud `live-preview.ts`) reaches a port through a transport per environment. For a host the
+transport is a **stream through `hostd`**, the reverse-dial pattern of wstunnel/chisel reverse tunnels on the link's own
+code (no second program, no second public endpoint):
+
+```text
+gateway → device  {"op":"port_open","id":"pst_<32 hex>","port":5173,"ticket":"<one-time>"}     (on the link)
+device            connect 127.0.0.1:5173 (then [::1]:5173)
+device → gateway  WebSocket wss://<gateway>/device/v2/port/<id>, Authorization: Bearer <ticket>; binary both ways
+device → gateway  {"op":"port_error","id","code"}   PORT_CLOSED | PORT_DIAL_FAILED | PORT_BUSY | PORT_SANDBOXED
+```
+
+- One WebSocket per TCP connection: MCP frames on the link never wait behind preview bytes; each stream has its own
+  flow control; HTTP keep-alive and WebSocket upgrades (HMR) are plain bytes. At most 64 open per link.
+- **Loopback only.** 完全访问 and cloud hosts serve any loopback port. Folder mode answers `PORT_SANDBOXED` for now:
+  the commands' dev server listens inside the OS sandbox (on Linux its own network namespace); the bridge is the host
+  server inside the sandbox (next step).
+- The gateway checks the ticket (one use, short-lived, bound to `id` and link) and splices the stream to Control's
+  internal request; it never reads the bytes. Evaluated and not used: frp, chisel, wstunnel (separate programs with
+  their own servers), yamux over the link (one TCP stream for everything; no maintained JS side).
+
 ### 3.5 Errors
 
 One table, JSON-RPC errors with `data: {code, next}` (`next` = one sentence for the model, as today):

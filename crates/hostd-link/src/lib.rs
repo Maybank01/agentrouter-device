@@ -13,11 +13,14 @@
 //!          either way        {"op": "close", "s": "<session>"}
 //!          device → gateway  {"op": "audit_head", "seq": n, "hash": "<sha256>"}
 //!          (`link` also carries `folders`, `readOnly`, `full` and `placement`: `pc` | `cloud`, HOSTD-MCP §13.1)
+//!          gateway → device  {"op": "port_open", "id": "pst_…", "port": n, "ticket": "…"}   (a preview stream, [`port`])
+//!          device → gateway  {"op": "port_error", "id": "pst_…", "code": "PORT_CLOSED" | …}
 //! ```
 //!
 //! Calls in flight when the link drops are not replayed: an answer produced while the link is down is dropped
 //! (the gateway already answered `LINK_LOST`). Sessions themselves outlive a drop on the aggregator side.
 
+pub mod port;
 pub mod proxy;
 
 use std::path::Path;
@@ -197,6 +200,11 @@ enum Out {
     },
     /// The link's info changed (a folder was added): `{"op":"info"}` with the current info.
     Info,
+    /// A preview stream could not be opened ([`port`]).
+    PortError {
+        id: String,
+        code: &'static str,
+    },
 }
 
 type SharedInfo = std::sync::Arc<std::sync::Mutex<LinkInfo>>;
@@ -241,7 +249,14 @@ pub fn start(options: Options) -> (Handle, mpsc::UnboundedReceiver<Event>) {
     let (event_tx, event_rx) = mpsc::unbounded_channel();
     let (stop_tx, stop_rx) = watch::channel(false);
     let info: SharedInfo = std::sync::Arc::new(std::sync::Mutex::new(options.info.clone()));
-    tokio::spawn(run(options, info.clone(), out_rx, event_tx, stop_rx));
+    tokio::spawn(run(
+        options,
+        info.clone(),
+        out_rx,
+        out_tx.clone(),
+        event_tx,
+        stop_rx,
+    ));
     (
         Handle {
             out: out_tx,
@@ -285,10 +300,12 @@ async fn run(
     options: Options,
     info: SharedInfo,
     mut out_rx: mpsc::UnboundedReceiver<Out>,
+    out_tx: mpsc::UnboundedSender<Out>,
     events: mpsc::UnboundedSender<Event>,
     mut stop: watch::Receiver<bool>,
 ) {
     let mut backoff = BACKOFF_MIN;
+    let streams = port::limit();
     let end = loop {
         if *stop.borrow() {
             break End::Stopped;
@@ -301,7 +318,8 @@ async fn run(
                     &options,
                     &info,
                     &token,
-                    &mut out_rx,
+                    (&mut out_rx, &out_tx),
+                    &streams,
                     &events,
                     &mut stop,
                     &mut welcomed,
@@ -336,9 +354,10 @@ async fn run(
 }
 
 /// The WebSocket to the gateway: through the proxy the environment names (proxy.rs; a cloud sandbox's only egress),
-/// else directly.
+/// else directly. `request` is `url` with any headers of its own.
 async fn open(
     url: &str,
+    request: tokio_tungstenite::tungstenite::handshake::client::Request,
     config: WebSocketConfig,
 ) -> Result<
     (
@@ -355,17 +374,27 @@ async fn open(
             .tunnel()
             .await
             .map_err(tokio_tungstenite::tungstenite::Error::Io)?;
-        return tokio_tungstenite::client_async_tls_with_config(url, stream, Some(config), None)
-            .await;
+        return tokio_tungstenite::client_async_tls_with_config(
+            request,
+            stream,
+            Some(config),
+            None,
+        )
+        .await;
     }
-    tokio_tungstenite::connect_async_with_config(url, Some(config), true).await
+    tokio_tungstenite::connect_async_with_config(request, Some(config), true).await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn connection(
     options: &Options,
     info: &SharedInfo,
     token: &str,
-    out_rx: &mut mpsc::UnboundedReceiver<Out>,
+    (out_rx, out_tx): (
+        &mut mpsc::UnboundedReceiver<Out>,
+        &mpsc::UnboundedSender<Out>,
+    ),
+    streams: &Arc<tokio::sync::Semaphore>,
     events: &mpsc::UnboundedSender<Event>,
     stop: &mut watch::Receiver<bool>,
     welcomed: &mut bool,
@@ -382,7 +411,14 @@ async fn connection(
     let config = WebSocketConfig::default()
         .max_message_size(Some(FRAME_MAX))
         .max_frame_size(Some(FRAME_MAX));
-    let connect = open(&url, config);
+    let request =
+        match tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(
+            url.as_str(),
+        ) {
+            Ok(request) => request,
+            Err(e) => return Conn::Lost(format!("网关地址不对：{e}")),
+        };
+    let connect = open(&url, request, config);
     let mut ws = match timeout(Duration::from_secs(20), connect).await {
         Ok(Ok((ws, _))) => ws,
         Ok(Err(e)) => return Conn::Lost(format!("连不上网关：{e}")),
@@ -423,6 +459,22 @@ async fn connection(
                             }
                             Inbound::End(end) => break Conn::End(end),
                             Inbound::Lost(why) => break Conn::Lost(why),
+                            Inbound::PortOpen(open) => {
+                                let refuse = |code| { let _ = out_tx.send(Out::PortError { id: open.id.clone(), code }); };
+                                if !port::allowed(&info.lock().unwrap()) {
+                                    refuse("PORT_SANDBOXED");
+                                } else if let (Ok(permit), Some(stream_url)) = (streams.clone().try_acquire_owned(), port::stream_url(&url, &open.id)) {
+                                    let out = out_tx.clone();
+                                    tokio::spawn(async move {
+                                        if let Err(code) = port::serve(&stream_url, &open).await {
+                                            let _ = out.send(Out::PortError { id: open.id, code });
+                                        }
+                                        drop(permit);
+                                    });
+                                } else {
+                                    refuse("PORT_BUSY");
+                                }
+                            }
                         }
                     }
                     Some(Ok(Message::Close(frame))) => {
@@ -444,6 +496,7 @@ async fn connection(
                     Out::Data { s, m } => json!({"s": s, "m": m}),
                     Out::Close { s } => json!({"op": "close", "s": s}),
                     Out::Info => json!({"op": "info", "link": info.lock().unwrap().to_json()}),
+                    Out::PortError { id, code } => json!({"op": "port_error", "id": id, "code": code}),
                 };
                 let text = frame.to_string();
                 if text.len() > FRAME_MAX {
@@ -482,6 +535,7 @@ enum Inbound {
     Welcome(String),
     End(End),
     Lost(String),
+    PortOpen(port::Open),
 }
 
 /// Codes after which retrying is pointless: the link layer ends with [`End::Refused`].
@@ -522,6 +576,7 @@ fn on_text(text: &str, events: &mpsc::UnboundedSender<Event>) -> Inbound {
             Inbound::None
         }
         "revoked" => Inbound::End(End::Revoked(field("reason"))),
+        "port_open" => port::parse(&frame).map_or(Inbound::None, Inbound::PortOpen),
         "error" => {
             let code = field("code");
             let message = field("message");
