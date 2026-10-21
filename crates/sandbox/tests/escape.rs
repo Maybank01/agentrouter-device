@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-use agentrouter_sandbox::{Launch, Runtime, find_program};
+use agentrouter_sandbox::{Launch, Runtime};
 use serde_json::{Value, json};
 
 /// Where the device keeps its data on a person's PC: on Windows `%LOCALAPPDATA%`, which srt's profile read grant
@@ -208,7 +208,8 @@ fn a_confined_process_cannot_touch_anything_outside_the_folder() {
     let status = rt.status();
     assert!(status.ready, "sandbox not ready: {:?}", status.problems);
 
-    let node = find_program("node", None).expect("node on PATH");
+    // The device's own Node (#116): the runners have none on PATH.
+    let node = rt.node().expect("the device's Node after setup");
     let config = json!({
         "folder": folder, "outside": outside, "homeDot": home_dot, "ssh": ssh, "secret": secret, "data": data,
     })

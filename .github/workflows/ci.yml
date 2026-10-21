@@ -127,11 +127,34 @@ jobs:
       AGENTROUTER_SANDBOX_TESTS: "1"
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # #116: the person installs nothing. `sandbox setup` provisions the device's own pinned Node.js and uv; the
+      # runner's are hidden so nothing here can fall back to them (srt, npm ci, the test servers all run on the
+      # device's Node).
+      - name: Hide the runner's Node.js and uv (Linux, macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          for tool in node npm npx corepack uv uvx; do
+            which -a "$tool" 2>/dev/null | sort -u | while read -r p; do sudo mv "$p" "$p.hidden-by-ci"; done
+          done
+          hash -r
+          for tool in node npx uvx; do
+            if command -v "$tool"; then echo "$tool is still on PATH"; exit 1; fi
+          done
+      - name: Hide the runner's Node.js and uv (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          foreach ($t in 'node', 'npm', 'npx', 'corepack', 'uv', 'uvx') {
+            Get-Command $t -All -ErrorAction SilentlyContinue | Where-Object Source | Sort-Object Source -Unique | ForEach-Object {
+              Rename-Item -LiteralPath $_.Source -NewName "$(Split-Path -Leaf $_.Source).hidden-by-ci"
+            }
+          }
+          foreach ($t in 'node', 'npx', 'uvx') {
+            if (Get-Command $t -ErrorAction SilentlyContinue) { throw "$t is still on PATH" }
+          }
       - name: Linux sandbox dependencies (bubblewrap, socat, ripgrep; user namespaces)
         if: runner.os == 'Linux'
         run: |

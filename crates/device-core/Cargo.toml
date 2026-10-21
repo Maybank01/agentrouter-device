@@ -49,5 +49,5 @@ windows-sys = { workspace = true, features = [
 # TLS for pairing and tokens: native-tls by default; rustls (ring + bundled web PKI roots) for the static Linux build.
 [features]
 default = ["native-tls"]
-native-tls = ["ureq/native-tls"]
-rustls = ["ureq/rustls"]
+native-tls = ["ureq/native-tls", "agentrouter-sandbox/native-tls"]
+rustls = ["ureq/rustls", "agentrouter-sandbox/rustls"]

@@ -449,7 +449,7 @@ anything from the folder** (no git in the folder, no hooks, no folder config).
 
 | Candidate | Licence | Activity (checked 2026-10-19) | Verdict |
 | --- | --- | --- | --- |
-| **Anthropic `sandbox-runtime` (`srt`)** | Apache-2.0 | Active: pinned v0.0.81 (2026-10-19; re-vetted 2026-10-21: Apache-2.0, same four dependencies, Windows still alpha) | **Chosen.** Built to sandbox "agents, local MCP servers, bash commands and arbitrary processes"; one policy format on all three OSes: macOS `sandbox-exec` (Seatbelt), Linux bubblewrap + network namespace, Windows a dedicated `srt-sandbox` local account + per-session explicit ACEs on the working tree + WFP egress fence. Used as a process wrapper (`srt --settings <file> -- <cmd>`), so no linking and a narrow contract. Risks: pre-1.0 (pin exact version + integrity like a catalog package, re-vet on each bump); needs Node (present for `npx` users; bundled later if a shell returns); Windows needs a one-time elevated setup (Q4) |
+| **Anthropic `sandbox-runtime` (`srt`)** | Apache-2.0 | Active: pinned v0.0.81 (2026-10-19; re-vetted 2026-10-21: Apache-2.0, same four dependencies, Windows still alpha) | **Chosen.** Built to sandbox "agents, local MCP servers, bash commands and arbitrary processes"; one policy format on all three OSes: macOS `sandbox-exec` (Seatbelt), Linux bubblewrap + network namespace, Windows a dedicated `srt-sandbox` local account + per-session explicit ACEs on the working tree + WFP egress fence. Used as a process wrapper (`srt --settings <file> -- <cmd>`), so no linking and a narrow contract. Risks: pre-1.0 (pin exact version + integrity like a catalog package, re-vet on each bump); needs Node, which the device provisions itself (§6.5); Windows needs a one-time elevated setup (Q4) |
 | OpenAI Codex sandbox crates (`codex-rs/windows-sandbox-rs`, `linux-sandbox`, Seatbelt) | Apache-2.0 | Very active (rust-v0.163.0, 2026-10-15) | **Fallback.** Rust, same primitives (Windows: restricted token/sandbox identity + ACLs + WFP; Linux: Landlock + seccomp/bwrap). Not published as a library with a stable API; vendoring a fast-moving monorepo crate is the cost |
 | Today's low-integrity token + Low labels (S2b, `confine.rs`) | ours | — | **Deleted.** Covers only built-in `exec`; MSYS2 programs do not start low; labels the person's folders; escape via medium-integrity git |
 | Windows AppContainer / LPAC directly (`windows` crate) | MIT/Apache-2.0 | Active | Not chosen now: strongest primitive, but node/python/uv installed per-user and most MCP servers break without many brokered exceptions; revisit if `srt` Windows proves insufficient |
@@ -514,6 +514,24 @@ promise a protection that is not there. The console says it in one line (§8). K
 head still goes to the cloud on every heartbeat, so a rewritten log is detected), checkpoints (§7.2), the local `y`
 for custom servers, Ctrl+C. Folder mode is unchanged (deny list, OS boundary). A full link works on a computer whose
 sandbox is unavailable (e.g. Ubuntu 24.04 with restricted user namespaces).
+
+### 6.5 The device's own runtimes (device #116)
+
+Folder mode never asks the person to install anything (the product is for ordinary people). srt and `npx` servers run
+on Node.js, `uvx` servers (serena, §13.2) on uv, so the device provisions both in `sandbox setup` (which the double-click
+start and the first `link` run), and `--full` provisions them too:
+
+- One pinned version each (Node.js 24 LTS, uv), the project's official portable archive per OS and architecture, the
+  SHA-256 in source (`crates/sandbox/src/runtimes.rs`; Node's from the release's signed `SHASUMS256.txt`). Sources in
+  order: the project's own host, then one mirror (npmmirror for Node, GitHub for uv); a source that stays too slow is
+  left for the next. An archive that does not match is deleted, never unpacked.
+- Downloaded in-process (no curl, PowerShell or installer) into `<data>-shared/runtimes/<name>-<version>/`, never
+  through the temp folder; the old version's folder is removed after the new one is in place (docs/AV-HYGIENE.md, the
+  one exception to "gateway only"). Windows: the sandbox account gets read+execute on that folder, like on srt's.
+- One path: srt, the Windows sandbox entry, `npm ci` (as `node npm-cli.js`, no `npm.cmd`), `npx` and `uvx` use these,
+  never the person's own installs; they go first on every local server's PATH. Without uv only `uvx` tools are
+  missing (a line in setup, `RUNTIME_MISSING` on start). A cloud placement provisions nothing (its image has them).
+- Still the person's: Linux needs `bwrap`, `socat` and `rg` from the distribution (§6.3).
 
 ## 7. Audit and undo
 

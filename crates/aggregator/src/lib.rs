@@ -1035,12 +1035,12 @@ impl Inner {
                     .next("先用 link__package_put 发来这个包，再 link__server_add。")
             })?;
         }
-        if servers::resolve(&def.command).is_none() {
+        if servers::resolve(&self.sandbox, &def.command).is_none() {
             return Err(Failure::new(
                 "RUNTIME_MISSING",
                 format!("这台电脑上找不到 {}", def.command),
             )
-            .next("npx 要装 Node.js，uvx 要装 uv；请用户先装上，或换一个工具。"));
+            .next("npx 和 uvx 由 AgentRouter 自己准备：请用户运行 agentrouter sandbox setup 后再试；其他程序要这台电脑上装着，或换一个工具。"));
         }
         if let Some(old) = existing {
             old.stop.cancel();

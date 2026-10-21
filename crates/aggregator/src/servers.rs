@@ -358,8 +358,9 @@ pub enum StartError {
     Failed(String),
 }
 
-/// The program for a command: an absolute path as is, a bare name from PATH (with Windows extensions).
-pub fn resolve(command: &str) -> Option<PathBuf> {
+/// The program for a command: an absolute path as is, a bare name from the device's runtimes (`npx`, `uvx`, `node`,
+/// #116) or PATH (with Windows extensions).
+pub fn resolve(sandbox: &agentrouter_sandbox::Runtime, command: &str) -> Option<PathBuf> {
     let path = PathBuf::from(command);
     if path.is_absolute() {
         return path.is_file().then_some(path);
@@ -367,7 +368,7 @@ pub fn resolve(command: &str) -> Option<PathBuf> {
     if command.contains(['/', '\\']) {
         return None;
     }
-    agentrouter_sandbox::find_program(command, None)
+    sandbox.find(command)
 }
 
 /// Run one server until it is stopped, restarting it after crashes (at most 3 times in 2 minutes).
@@ -484,15 +485,17 @@ async fn start_once(
     agg.packages
         .apply(def.pin.as_ref(), &mut args)
         .map_err(|e| StartError::Failed(format!("{}: {}", e.code, e.message)))?;
-    let program = resolve(&def.command)
+    let program = resolve(&agg.sandbox, &def.command)
         .ok_or_else(|| StartError::Failed(format!("这台电脑上找不到 {}", def.command)))?;
     for name in &def.keep_out {
         agentrouter_device::mcp_pkg::keep_out(&home, name);
     }
     let mut env = def.env.clone();
-    if !env.iter().any(|(k, _)| k.eq_ignore_ascii_case("PATH"))
-        && let Some(path) = std::env::var_os("PATH")
-    {
+    if !env.iter().any(|(k, _)| k.eq_ignore_ascii_case("PATH")) {
+        // The device's Node and uv first (`npx`'s `#!/usr/bin/env node` finds the device's Node, #116).
+        let path = agg
+            .sandbox
+            .path_with_runtimes(std::env::var_os("PATH").as_deref());
         env.push(("PATH".into(), path.to_string_lossy().into_owned()));
     }
     env.push(("PYTHONIOENCODING".into(), "utf-8".into()));
