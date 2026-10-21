@@ -428,14 +428,14 @@ anything from the folder** (no git in the folder, no hooks, no folder config).
 | Write / delete / rename | Allowed only in the folder and a per-link scratch dir (`TEMP`, `TMP`, npm/uv/pip caches redirected there). Denied everywhere else, including the person's home and the device data dir |
 | Write inside the folder, denied anyway | `.git/hooks/**`, `.git/config` (planting code that the person's own git would later run at full rights) |
 | Read | Allowed broadly (tools need runtimes and system libraries) **except** a deny list: `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.azure`, `~/.kube`, `~/.docker/config.json`, `~/.config/gh`, `~/.git-credentials`, `~/.npmrc`, browser profile roots, OS credential stores, the AgentRouter device data dir |
-| Network | Allow-list per server from the catalog (`network: [domains]`) plus the package mirrors; custom servers get registries only unless the local `y` included network. **Open web** (owner Q7, 2026-10-20): a pinned catalog preset whose list is `["*"]` (the browser presets `browser`, `browser-firefox`) may reach any public host on any port; loopback/`localhost`, link-local (incl. `169.254.169.254`), multicast, cloud-metadata endpoints, private ranges (`10/8`, `172.16/12`, `192.168/16`, `100.64/10`, `fc00::/7`) and this computer's own addresses stay closed, by name and by IP literal. `*` from a custom server, the project's `.agentrouter/mcp.json` or any other local definition is dropped; no local flag or env var widens it. Mechanism: srt 0.0.80 has no `*` allow entry, so the device starts srt's own CLI through `open-web.mjs`, which passes srt's documented ask callback (`SandboxManager.initialize(config, askCallback)`): it allows public destinations and judges IP literals with srt's resolved-address guard; `network.deniedResolvedAddresses` adds the private ranges to that guard for names. Enforced through the sandbox's egress proxy |
+| Network | Allow-list per server from the catalog (`network: [domains]`) plus the package mirrors; custom servers get registries only unless the local `y` included network. **Open web** (owner Q7, 2026-10-20): a pinned catalog preset whose list is `["*"]` (the browser presets `browser`, `browser-firefox`) may reach any public host on any port; loopback/`localhost`, link-local (incl. `169.254.169.254`), multicast, cloud-metadata endpoints, private ranges (`10/8`, `172.16/12`, `192.168/16`, `100.64/10`, `fc00::/7`) and this computer's own addresses stay closed, by name and by IP literal. `*` from a custom server, the project's `.agentrouter/mcp.json` or any other local definition is dropped; no local flag or env var widens it. Mechanism: srt (0.0.81) has no `*` allow entry, so the device starts srt's own CLI through `open-web.mjs`, which passes srt's documented ask callback (`SandboxManager.initialize(config, askCallback)`): it allows public destinations and judges IP literals with srt's resolved-address guard; `network.deniedResolvedAddresses` adds the private ranges to that guard for names. Enforced through the sandbox's egress proxy |
 | Processes | Whole tree in the sandbox; killed with the link (job object / process group) |
 
 ### 6.2 Tool choice
 
 | Candidate | Licence | Activity (checked 2026-10-19) | Verdict |
 | --- | --- | --- | --- |
-| **Anthropic `sandbox-runtime` (`srt`)** | Apache-2.0 | Active: v0.0.80 on 2026-10-16, 5.6k stars | **Chosen.** Built to sandbox "agents, local MCP servers, bash commands and arbitrary processes"; one policy format on all three OSes: macOS `sandbox-exec` (Seatbelt), Linux bubblewrap + network namespace, Windows a dedicated `srt-sandbox` local account + per-session explicit ACEs on the working tree + WFP egress fence. Used as a process wrapper (`srt --settings <file> -- <cmd>`), so no linking and a narrow contract. Risks: pre-1.0 (pin exact version + integrity like a catalog package, re-vet on each bump); needs Node (present for `npx` users; bundled later if a shell returns); Windows needs a one-time elevated setup (Q4) |
+| **Anthropic `sandbox-runtime` (`srt`)** | Apache-2.0 | Active: pinned v0.0.81 (2026-10-19; re-vetted 2026-10-21: Apache-2.0, same four dependencies, Windows still alpha) | **Chosen.** Built to sandbox "agents, local MCP servers, bash commands and arbitrary processes"; one policy format on all three OSes: macOS `sandbox-exec` (Seatbelt), Linux bubblewrap + network namespace, Windows a dedicated `srt-sandbox` local account + per-session explicit ACEs on the working tree + WFP egress fence. Used as a process wrapper (`srt --settings <file> -- <cmd>`), so no linking and a narrow contract. Risks: pre-1.0 (pin exact version + integrity like a catalog package, re-vet on each bump); needs Node (present for `npx` users; bundled later if a shell returns); Windows needs a one-time elevated setup (Q4) |
 | OpenAI Codex sandbox crates (`codex-rs/windows-sandbox-rs`, `linux-sandbox`, Seatbelt) | Apache-2.0 | Very active (rust-v0.163.0, 2026-10-15) | **Fallback.** Rust, same primitives (Windows: restricted token/sandbox identity + ACLs + WFP; Linux: Landlock + seccomp/bwrap). Not published as a library with a stable API; vendoring a fast-moving monorepo crate is the cost |
 | Today's low-integrity token + Low labels (S2b, `confine.rs`) | ours | — | **Deleted.** Covers only built-in `exec`; MSYS2 programs do not start low; labels the person's folders; escape via medium-integrity git |
 | Windows AppContainer / LPAC directly (`windows` crate) | MIT/Apache-2.0 | Active | Not chosen now: strongest primitive, but node/python/uv installed per-user and most MCP servers break without many brokered exceptions; revisit if `srt` Windows proves insufficient |
@@ -451,10 +451,19 @@ call answers `SANDBOX_UNAVAILABLE` with a `next` that tells the person what to r
 ### 6.3 Per OS notes
 
 - **Windows:** first `link` runs `agentrouter sandbox setup` (one UAC prompt: create the `srt` sandbox
-  account and WFP filters). The sandbox account cannot read the person's profile at all by default
-  (stronger than the read deny list). Runtimes installed per-user (`%APPDATA%\npm`, `~\.local\bin`,
-  nvm/fnm) get explicit read+execute ACEs, recorded and removed by `agentrouter sandbox remove`.
-  FAT/exFAT folders and network shares cannot carry ACEs: `SANDBOX_UNAVAILABLE` for them.
+  account and WFP filters). Setup then makes two read grants without elevation (device #66):
+  - srt's **profile read grant** (`srt-win profile grant`, srt ≥ 0.0.81). The profile becomes readable to the
+    account except srt's built-in credential stores (keys, browser and password-manager data, registry
+    hives) and the device data folder (`--exclude`). This is the §6.1 read rule, as on macOS and Linux;
+    the per-session deny list still applies. Without it the account cannot read anything under the
+    profile, so Node cannot even resolve a script path there (`EPERM lstat …\AppData`).
+  - A read+execute ACE for the account on the installed runtime folder, because srt-win starts its
+    runner as the account from `srt-win.exe` inside the excluded data folder (otherwise "Access is
+    denied").
+
+  Every start checks both. A later `sandbox setup` refreshes the profile grant, so items created
+  since the last run become readable. `agentrouter sandbox remove` (`srt-win uninstall`) removes the
+  grant. FAT/exFAT folders and network shares cannot carry ACEs: `SANDBOX_UNAVAILABLE` for them.
 - **macOS:** Seatbelt profile generated per link; no setup step.
 - **Linux:** needs `bwrap` and unprivileged user namespaces (Ubuntu 24.04+ AppArmor may block them; the
   `next` says how to allow it).
@@ -522,7 +531,7 @@ AgentRouter · 链接文件夹
   文件夹   D:\work\my-mod
            D:\Games\Wukong\Mods   云端 Agent 只能在这些文件夹里干活
   账号     这台电脑已链接（台式机）
-  沙箱     Windows 隔离账户（srt@0.0.80）
+  沙箱     Windows 隔离账户（srt@0.0.81）
 已连上。网页对话里选「台式机」就能用。要再加文件夹，在这里输入 + 路径。Ctrl+C 断开。
 12:03:41  改 mod 配置   终端 dotnet build -o D:\Games\Wukong\Mods        ✓ 3.2s
 12:04:02  云端想再用一个文件夹：D:\Assets\textures（换贴图）。同意吗？ (y/N，120 秒内不答就是不同意)

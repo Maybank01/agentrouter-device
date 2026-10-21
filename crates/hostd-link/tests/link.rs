@@ -23,7 +23,7 @@ fn info() -> LinkInfo {
         arch: "x64".into(),
         app: "cli".into(),
         version: "0.1.0".into(),
-        sandbox: "srt@0.0.80".into(),
+        sandbox: "srt@0.0.81".into(),
         read_only: false,
         folders: vec!["/work/my-mod".into()],
         full: false,
@@ -85,7 +85,7 @@ async fn hello_frames_heartbeat_reconnect_and_ends() {
     assert_eq!(hello["link"]["id"], info().id);
     assert_eq!(hello["link"]["folder"], "my-mod");
     assert_eq!(hello["link"]["app"], "cli");
-    assert_eq!(hello["link"]["sandbox"], "srt@0.0.80");
+    assert_eq!(hello["link"]["sandbox"], "srt@0.0.81");
     assert_eq!(hello["link"]["placement"], "pc");
     assert!(
         hello["link"].get("path").is_none(),

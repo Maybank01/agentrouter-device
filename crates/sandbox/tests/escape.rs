@@ -11,6 +11,16 @@ use std::process::Stdio;
 use agentrouter_sandbox::{Launch, Runtime, find_program};
 use serde_json::{Value, json};
 
+/// Where the device keeps its data on a person's PC: on Windows `%LOCALAPPDATA%`, which srt's profile read grant
+/// passes through (the temp folder it leaves unreadable to the sandbox account, device #66); elsewhere the temp folder.
+fn test_root() -> PathBuf {
+    #[cfg(windows)]
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        return PathBuf::from(local);
+    }
+    std::env::temp_dir()
+}
+
 fn enabled() -> bool {
     std::env::var("AGENTROUTER_SANDBOX_TESTS").is_ok_and(|v| v == "1")
 }
@@ -165,7 +175,7 @@ fn a_confined_process_cannot_touch_anything_outside_the_folder() {
         eprintln!("skipped: set AGENTROUTER_SANDBOX_TESTS=1 (CI runners only)");
         return;
     }
-    let base = std::env::temp_dir().join(format!("agentrouter-sbx-{}", std::process::id()));
+    let base = test_root().join(format!("agentrouter-sbx-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
     let base = real(&base);

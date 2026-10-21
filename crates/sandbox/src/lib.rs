@@ -13,10 +13,12 @@
 //!   [`Runtime::setup`]); write access is explicit ACEs on the folder and the scratch folder, network is a WFP
 //!   fence keyed on that account. srt-win gives the child a fresh environment and runs it through `cmd /c`, so the
 //!   device starts [`ENTRY_JS`] in the sandbox, which starts the real server with its arguments and environment.
-//!   srt-win's broker starts its runner **as that account from `srt-win.exe`**, before srt grants anything for a
-//!   session, so the installed runtime folder carries a read+execute ACE for the account ([`Runtime::setup`],
-//!   checked on every start). Without it Windows refuses the start with "Access is denied" (device #66): the data
-//!   folder is in the person's profile, which the account cannot read.
+//!   Two grants make that work from the person's profile (device #66, both set by [`Runtime::setup`] and checked on
+//!   every start): srt's **profile read grant** (`srt-win profile grant`, since 0.0.81: the profile readable to the
+//!   account except credential stores and the device data folder — the read rule of §6.1, as on macOS and Linux;
+//!   without it Node cannot even resolve a script path under the profile), and a read+execute ACE on the installed
+//!   runtime folder, because srt-win's broker starts its runner as that account from `srt-win.exe`, which sits in
+//!   the excluded data folder.
 //!
 //! Policy (§6.1): write = folders + scratch (TEMP and the npm/uv/pip caches point there); `.git/hooks` and
 //! `.git/config` stay unwritable (srt's mandatory denies, plus explicit ones); reads are allowed except the
@@ -34,7 +36,7 @@ use sha2::{Digest, Sha256};
 /// The npm package and the exact version the device runs (re-vet licence, release notes and Windows status on each
 /// bump; the lockfile in `runtime/` pins every dependency's integrity).
 pub const SRT_PACKAGE: &str = "@anthropic-ai/sandbox-runtime";
-pub const SRT_VERSION: &str = "0.0.80";
+pub const SRT_VERSION: &str = "0.0.81";
 const PACKAGE_JSON: &str = include_str!("../runtime/package.json");
 const PACKAGE_LOCK: &str = include_str!("../runtime/package-lock.json");
 /// Started inside the sandbox on Windows (see the module docs).
@@ -136,7 +138,7 @@ pub struct Launch<'a> {
 /// What `agentrouter sandbox status` shows and `hello` reports.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Status {
-    /// `srt@0.0.80`.
+    /// `srt@0.0.81`.
     pub backend: String,
     /// The OS mechanism (`Seatbelt`, `bubblewrap`, `Windows 隔离账户`).
     pub mechanism: &'static str,
@@ -273,7 +275,8 @@ impl Runtime {
         }
         #[cfg(windows)]
         {
-            if windows_sandbox_sid(&self.srt_win())?.is_none() {
+            let before = windows_install(&self.srt_win())?;
+            if before.sid.is_none() || before.stale {
                 let range = format!("{}-{}", WINDOWS_PROXY_PORTS.0, WINDOWS_PROXY_PORTS.1);
                 let out = Command::new(self.srt_win())
                     .args(["install", "--proxy-port-range", &range])
@@ -290,11 +293,27 @@ impl Runtime {
                         ));
                     }
                 }
-                done.push("建好了 Windows 隔离账户 srt-sandbox 和它的网络限制".into());
+                done.push(if before.stale {
+                    "更新了 Windows 隔离账户和它的网络限制".into()
+                } else {
+                    "建好了 Windows 隔离账户 srt-sandbox 和它的网络限制".into()
+                });
             }
-            let sid = windows_sandbox_sid(&self.srt_win())?
+            let after = windows_install(&self.srt_win())?;
+            let sid = after
+                .sid
+                .filter(|_| !after.stale)
                 .ok_or_else(|| "隔离账户没建成（srt-win status 仍然没有它）".to_string())?;
             self.windows_runtime_readable(&sid)?;
+            // Also a refresh: what was created in the profile since the last run becomes readable.
+            let first = windows_profile_state(&self.srt_win())? != "current";
+            self.windows_profile_grant()?;
+            if first {
+                done.push(
+                    "隔离账户现在能读你的用户文件夹（密钥、凭据、浏览器数据和 AgentRouter 的数据除外），和 macOS、Linux 一样；只读，不能写"
+                        .into(),
+                );
+            }
         }
         Ok(done)
     }
@@ -304,7 +323,7 @@ impl Runtime {
         let mut done = Vec::new();
         #[cfg(windows)]
         if self.srt_win().is_file()
-            && windows_sandbox_sid(&self.srt_win()).map_or(true, |s| s.is_some())
+            && windows_install(&self.srt_win()).map_or(true, |i| i.sid.is_some())
         {
             let out = Command::new(self.srt_win())
                 .arg("uninstall")
@@ -381,14 +400,31 @@ impl Runtime {
         #[cfg(not(windows))]
         self.probe(&node)?;
         #[cfg(windows)]
-        match windows_sandbox_sid(&self.srt_win()) {
-            Ok(Some(sid)) => self
-                .windows_runtime_readable(&sid)
-                .map_err(|e| Unavailable::new(e, NEXT_SETUP))?,
-            Ok(None) => {
-                return Err(Unavailable::new("Windows 隔离账户还没建", NEXT_SETUP));
+        {
+            let install =
+                windows_install(&self.srt_win()).map_err(|e| Unavailable::new(e, NEXT_SETUP))?;
+            let sid = match install.sid {
+                None => return Err(Unavailable::new("Windows 隔离账户还没建", NEXT_SETUP)),
+                Some(_) if install.stale => {
+                    return Err(Unavailable::new(
+                        "Windows 隔离账户是另一个版本的隔离环境建的，要更新一次",
+                        NEXT_SETUP,
+                    ));
+                }
+                Some(sid) => sid,
+            };
+            self.windows_runtime_readable(&sid)
+                .map_err(|e| Unavailable::new(e, NEXT_SETUP))?;
+            match windows_profile_state(&self.srt_win()) {
+                Ok(state) if state == "current" => {}
+                Ok(state) => {
+                    return Err(Unavailable::new(
+                        format!("隔离账户还不能读你的用户文件夹（{state}）"),
+                        NEXT_SETUP,
+                    ));
+                }
+                Err(e) => return Err(Unavailable::new(e, NEXT_SETUP)),
             }
-            Err(e) => return Err(Unavailable::new(e, NEXT_SETUP)),
         }
         Ok(Ready {
             node,
@@ -428,6 +464,30 @@ impl Runtime {
         }
         done.push(key);
         Ok(())
+    }
+
+    /// `srt-win profile grant`, as the person (no elevation): the profile readable to the sandbox account except the
+    /// built-in credential stores and, here, the device data folder (§6.1). The first run can take minutes on a large
+    /// profile; a later one writes only what changed.
+    #[cfg(windows)]
+    fn windows_profile_grant(&self) -> Result<(), String> {
+        let mut cmd = Command::new(self.srt_win());
+        cmd.args(["profile", "grant", "--json", "--quiet"]);
+        if plain(&self.data_dir).starts_with(plain(&home_dir())) {
+            cmd.arg("--exclude").arg(&self.data_dir);
+        }
+        let out = cmd.output().map_err(|e| format!("srt-win 起不来：{e}"))?;
+        match out.status.code() {
+            Some(0) => Ok(()),
+            Some(24) | Some(25) => Err(
+                "有正在运行的隔离命令，这次没改；关掉这台电脑上其他 agentrouter 链接后再运行 agentrouter sandbox setup".into(),
+            ),
+            _ => Err(format!(
+                "隔离账户读不了你的用户文件夹（srt-win profile grant：{}{}）",
+                String::from_utf8_lossy(&out.stdout).trim(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            )),
+        }
     }
 
     /// One real confined no-op (once per process): the binaries can be present and srt still unable to confine
@@ -907,30 +967,75 @@ fn node() -> Result<PathBuf, String> {
     .clone()
 }
 
-/// The `srt-sandbox` account's SID when the account and its credential exist (`srt-win status`, no elevation
-/// needed); `None` when it is not provisioned.
-#[cfg(windows)]
-fn windows_sandbox_sid(srt_win: &Path) -> Result<Option<String>, String> {
-    if !srt_win.is_file() {
-        return Ok(None);
+/// What `srt-win status` says about this machine's sandbox install (no elevation needed).
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Debug, PartialEq)]
+struct WindowsInstall {
+    /// The `srt-sandbox` account's SID, when the account and its credential exist.
+    sid: Option<String>,
+    /// Set up by another srt release (its setup version differs from this one's): srt-win refuses to run on it until
+    /// `srt-win install` runs again.
+    stale: bool,
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_install_of(v: &Value) -> Result<WindowsInstall, String> {
+    let user = &v["user"];
+    if user["user"]["exists"] != true || user["cred_present"] != true {
+        return Ok(WindowsInstall {
+            sid: None,
+            stale: false,
+        });
     }
+    let sid = user["user"]["sid"]
+        .as_str()
+        .ok_or("srt-win status 没给出隔离账户的 SID")?
+        .to_string();
+    let stale = match (
+        user["setup_version"].as_u64(),
+        user["marker_version"].as_u64(),
+    ) {
+        (Some(want), have) => have != Some(want),
+        (None, _) => false,
+    };
+    Ok(WindowsInstall {
+        sid: Some(sid),
+        stale,
+    })
+}
+
+#[cfg(windows)]
+fn windows_install(srt_win: &Path) -> Result<WindowsInstall, String> {
+    if !srt_win.is_file() {
+        return Ok(WindowsInstall {
+            sid: None,
+            stale: false,
+        });
+    }
+    windows_install_of(&srt_win_json(srt_win, &["status"])?)
+}
+
+/// `srt-win profile status`'s `state`: `current` is the only one a session can rely on.
+#[cfg(windows)]
+fn windows_profile_state(srt_win: &Path) -> Result<String, String> {
+    let v = srt_win_json(srt_win, &["profile", "status"])?;
+    Ok(v["state"].as_str().unwrap_or("unknown").to_string())
+}
+
+#[cfg(windows)]
+fn srt_win_json(srt_win: &Path, args: &[&str]) -> Result<Value, String> {
     let out = Command::new(srt_win)
-        .arg("status")
+        .args(args)
         .output()
         .map_err(|e| format!("srt-win 起不来：{e}"))?;
-    let v: Value = serde_json::from_slice(&out.stdout).map_err(|_| {
+    serde_json::from_slice(&out.stdout).map_err(|_| {
         format!(
-            "srt-win status 看不懂：{}",
-            String::from_utf8_lossy(&out.stdout).trim()
+            "srt-win {} 看不懂：{}{}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stdout).trim(),
+            String::from_utf8_lossy(&out.stderr).trim()
         )
-    })?;
-    if v["user"]["user"]["exists"] != true || v["user"]["cred_present"] != true {
-        return Ok(None);
-    }
-    match v["user"]["user"]["sid"].as_str() {
-        Some(sid) => Ok(Some(sid.to_string())),
-        None => Err("srt-win status 没给出隔离账户的 SID".into()),
-    }
+    })
 }
 
 /// `icacls <dir> /grant:r *<sid>:(OI)(CI)RX /Q`: replace this SID's explicit grant on `dir` with read+execute,
@@ -957,9 +1062,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_windows_install_of_another_srt_release_is_stale() {
+        let status = |marker: Value| {
+            json!({"user": {"user": {"exists": true, "sid": "S-1-5-21-1-2-3-1001"}, "cred_present": true,
+                "setup_version": 7, "marker_version": marker}})
+        };
+        let current = windows_install_of(&status(json!(7))).unwrap();
+        assert_eq!(current.sid.as_deref(), Some("S-1-5-21-1-2-3-1001"));
+        assert!(!current.stale);
+        assert!(windows_install_of(&status(json!(6))).unwrap().stale);
+        assert!(windows_install_of(&status(Value::Null)).unwrap().stale);
+        let none = windows_install_of(
+            &json!({"user": {"user": {"exists": false}, "cred_present": false}}),
+        )
+        .unwrap();
+        assert_eq!(
+            none,
+            WindowsInstall {
+                sid: None,
+                stale: false
+            }
+        );
+        assert!(
+            windows_install_of(&json!({"user": {"user": {"exists": true}, "cred_present": true}}))
+                .is_err()
+        );
+    }
+
+    #[test]
     fn the_runtime_read_grant_names_one_sid_and_inherits() {
         let args = icacls_read_grant(
-            Path::new("C:\\data\\sandbox\\srt-0.0.80"),
+            Path::new("C:\\data\\sandbox\\srt-0.0.81"),
             "S-1-5-21-1-2-3-1001",
         )
         .unwrap();
@@ -970,7 +1103,7 @@ mod tests {
         assert_eq!(
             args,
             [
-                "C:\\data\\sandbox\\srt-0.0.80",
+                "C:\\data\\sandbox\\srt-0.0.81",
                 "/grant:r",
                 "*S-1-5-21-1-2-3-1001:(OI)(CI)RX",
                 "/Q"

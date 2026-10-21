@@ -18,6 +18,16 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
+/// Where the device keeps its data on a person's PC: on Windows `%LOCALAPPDATA%`, which srt's profile read grant
+/// passes through (the temp folder it leaves unreadable to the sandbox account, device #66); elsewhere the temp folder.
+fn test_root() -> PathBuf {
+    #[cfg(windows)]
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        return PathBuf::from(local);
+    }
+    std::env::temp_dir()
+}
+
 const LINK: &str = "lnk_00000000000000000000000000000001";
 
 #[derive(Default)]
@@ -366,7 +376,7 @@ async fn a_confined_server_end_to_end() {
         eprintln!("skipped: set AGENTROUTER_SANDBOX_TESTS=1 (CI runners only)");
         return;
     }
-    let base = std::env::temp_dir().join(format!("agentrouter-agg-{}", std::process::id()));
+    let base = test_root().join(format!("agentrouter-agg-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(base.join("work")).unwrap();
     std::fs::create_dir_all(base.join("outside")).unwrap();
