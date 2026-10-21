@@ -2,7 +2,9 @@
 //!
 //! Priority: an explicit local override (`AGENTROUTER_SHELL`), then `pwsh.exe` (PATH, then the
 //! standard install directory), then Windows PowerShell 5.1 (`powershell.exe`) as the fallback.
-//! Both shells get the same arguments (`-NoLogo -NoProfile -NonInteractive -Command <line>`).
+//! Both shells get the same arguments, and the command's text never among them (`crate::command_text`, #99):
+//! `-NoLogo -NoProfile -NonInteractive -Command <stdin runner>` for a one-shot run, `-NoLogo -NoProfile -Command
+//! <file runner>` on a terminal.
 //! The PSModulePath sanitising of #32 applies only to the 5.1 fallback; PowerShell 7 keeps the
 //! environment it was started with, so its module discovery is not disturbed.
 //!
@@ -31,18 +33,28 @@ impl Shell {
         self.kind == Kind::Pwsh
     }
 
-    /// The arguments both shells accept for a one-shot command line.
-    pub fn args(&self, command: &str) -> Vec<String> {
+    /// A one-shot run whose command text arrives on stdin ([`crate::command_text::PS_STDIN_RUNNER`]).
+    pub fn stdin_args(&self) -> Vec<String> {
         [
             "-NoLogo",
             "-NoProfile",
             "-NonInteractive",
             "-Command",
-            command,
+            crate::command_text::PS_STDIN_RUNNER,
         ]
         .iter()
         .map(|s| s.to_string())
         .collect()
+    }
+
+    /// A terminal run of the command text in `file` ([`crate::command_text::ps_file_runner`]); interactive.
+    pub fn file_args(&self, file: &std::path::Path) -> Vec<String> {
+        vec![
+            "-NoLogo".into(),
+            "-NoProfile".into(),
+            "-Command".into(),
+            crate::command_text::ps_file_runner(file),
+        ]
     }
 }
 
@@ -175,9 +187,12 @@ mod tests {
         assert_eq!(shell.kind, Kind::Pwsh);
         assert_eq!(shell.program, pwsh7());
         assert!(shell.is_pwsh());
-        let args = shell.args("Get-Date");
+        let args = shell.stdin_args();
         assert_eq!(args.first().map(String::as_str), Some("-NoLogo"));
-        assert_eq!(args.last().map(String::as_str), Some("Get-Date"));
+        assert_eq!(
+            args.last().map(String::as_str),
+            Some(crate::command_text::PS_STDIN_RUNNER)
+        );
     }
 
     #[test]

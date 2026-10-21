@@ -258,7 +258,8 @@ pub fn run(
         let program = &shell.program;
         let mut line = String::new();
         quote_arg(&program.to_string_lossy(), &mut line);
-        for arg in shell.args(command) {
+        // The command text goes on stdin, never into this command line (crate::command_text, #99).
+        for arg in shell.stdin_args() {
             line.push(' ');
             quote_arg(&arg, &mut line);
         }
@@ -296,7 +297,15 @@ pub fn run(
         let process = owned(pi.hProcess);
         // The shell owns its pipe ends now; ours close so its exit ends the streams.
         drop((stdin_theirs, stdout_theirs, stderr_theirs));
-        let _ = stdin_ours;
+        // The command text, from a thread (it may be larger than the pipe); closing our end ends the runner's read.
+        {
+            let mut input = std::fs::File::from(stdin_ours);
+            let text = command.to_owned();
+            std::thread::spawn(move || {
+                use std::io::Write;
+                let _ = input.write_all(text.as_bytes());
+            });
+        }
         let stdout = std::fs::File::from(stdout_ours);
         let stderr = std::fs::File::from(stderr_ours);
         if AssignProcessToJobObject(job.0, process.as_raw_handle() as _) == 0 {

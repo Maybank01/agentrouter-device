@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use serde_json::{Value, json};
 
+use agentrouter_device::command_text::{self, TextFile};
 use agentrouter_device::exec::Tree;
 use agentrouter_device::util::b64_decode;
 
@@ -92,6 +93,8 @@ struct Pty {
     tree: Mutex<Option<Tree>>,
     state: Mutex<State>,
     changed: Condvar,
+    /// The command's text file (`command_text`): the shell deletes it once read; this removes it if it never was.
+    _text: Option<TextFile>,
 }
 
 impl Pty {
@@ -142,34 +145,51 @@ fn size(args: &Value) -> PtySize {
     }
 }
 
-/// The shell on the terminal: interactive, or running `command`.
-fn command_line(command: Option<&str>) -> CommandBuilder {
+/// The shell on the terminal: interactive, or running `command`, whose text reaches the shell in an owner-only file,
+/// never as an argument (`command_text`, #99; the terminal is the program's stdin).
+fn command_line(command: Option<&str>) -> Result<(CommandBuilder, Option<TextFile>), String> {
+    let start = command
+        .map(|c| command_text::in_terminal(c, &command_text::run_dir()))
+        .transpose()?;
     #[cfg(windows)]
     {
-        let shell = agentrouter_device::shell::default_shell();
-        let mut cmd = CommandBuilder::new(&shell.program);
-        cmd.args(["-NoLogo", "-NoProfile"]);
-        if let Some(command) = command {
-            cmd.args(["-Command", command]);
-        }
-        if !shell.is_pwsh() {
-            cmd.env(
-                "PSModulePath",
-                agentrouter_device::util::child_ps_module_path(),
-            );
-        }
-        cmd
+        let (cmd, file) = match start {
+            Some(start) => {
+                let mut cmd = CommandBuilder::new(&start.program);
+                cmd.args(&start.args);
+                if start.windows_powershell {
+                    cmd.env(
+                        "PSModulePath",
+                        agentrouter_device::util::child_ps_module_path(),
+                    );
+                }
+                (cmd, start.file)
+            }
+            None => {
+                let shell = agentrouter_device::shell::default_shell();
+                let mut cmd = CommandBuilder::new(&shell.program);
+                cmd.args(["-NoLogo", "-NoProfile"]);
+                if !shell.is_pwsh() {
+                    cmd.env(
+                        "PSModulePath",
+                        agentrouter_device::util::child_ps_module_path(),
+                    );
+                }
+                (cmd, None)
+            }
+        };
+        Ok((cmd, file))
     }
     #[cfg(not(windows))]
     {
-        let mut cmd = match command {
-            Some(command) => {
-                let mut c = CommandBuilder::new("/bin/sh");
-                c.args(["-lc", command]);
-                c
+        let (mut cmd, file) = match start {
+            Some(start) => {
+                let mut c = CommandBuilder::new(&start.program);
+                c.args(&start.args);
+                (c, start.file)
             }
             // The person's login shell, as an ssh session gets.
-            None => CommandBuilder::new_default_prog(),
+            None => (CommandBuilder::new_default_prog(), None),
         };
         // The person's terminal environment (#95); the terminal's own TERM over it.
         if let Some(env) = agentrouter_device::shell_env::for_command() {
@@ -179,7 +199,7 @@ fn command_line(command: Option<&str>) -> CommandBuilder {
             }
         }
         cmd.env("TERM", "xterm-256color");
-        cmd
+        Ok((cmd, file))
     }
 }
 
@@ -199,7 +219,7 @@ impl Host {
         let pair = native_pty_system()
             .openpty(size(args))
             .map_err(|e| format!("开不了终端：{e}"))?;
-        let mut cmd = command_line(command);
+        let (mut cmd, text) = command_line(command)?;
         cmd.cwd(&cwd);
         let child = pair
             .slave
@@ -227,6 +247,7 @@ impl Host {
             tree: Mutex::new(tree),
             state: Mutex::default(),
             changed: Condvar::new(),
+            _text: text,
         });
         {
             let pty = pty.clone();
@@ -404,6 +425,44 @@ mod tests {
             offset = r["next_offset"].as_u64().unwrap();
         }
         text
+    }
+
+    /// A terminal command past CreateProcess's 32 767 characters (and with quotes, `$`, newlines, non-ASCII) runs
+    /// from its owner-only file, never an argument; the file is gone once the shell has read it (#99).
+    #[test]
+    fn a_long_terminal_command_runs_from_its_file_and_the_file_goes() {
+        let dir = temp("pty-long");
+        let host = host_in(&dir);
+        let pad = "x".repeat(40_000);
+        let command = if cfg!(windows) {
+            format!(
+                "$pad = '{pad}'\n$q = 'it''s \"q\" $notavar'\nWrite-Output (\"len=\" + $pad.Length + \" u=\" + '中文é'.Length + \" q=\" + $q)\nStart-Sleep -Seconds 30"
+            )
+        } else {
+            format!(
+                "pad='{pad}'\nq='it'\\''s \"q\" $notavar'\necho \"len=${{#pad}} q=$q\"\nsleep 30"
+            )
+        };
+        let opened = host
+            .pty_open(&json!({"command": command, "cols": 200}))
+            .unwrap();
+        let id = opened["pty"].as_str().unwrap().to_string();
+        let text = read_until(&host, &id, "len=40000");
+        assert!(text.contains("len=40000"), "{text}");
+        assert!(text.contains("q\" $notavar"), "{text}");
+        if cfg!(windows) {
+            assert!(text.contains("u=3"), "{text}");
+        }
+        let left: Vec<_> = std::fs::read_dir(agentrouter_device::command_text::run_dir())
+            .map(|d| {
+                d.flatten()
+                    .filter(|e| std::fs::read_to_string(e.path()).is_ok_and(|t| t.contains(&pad)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(left.is_empty(), "the command file is still there: {left:?}");
+        host.pty_close(&json!({"pty": id})).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
