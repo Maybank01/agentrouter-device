@@ -7,6 +7,8 @@ cd D:\work\my-mod
 npx @agentrouter-top/cli link        # 或者装好后：agentrouter link
 ```
 
+Windows 上也可以**直接双击 `agentrouter.exe`**（测试版）：第一次弹出文件夹选择窗口（默认是「文档」里新建的 `AgentRouter` 文件夹），浏览器打开「我的设备」并填好配对码，点「链接」确认，窗口里显示「已连上 · 在线」；以后再双击直接连上。双击版用的是完全访问（Windows 的文件夹沙箱还没验证，#66），关掉窗口就断开。`agentrouter start` 是同一件事。
+
 `link` 启动的是 `hostd`（Host Daemon，宿主守护进程）：它在这台电脑上替云端 Agent 干活，`agentrouter hostd` 是同一条命令。
 
 第一次运行会给出一个配对码，在网页上确认后这台电脑就链接到你自己的账号（只链到自己的账号，没有分享码）。
@@ -23,6 +25,7 @@ npx @agentrouter-top/cli link        # 或者装好后：agentrouter link
 | 命令 | 作用 |
 | --- | --- |
 | `agentrouter link [文件夹…] [--read-only \| --full] [--yes-servers]` | 链接这些文件夹（默认当前文件夹）并保持连接；连着时输入 `+ 路径` 再加一个（`--read-only`：只读；`--full`：完全访问，本机工具用你的账户权限；`--yes-servers`：无人值守时不逐个问） |
+| `agentrouter start` | 双击 `agentrouter.exe` 做的事：选工作文件夹（只选一次）、第一次在浏览器里确认、保持连接（测试版是完全访问） |
 | `agentrouter undo [--list] [--journal] [检查点]` | 撤销 Agent 在这个文件夹最近一轮的改动（再运行一次再往前一轮）；`--list` 列出检查点；`--journal` 放回完全访问时改过的文件 |
 | `agentrouter audit [verify] [条数]` | 这个文件夹的审计记录；`verify` 检查有没有被改过 |
 | `agentrouter sandbox setup\|status\|remove` | 本机工具的隔离环境 |

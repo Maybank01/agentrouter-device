@@ -6,6 +6,7 @@ mod cloud;
 mod console;
 #[path = "mcp_serve.rs"]
 mod mcp_serve;
+mod start;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();

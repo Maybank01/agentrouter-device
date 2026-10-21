@@ -106,6 +106,8 @@ pub struct Config {
     /// Nobody sits at this machine (CI, headless test runs): a local question answers "no" at once
     /// instead of opening a dialog. Only this local file sets it; it can never approve anything.
     pub headless: bool,
+    /// The folder the double-click start links (chosen once in the folder picker, then reused; `start.rs`).
+    pub start_folder: Option<String>,
 }
 
 impl Default for Config {
@@ -117,6 +119,7 @@ impl Default for Config {
             folders: Vec::new(),
             unattended: false,
             headless: false,
+            start_folder: None,
         }
     }
 }

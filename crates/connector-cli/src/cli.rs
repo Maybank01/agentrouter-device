@@ -21,6 +21,8 @@ link 启动 hostd（宿主守护进程）；agentrouter hostd 是同一条命令
       --full                    完全访问：本机工具用你的账户权限，整台电脑都能读写（只能在这台电脑上打开）
       --yes-servers             不在目录里的本机工具不用逐个问（无人值守的电脑）
       --gateway <网址>  --name <这台电脑的名字>
+  agentrouter start             双击 agentrouter.exe 做的事：选一个工作文件夹（只选一次，以后记住），第一次在浏览器里确认，
+                                然后保持连接（测试版是完全访问）；关掉窗口就断开
   agentrouter link --placement cloud <文件夹…> [--token-file <文件>] [--gateway <网址>]
                                 云端沙箱里的 hostd（由沙箱启动，不配对、不问人）：平台发的主机令牌
                                 （AGENTROUTER_HOST_TOKEN_FILE 或 AGENTROUTER_HOST_TOKEN）、平台签名公钥
@@ -86,6 +88,10 @@ pub fn main() {
     let _ = ctrlc::set_handler(|| INTERRUPTED.store(true, Ordering::SeqCst));
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some(command) = args.first().cloned() else {
+        // Opened from Explorer (a console of its own): the double-click start. From a terminal: the usage.
+        if crate::start::own_console() {
+            std::process::exit(crate::start::run(&INTERRUPTED));
+        }
         println!("{USAGE}");
         std::process::exit(0);
     };
@@ -123,9 +129,11 @@ pub fn main() {
                 yes_servers: flags.yes_servers,
                 gateway: flags.gateway.clone(),
                 name: flags.name.clone(),
+                double_click: false,
             },
             &INTERRUPTED,
         ),
+        "start" => crate::start::run(&INTERRUPTED),
         "undo" => crate::console::undo(
             flags.list,
             flags.journal,

@@ -112,6 +112,9 @@ pub struct Pairing {
     pub code: String,
     pub expires_in: u64,
     pub verify_url: String,
+    /// The same page with this code filled in (RFC 8628 `verification_uri_complete`), when the gateway sends one:
+    /// the person only confirms there (double-click start, `start.rs`).
+    pub verify_url_complete: Option<String>,
 }
 
 pub fn start_pairing(gateway: &str, key: &DeviceKey, name: &str) -> Result<Pairing, HttpError> {
@@ -130,6 +133,7 @@ pub fn start_pairing(gateway: &str, key: &DeviceKey, name: &str) -> Result<Pairi
         code: s("code"),
         expires_in: v.get("expiresIn").and_then(Value::as_u64).unwrap_or(600),
         verify_url: s("verifyUrl"),
+        verify_url_complete: Some(s("verifyUrlComplete")).filter(|u| !u.is_empty()),
     })
 }
 

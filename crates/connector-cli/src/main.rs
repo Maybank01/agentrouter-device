@@ -7,6 +7,7 @@ mod console;
 mod host;
 #[path = "mcp_serve.rs"]
 mod mcp_serve;
+mod start;
 
 fn main() {
     // A local Agent starts this binary as a stdio MCP server; everything before the normal CLI.
