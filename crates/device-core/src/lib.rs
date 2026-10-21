@@ -14,6 +14,7 @@ pub mod confine;
 pub mod confined;
 pub mod consent;
 pub mod deploy;
+pub mod errors;
 pub mod exec;
 pub mod gate;
 pub mod keystore;

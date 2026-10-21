@@ -1,0 +1,368 @@
+{
+  "source": "agentrouter-cloud@54c276e00c0b1935dbee408f657572c3f437f771",
+  "schema": "agentrouter.errors/v1",
+  "about": "The one error catalog (#2449; owner 2026-10-21 「还有，错误那一块，是不是应该有一种统一的方式？我不想错误都散落在各处」). Adding an error = adding an entry here, then `node scripts/sync-error-catalog.mjs`. README.md has the rules.",
+  "errors": [
+    {
+      "code": "BRANDS_FAULT",
+      "component": "brands",
+      "status": 500,
+      "retry": "never",
+      "log": "error",
+      "agent": "品牌与资料 failed while doing {operation}{on_target} (a fault in the platform, not in your call)",
+      "next": "Retrying will not help. Continue another way, and tell the person in one plain sentence what could not be done.",
+      "user": "品牌资料出错了，已记录。"
+    },
+    {
+      "code": "BRANDS_UNAVAILABLE",
+      "component": "brands",
+      "status": 503,
+      "retry": "always",
+      "log": "warn",
+      "agent": "品牌与资料 could not be reached for {operation}{on_target}",
+      "next": "Try once more in a few seconds. If it fails again, continue another way and tell the person in one plain sentence what could not be done.",
+      "user": "品牌资料暂时连不上，稍后再试。"
+    },
+    {
+      "code": "CONNECTOR_FAULT",
+      "component": "connector",
+      "status": 500,
+      "retry": "never",
+      "log": "error",
+      "agent": "The connector failed while doing {operation}{on_target} (a fault in the platform, not in your call)",
+      "next": "Retrying will not help. Continue another way, and tell the person in one plain sentence what could not be done.",
+      "user": "连接器出错了，已记录。"
+    },
+    {
+      "code": "CONNECTOR_UNAVAILABLE",
+      "component": "connector",
+      "status": 503,
+      "retry": "always",
+      "log": "warn",
+      "agent": "The connector could not be reached for {operation}{on_target}",
+      "next": "Try once more in a few seconds. If it fails again, continue another way and tell the person in one plain sentence what could not be done.",
+      "user": "连接器暂时连不上，稍后再试。"
+    },
+    {
+      "code": "CONTROL_UNHANDLED",
+      "component": "control-plane",
+      "status": 500,
+      "retry": "never",
+      "log": "error",
+      "agent": "Control failed on {operation} with an error no handler names (a platform bug)",
+      "next": "Retrying will not help. Report the request id; continue another way.",
+      "user": "出错了，已记录。"
+    },
+    {
+      "code": "COORD_FAULT",
+      "component": "coord",
+      "status": 500,
+      "retry": "never",
+      "log": "error",
+      "agent": "Task dispatch failed while doing {operation}{on_target} (a fault in the platform, not in your call)",
+      "next": "Retrying will not help. Continue another way, and tell the person in one plain sentence what could not be done.",
+      "user": "派活出错了，已记录。"
+    },
+    {
+      "code": "COORD_UNAVAILABLE",
+      "component": "coord",
+      "status": 503,
+      "retry": "always",
+      "log": "warn",
+      "agent": "Task dispatch could not be reached for {operation}{on_target}",
+      "next": "Try once more in a few seconds. If it fails again, continue another way and tell the person in one plain sentence what could not be done.",
+      "user": "派活暂时连不上，稍后再试。"
+    },
+    {
+      "code": "CUSTOM_TOOLS_FAULT",
+      "component": "custom-tools",
+      "status": 500,
+      "retry": "never",
+      "log": "error",
+      "agent": "Custom tools failed while doing {operation}{on_target} (a fault in the platform, not in your call)",
+      "next": "Retrying will not help. Continue another way, and tell the person in one plain sentence what could not be done.",
+      "user": "自定义工具出错了，已记录。"
+    },
+    {
+      "code": "CUSTOM_TOOLS_UNAVAILABLE",
+      "component": "custom-tools",
+      "status": 503,
+      "retry": "always",
+      "log": "warn",
+      "agent": "Custom tools could not be reached for {operation}{on_target}",
+      "next": "Try once more in a few seconds. If it fails again, continue another way and tell the person in one plain sentence what could not be done.",
+      "user": "自定义工具暂时连不上，稍后再试。"
+    },
+    {
+      "code": "DATABASE_UNAVAILABLE",
+      "component": "database",
+      "status": 503,
+      "retry": "always",
+      "log": "warn",
+      "retryAfterSeconds": 2,
+      "agent": "Control's database could not be reached for {operation}",
+      "next": "Try once more in a few seconds.",
+      "user": "服务正忙，稍后再试。"
+    },
+    {
+      "code": "EXPERIENCE_FAULT",
+      "component": "experience",
+      "status": 500,
+      "retry": "never",
+      "log": "error",
+      "agent": "The 经验仓库 failed while doing {operation}{on_target} (a fault in the platform, not in your call)",
+      "next": "Retrying will not help. Continue another way, and tell the person in one plain sentence what could not be done.",
+      "user": "经验仓库出错了，已记录。"
+    },
+    {
+      "code": "EXPERIENCE_UNAVAILABLE",
+      "component": "experience",
+      "status": 503,
+      "retry": "always",
+      "log": "warn",
+      "agent": "The 经验仓库 could not be reached for {operation}{on_target}",
+      "next": "Try once more in a few seconds. If it fails again, continue another way and tell the person in one plain sentence what could not be done.",
+      "user": "经验仓库暂时连不上，稍后再试。"
+    },
+    {
+      "code": "HOSTD_ARGS_INVALID",
+      "component": "hostd",
+      "status": 400,
+      "retry": "never",
+      "log": "info",
+      "agent": "The AgentRouter app on the person's computer (hostd) refused the arguments of {operation}{on_target}",
+      "next": "The cause names the argument and what it must be; fix that and call once more.",
+      "user": "参数不对，这一步没有执行。"
+    },
+    {
+      "code": "HOSTD_BOUNDARY_FAILED",
+      "component": "hostd",
+      "status": 500,
+      "retry": "never",
+      "log": "warn",
+      "agent": "The AgentRouter app on the person's computer (hostd) could not set the write boundary for {operation}{on_target}, so the command did not run",
+      "next": "Do not retry unchanged. Tell the person in one plain sentence that the computer could not protect that folder (it may be on a USB stick or network drive, or owned by another account); a folder on an NTFS disk they own works.",
+      "user": "电脑没能保护这个文件夹，命令没有运行。"
+    },
+    {
+      "code": "HOSTD_FAULT",
+      "component": "hostd",
+      "status": 500,
+      "retry": "never",
+      "log": "error",
+      "agent": "The AgentRouter app on the person's computer (hostd) failed while doing {operation}{on_target} (a fault on that computer, not in your call)",
+      "next": "Retrying will not help. Tell the person in one plain sentence what could not be done; updating or restarting AgentRouter on that computer may fix it.",
+      "user": "电脑上的 AgentRouter 出错了，已记录。"
+    },
+    {
+      "code": "HOSTD_UNAVAILABLE",
+      "component": "hostd",
+      "status": 503,
+      "retry": "always",
+      "log": "warn",
+      "agent": "The AgentRouter app on the person's computer (hostd) could not be reached for {operation}{on_target}",
+      "next": "Check list_devices: if that computer is offline, tell the person and do not resend now; otherwise try once more in a few seconds.",
+      "user": "电脑暂时连不上，稍后再试。"
+    },
+    {
+      "code": "MEMORY_FAULT",
+      "component": "memory",
+      "status": 500,
+      "retry": "never",
+      "log": "error",
+      "agent": "Memory failed while doing {operation}{on_target} (a fault in the platform, not in your call)",
+      "next": "Retrying will not help. Continue another way, and tell the person in one plain sentence what could not be done.",
+      "user": "记忆出错了，已记录。"
+    },
+    {
+      "code": "MEMORY_UNAVAILABLE",
+      "component": "memory",
+      "status": 503,
+      "retry": "always",
+      "log": "warn",
+      "agent": "Memory could not be reached for {operation}{on_target}",
+      "next": "Try once more in a few seconds. If it fails again, continue another way and tell the person in one plain sentence what could not be done.",
+      "user": "记忆暂时连不上，稍后再试。"
+    },
+    {
+      "code": "PLATFORM_TOOL_FAULT",
+      "component": "platform-tools",
+      "status": 500,
+      "retry": "never",
+      "log": "error",
+      "agent": "The platform tool failed while doing {operation}{on_target} (a fault in the platform, not in your call)",
+      "next": "Retrying will not help. Continue another way, and tell the person in one plain sentence what could not be done.",
+      "user": "这一步出错了，已记录。"
+    },
+    {
+      "code": "PLATFORM_TOOL_UNAVAILABLE",
+      "component": "platform-tools",
+      "status": 503,
+      "retry": "always",
+      "log": "warn",
+      "agent": "The platform tool could not be reached for {operation}{on_target}",
+      "next": "Try once more in a few seconds. If it fails again, continue another way and tell the person in one plain sentence what could not be done.",
+      "user": "这一步没连上，稍后再试。"
+    },
+    {
+      "code": "PROJECT_SERVICE_FAULT",
+      "component": "space-server",
+      "status": 500,
+      "retry": "never",
+      "log": "error",
+      "agent": "The Space Server (project-service) failed while doing {operation}{on_target} (a fault in the platform, not in your call)",
+      "next": "Retrying will not help. Continue another way, and tell the person in one plain sentence what could not be done.",
+      "user": "项目服务出错了，已记录。"
+    },
+    {
+      "code": "PROJECT_SERVICE_REFUSED",
+      "component": "space-server",
+      "status": 400,
+      "retry": "never",
+      "log": "info",
+      "agent": "The Space Server refused {operation}{on_target}",
+      "next": "The cause names what was refused; fix that before trying again.",
+      "user": "项目服务拒绝了这次操作。"
+    },
+    {
+      "code": "PROJECT_SERVICE_UNAVAILABLE",
+      "component": "space-server",
+      "status": 503,
+      "retry": "always",
+      "log": "warn",
+      "agent": "The Space Server (project-service) could not be reached for {operation}{on_target}",
+      "next": "Try once more in a few seconds. If it fails again, continue another way and tell the person in one plain sentence what could not be done.",
+      "user": "项目服务暂时连不上，稍后再试。"
+    },
+    {
+      "code": "QUOTA_EXHAUSTED",
+      "component": "billing",
+      "status": 402,
+      "retry": "never",
+      "log": "info",
+      "agent": "The person's quota is used up, so {operation}{on_target} was refused",
+      "next": "Do not retry. Tell the person in one plain sentence that their quota is used up; they can top up or get a card (查看套餐), then ask again.",
+      "user": "额度已用完，这一步没有执行。"
+    },
+    {
+      "code": "SCHEDULED_TASKS_FAULT",
+      "component": "scheduled-tasks",
+      "status": 500,
+      "retry": "never",
+      "log": "error",
+      "agent": "Scheduled tasks failed while doing {operation}{on_target} (a fault in the platform, not in your call)",
+      "next": "Retrying will not help. Continue another way, and tell the person in one plain sentence what could not be done.",
+      "user": "定时任务出错了，已记录。"
+    },
+    {
+      "code": "SCHEDULED_TASKS_UNAVAILABLE",
+      "component": "scheduled-tasks",
+      "status": 503,
+      "retry": "always",
+      "log": "warn",
+      "agent": "Scheduled tasks could not be reached for {operation}{on_target}",
+      "next": "Try once more in a few seconds. If it fails again, continue another way and tell the person in one plain sentence what could not be done.",
+      "user": "定时任务暂时连不上，稍后再试。"
+    },
+    {
+      "code": "SPACE_OP_ARGS_INVALID",
+      "component": "spaces",
+      "status": 400,
+      "retry": "never",
+      "log": "info",
+      "agent": "The args of {operation}{on_target} are not an object of the op's params by name",
+      "next": "Call space_op with op describe to see the op's params, then send args as an object such as {\"path\": \"…\"}.",
+      "user": "参数不对，这一步没有执行。"
+    },
+    {
+      "code": "SPACE_OP_FAULT",
+      "component": "spaces",
+      "status": 500,
+      "retry": "never",
+      "log": "error",
+      "agent": "The space failed while doing {operation}{on_target} (a fault in the platform, not in your call)",
+      "next": "Retrying will not help. Continue another way, and tell the person in one plain sentence what could not be done.",
+      "user": "空间出错了，已记录。"
+    },
+    {
+      "code": "SPACE_OP_INVALID",
+      "component": "spaces",
+      "status": 400,
+      "retry": "never",
+      "log": "info",
+      "agent": "space_op needs space (a ref from space_list) and op (one of its kind's ops, or describe); {operation} gave neither or only one",
+      "next": "Call space_list for the ref, then space_op with that space and an op its kind declares (op describe lists them).",
+      "user": "参数不对，这一步没有执行。"
+    },
+    {
+      "code": "SPACE_OP_UNAVAILABLE",
+      "component": "spaces",
+      "status": 503,
+      "retry": "always",
+      "log": "warn",
+      "agent": "The space could not be reached for {operation}{on_target}",
+      "next": "Try once more in a few seconds. If it fails again, continue another way and tell the person in one plain sentence what could not be done.",
+      "user": "空间暂时连不上，稍后再试。"
+    },
+    {
+      "code": "SPACE_OP_UNKNOWN",
+      "component": "spaces",
+      "status": 400,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: this space's kind declares no such op{on_target}",
+      "next": "Call space_op with op describe on that space to list its ops, then use one of them.",
+      "user": "这个空间不支持这个操作。"
+    },
+    {
+      "code": "SPACE_UNKNOWN",
+      "component": "spaces",
+      "status": 404,
+      "retry": "never",
+      "log": "info",
+      "agent": "{target} is not a space ref, so {operation} has nothing to act on",
+      "next": "Call space_list and use a ref exactly as it lists it.",
+      "user": "没找到这个空间。"
+    },
+    {
+      "code": "TOOL_UNREACHABLE",
+      "component": "custom-tools",
+      "status": 502,
+      "retry": "transient",
+      "log": "info",
+      "agent": "The custom tool's address {target} did not answer {operation}",
+      "next": "If the cause is a timeout or refused connection, try once more; otherwise check the address in the tool's definition.",
+      "user": "这个工具的地址没有响应。"
+    },
+    {
+      "code": "WEB_SEARCH_UPSTREAM",
+      "component": "web-search",
+      "status": 502,
+      "retry": "upstream-status",
+      "log": "warn",
+      "agent": "The search model behind {operation} answered an error{on_target}",
+      "next": "If retryable, try once more in a few seconds; otherwise answer from what you already know and say in one plain sentence that the search did not work.",
+      "user": "查资料没成功。"
+    },
+    {
+      "code": "WORK_COMMENTS_FAULT",
+      "component": "work-comments",
+      "status": 500,
+      "retry": "never",
+      "log": "error",
+      "agent": "作品 comments failed while doing {operation}{on_target} (a fault in the platform, not in your call)",
+      "next": "Retrying will not help. Continue another way, and tell the person in one plain sentence what could not be done.",
+      "user": "评论出错了，已记录。"
+    },
+    {
+      "code": "WORK_COMMENTS_UNAVAILABLE",
+      "component": "work-comments",
+      "status": 503,
+      "retry": "always",
+      "log": "warn",
+      "agent": "作品 comments could not be reached for {operation}{on_target}",
+      "next": "Try once more in a few seconds. If it fails again, continue another way and tell the person in one plain sentence what could not be done.",
+      "user": "评论暂时连不上，稍后再试。"
+    }
+  ]
+}

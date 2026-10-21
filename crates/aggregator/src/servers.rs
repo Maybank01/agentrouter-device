@@ -89,12 +89,18 @@ fn strings(args: &Value, key: &str, max: usize, each: usize) -> Result<Vec<Strin
         .cloned()
         .unwrap_or_default();
     if list.len() > max {
-        return Err(Failure::new("FAILED", format!("{key} 最多 {max} 个")));
+        return Err(Failure::new(
+            agentrouter_device::errors::HOSTD_ARGS_INVALID,
+            format!("{key} 最多 {max} 个，给了 {} 个", list.len()),
+        ));
     }
     list.into_iter()
         .map(|v| match v.as_str() {
             Some(s) if s.len() <= each => Ok(s.to_string()),
-            _ => Err(Failure::new("FAILED", format!("{key} 每个都要是字符串"))),
+            _ => Err(Failure::new(
+                agentrouter_device::errors::HOSTD_ARGS_INVALID,
+                format!("{key} 每个都要是不超过 {each} 字节的字符串，收到 {v}"),
+            )),
         })
         .collect()
 }
@@ -104,18 +110,29 @@ impl ServerDef {
         let name = str_of(args, "name").trim().to_string();
         if !valid_name(&name) {
             return Err(Failure::new(
-                "FAILED",
-                "name 要写 2–24 个小写字母、数字或 _，以字母开头（不能叫 link）",
+                agentrouter_device::errors::HOSTD_ARGS_INVALID,
+                format!(
+                    "name 要写 2–24 个小写字母、数字或 _，以字母开头（不能叫 link），收到 {name:?}"
+                ),
             ));
         }
         let command = str_of(args, "command").trim().to_string();
         if command.is_empty() || command.len() > 1000 {
-            return Err(Failure::new("FAILED", "command 不能为空"));
+            return Err(Failure::new(
+                agentrouter_device::errors::HOSTD_ARGS_INVALID,
+                format!(
+                    "command 不能为空，最长 1000 字节（收到 {} 字节）",
+                    command.len()
+                ),
+            ));
         }
         let mut env = Vec::new();
         if let Some(map) = args.get("env").and_then(Value::as_object) {
             if map.len() > 64 {
-                return Err(Failure::new("FAILED", "env 最多 64 个"));
+                return Err(Failure::new(
+                    agentrouter_device::errors::HOSTD_ARGS_INVALID,
+                    format!("env 最多 64 个，给了 {} 个", map.len()),
+                ));
             }
             for (k, v) in map {
                 let ok_key = !k.is_empty()
@@ -129,7 +146,14 @@ impl ServerDef {
                 }
                 match v.as_str() {
                     Some(s) if ok_key && s.len() <= 8000 => env.push((k.clone(), s.to_string())),
-                    _ => return Err(Failure::new("FAILED", format!("env.{k} 要是字符串"))),
+                    _ => {
+                        return Err(Failure::new(
+                            agentrouter_device::errors::HOSTD_ARGS_INVALID,
+                            format!(
+                                "env.{k} 的名字只用字母、数字或 _（最长 128），值要是不超过 8000 字节的字符串"
+                            ),
+                        ));
+                    }
                 }
             }
         }
@@ -138,7 +162,10 @@ impl ServerDef {
             .iter()
             .all(|k| agentrouter_device::mcp_pkg::valid_keep_out(k))
         {
-            return Err(Failure::new("FAILED", "keepOut 要是以 . 开头的文件夹名"));
+            return Err(Failure::new(
+                agentrouter_device::errors::HOSTD_ARGS_INVALID,
+                format!("keepOut 要是以 . 开头的文件夹名，收到 {keep_out:?}"),
+            ));
         }
         let pin = Pin::parse(args).map_err(Failure::from)?;
         let title = match str_of(args, "title").trim() {

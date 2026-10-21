@@ -122,7 +122,7 @@ impl Confinement {
         let _guard = self.lock.lock().unwrap();
         let fail = |what: &str, path: &Path, e: std::io::Error| {
             DeviceError::new(
-                "FAILED",
+                crate::errors::HOSTD_BOUNDARY_FAILED,
                 format!(
                     "没能给{what}（{}）设好写入边界，命令没有运行：{e}",
                     crate::gate::display(path)
@@ -132,7 +132,10 @@ impl Confinement {
         };
         let mut record = Record::load(&self.data_dir);
         let root = scratch_root().ok_or_else(|| {
-            DeviceError::new("FAILED", "找不到这台电脑的用户文件夹，命令没有运行")
+            DeviceError::new(
+                crate::errors::HOSTD_BOUNDARY_FAILED,
+                "找不到这台电脑的用户文件夹（LOCALAPPDATA / USERPROFILE），命令没有运行",
+            )
         })?;
         let tmp = root.join("tmp");
         for dir in [&tmp, &root.join("cache")] {
@@ -178,7 +181,7 @@ impl Confinement {
         let _guard = self.lock.lock().unwrap();
         let fail = |what: &str, path: &Path, e: std::io::Error| {
             DeviceError::new(
-                "FAILED",
+                crate::errors::HOSTD_BOUNDARY_FAILED,
                 format!(
                     "没能给{what}（{}）设好写入边界，命令没有运行：{e}",
                     crate::gate::display(path)
@@ -187,7 +190,10 @@ impl Confinement {
         };
         let mut record = Record::load(&self.data_dir);
         let root = scratch_root().ok_or_else(|| {
-            DeviceError::new("FAILED", "找不到这台电脑的用户文件夹，命令没有运行")
+            DeviceError::new(
+                crate::errors::HOSTD_BOUNDARY_FAILED,
+                "找不到这台电脑的用户文件夹（LOCALAPPDATA / USERPROFILE），命令没有运行",
+            )
         })?;
         let tmp = root.join("tmp");
         for dir in [&tmp, &root.join("cache")] {

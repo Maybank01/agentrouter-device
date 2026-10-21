@@ -97,10 +97,16 @@ impl Pin {
         };
         let (file, digest) = (s("file"), s("digest"));
         if !valid_file(&file) {
-            return Err(error("FAILED", "pin.file 要是一个 .tgz 或 .whl 文件名"));
+            return Err(error(
+                crate::errors::HOSTD_ARGS_INVALID,
+                format!("pin.file 要是一个 .tgz 或 .whl 文件名，收到 {file:?}"),
+            ));
         }
         if expected(&digest).is_none() {
-            return Err(error("FAILED", "pin.digest 要是 sha512-… 或 sha256:…"));
+            return Err(error(
+                crate::errors::HOSTD_ARGS_INVALID,
+                format!("pin.digest 要是 sha512-… 或 sha256:…，收到 {digest:?}"),
+            ));
         }
         Ok(Some(Pin {
             file,
@@ -169,27 +175,34 @@ impl Packages {
     /// `mcp_package`: keep a package the cloud sent, only when it is exactly the pinned one.
     pub fn store(&self, args: &Value) -> Result<Value, DeviceError> {
         let Some(pin) = Pin::parse(args)? else {
-            return Err(error("FAILED", "pin 不能为空"));
+            return Err(error(crate::errors::HOSTD_ARGS_INVALID, "pin 不能为空"));
         };
         let data = args.get("data").and_then(Value::as_str).unwrap_or("");
         if data.len() > PACKAGE_MAX / 3 * 4 + 4 {
             return Err(error("TOO_LARGE", "包太大"));
         }
         let Some(bytes) = b64_decode(data) else {
-            return Err(error("FAILED", "data 要是 base64"));
+            return Err(error(crate::errors::HOSTD_ARGS_INVALID, "data 要是 base64"));
         };
         if let Err(found) = pin.check(&bytes) {
             return Err(pin.mismatch(&found));
         }
-        std::fs::create_dir_all(&self.dir)
-            .map_err(|e| error("FAILED", format!("没能保存：{e}")))?;
+        std::fs::create_dir_all(&self.dir).map_err(|e| {
+            error(
+                crate::errors::HOSTD_FAULT,
+                format!("没能建好包目录 {}：{e}", crate::gate::display(&self.dir)),
+            )
+        })?;
         let path = self.dir.join(&pin.file);
         let part = self.dir.join(format!("{}.part", pin.file));
         std::fs::write(&part, &bytes)
             .and_then(|_| std::fs::rename(&part, &path))
             .map_err(|e| {
                 let _ = std::fs::remove_file(&part);
-                error("FAILED", format!("没能保存：{e}"))
+                error(
+                    crate::errors::HOSTD_FAULT,
+                    format!("没能保存 {}：{e}", crate::gate::display(&path)),
+                )
             })?;
         Ok(serde_json::json!({"file": pin.file, "bytes": bytes.len(), "digest": pin.digest}))
     }
@@ -199,13 +212,19 @@ impl Packages {
         let wants = args.iter().any(|a| a == PACKAGE_ARG);
         let Some(pin) = pin else {
             return if wants {
-                Err(error("FAILED", "{{package}} 要和 pin 一起给"))
+                Err(error(
+                    crate::errors::HOSTD_ARGS_INVALID,
+                    "{{package}} 要和 pin 一起给",
+                ))
             } else {
                 Ok(())
             };
         };
         if !wants {
-            return Err(error("FAILED", "pin 要配一个 {{package}} 参数"));
+            return Err(error(
+                crate::errors::HOSTD_ARGS_INVALID,
+                "pin 要配一个 {{package}} 参数",
+            ));
         }
         let file = crate::gate::display(&self.file(pin)?);
         for a in args.iter_mut().filter(|a| *a == PACKAGE_ARG) {
