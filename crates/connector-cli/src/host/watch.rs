@@ -41,6 +41,10 @@ struct Log {
     events: VecDeque<(u64, PathBuf, &'static str)>,
     /// The seq of the newest change (0: none yet).
     last: u64,
+    /// The highest cursor any answer has handed out: a change at or below it may already be known to a client, so a
+    /// later change of the same path is a new change, never folded into it (Cloud #2307: folded, it was never reported
+    /// and a cache kept the old content).
+    answered: u64,
     /// The watcher's own failure (e.g. too many watches), once.
     error: Option<String>,
 }
@@ -74,42 +78,43 @@ impl Changes {
             return;
         }
         let log = self.log.clone();
-        let made = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-            let (lock, changed) = &*log;
-            let mut log = lock.lock().unwrap();
-            match res {
-                Ok(event) => {
-                    let Some(kind) = kind(&event.kind) else {
-                        return;
-                    };
-                    for path in event.paths {
-                        // The same path changing again right away is one change.
-                        if log
-                            .events
-                            .back()
-                            .is_some_and(|(_, p, k)| *p == path && *k == kind)
-                        {
-                            continue;
-                        }
-                        log.last += 1;
-                        let seq = log.last;
-                        log.events.push_back((seq, path, kind));
-                        if log.events.len() > KEEP {
-                            log.events.pop_front();
+        let made =
+            notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+                let (lock, changed) = &*log;
+                let mut log = lock.lock().unwrap();
+                match res {
+                    Ok(event) => {
+                        let Some(kind) = kind(&event.kind) else {
+                            return;
+                        };
+                        for path in event.paths {
+                            // The same path changing again right away is one change — unless an answer already covered the
+                            // first one.
+                            let answered = log.answered;
+                            if log.events.back().is_some_and(|(seq, p, k)| {
+                                *seq > answered && *p == path && *k == kind
+                            }) {
+                                continue;
+                            }
+                            log.last += 1;
+                            let seq = log.last;
+                            log.events.push_back((seq, path, kind));
+                            if log.events.len() > KEEP {
+                                log.events.pop_front();
+                            }
                         }
                     }
+                    Err(e) => {
+                        // A lost event stream (overflowed kernel queue): every cursor is behind now.
+                        log.error = Some(e.to_string());
+                        log.last += 1;
+                        let seq = log.last;
+                        log.events.clear();
+                        log.events.push_back((seq, PathBuf::new(), "overflow"));
+                    }
                 }
-                Err(e) => {
-                    // A lost event stream (overflowed kernel queue): every cursor is behind now.
-                    log.error = Some(e.to_string());
-                    log.last += 1;
-                    let seq = log.last;
-                    log.events.clear();
-                    log.events.push_back((seq, PathBuf::new(), "overflow"));
-                }
-            }
-            changed.notify_all();
-        });
+                changed.notify_all();
+            });
         let mut watcher = match made {
             Ok(w) => w,
             Err(e) => {
@@ -152,6 +157,7 @@ impl Host {
         let mut log = lock.lock().unwrap();
         let Some(cursor) = args.get("cursor").and_then(Value::as_u64) else {
             // The first call: the baseline.
+            log.answered = log.answered.max(log.last);
             return Ok(self.changes_answer(log.last, Vec::new(), false, log.error.clone()));
         };
         let mut waited = false;
@@ -197,6 +203,7 @@ impl Host {
         if overflow {
             next = log.last;
         }
+        log.answered = log.answered.max(next);
         Ok(self.changes_answer(next, out, overflow, log.error.clone()))
     }
 
@@ -253,6 +260,22 @@ mod tests {
         }
         assert!(seen.iter().any(|p| p.ends_with("a.txt")), "{seen:?}");
         assert!(at > cursor);
+        // The same file changed again after the client saw its first change: reported again, not folded into it.
+        std::fs::write(dir.join("src").join("a.txt"), "y").unwrap();
+        let mut again = false;
+        let until = Instant::now() + Duration::from_secs(20);
+        while !again && Instant::now() < until {
+            let r = host
+                .changes(&json!({"cursor": at, "wait_ms": 2000}), &call)
+                .unwrap();
+            at = r["cursor"].as_u64().unwrap();
+            again = r["changes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c["path"].as_str().unwrap().ends_with("a.txt"));
+        }
+        assert!(again, "a second write to a.txt was not reported");
         // A cursor from the future (another server run) is an overflow.
         let future = host.changes(&json!({"cursor": at + 1000}), &call).unwrap();
         assert_eq!(future["overflow"], true);
