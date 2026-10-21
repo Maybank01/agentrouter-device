@@ -10,13 +10,15 @@
 //!
 //! One module per concern: [`files`] (read, write, stat, list), [`search`] (ripgrep), [`run`] (commands, streamed),
 //! [`jobs`] (background commands), [`pty`] (interactive programs),
-//! [`info`] (what this computer is), [`watch`] (what changed in the folders).
+//! [`info`] (what this computer is), [`watch`] (what changed in the folders), [`out`] (the environment's output
+//! folder: long output stays here, a path travels).
 //! Every call runs on its own thread with a [`Call`]: its progress token (output streams as MCP progress) and its
 //! cancel flag (`notifications/cancelled` ends what it runs).
 
 mod files;
 mod info;
 mod jobs;
+mod out;
 mod pty;
 mod run;
 mod search;
@@ -51,6 +53,7 @@ fn tools() -> Value {
     all.extend(pty::tools());
     all.extend(info::tools());
     all.extend(watch::tools());
+    all.extend(out::tools());
     Value::Array(all)
 }
 
@@ -60,6 +63,8 @@ struct Host {
     /// Cancel flags of the calls running now, by JSON-RPC id.
     calls: Mutex<HashMap<String, Arc<AtomicBool>>>,
     jobs: jobs::Jobs,
+    /// The environment's output folder (what commands and tool results produced beyond what travels inline).
+    out: Arc<out::Out>,
     ptys: pty::Ptys,
     changes: watch::Changes,
 }
@@ -147,6 +152,7 @@ impl Host {
             folders,
             calls: Mutex::default(),
             jobs: jobs::Jobs::default(),
+            out: Arc::default(),
             ptys: pty::Ptys::default(),
             changes: watch::Changes::default(),
         }
@@ -160,6 +166,7 @@ impl Host {
         self.jobs.end_all();
         self.ptys.end_all();
         self.changes.stop();
+        self.out.remove_all();
     }
 
     fn home(&self) -> PathBuf {
@@ -211,6 +218,8 @@ impl Host {
             "pty_close" => self.pty_close(args)?,
             "info" => self.info()?,
             "changes" => self.changes(args, call)?,
+            "spill_write" => self.spill_write(args)?,
+            "out_release" => self.out_release(args)?,
             other => return Err(format!("没有这个工具：{other}").into()),
         })
     }
@@ -470,6 +479,8 @@ mod tests {
             ("pty_close", false),
             ("info", true),
             ("changes", true),
+            ("spill_write", false),
+            ("out_release", false),
         ];
         let list = tools();
         let got: Vec<(&str, bool)> = list
