@@ -458,8 +458,12 @@ call answers `SANDBOX_UNAVAILABLE` with a `next` that tells the person what to r
     the per-session deny list still applies. Without it the account cannot read anything under the
     profile, so Node cannot even resolve a script path there (`EPERM lstat …\AppData`).
   - A read+execute ACE for the account on the installed runtime folder, because srt-win starts its
-    runner as the account from `srt-win.exe` inside the excluded data folder (otherwise "Access is
-    denied").
+    runner as the account from `srt-win.exe` before any session grant (otherwise "Access is denied").
+
+  What sandboxes read and run lives **beside** the data folder, in `<data>-shared` (srt in `sandbox\`,
+  the pinned MCP packages in `mcp-packages\`), like the scratch folders in `<data>-scratch`. srt
+  refuses a session that grants a read inside an excluded path, and the data folder stays secret
+  as a whole.
 
   Every start checks both. A later `sandbox setup` refreshes the profile grant, so items created
   since the last run become readable. `agentrouter sandbox remove` (`srt-win uninstall`) removes the

@@ -17,8 +17,9 @@
 //!   every start): srt's **profile read grant** (`srt-win profile grant`, since 0.0.81: the profile readable to the
 //!   account except credential stores and the device data folder — the read rule of §6.1, as on macOS and Linux;
 //!   without it Node cannot even resolve a script path under the profile), and a read+execute ACE on the installed
-//!   runtime folder, because srt-win's broker starts its runner as that account from `srt-win.exe`, which sits in
-//!   the excluded data folder.
+//!   runtime folder, because srt-win's broker starts its runner as that account from `srt-win.exe` before any
+//!   session grant (it also covers a data folder outside the profile, `AGENTROUTER_DEVICE_HOME`). What sandboxes read
+//!   and run lives beside the data folder (`<data>-shared`), never inside it.
 //!
 //! Policy (§6.1): write = folders + scratch (TEMP and the npm/uv/pip caches point there); `.git/hooks` and
 //! `.git/config` stay unwritable (srt's mandatory denies, plus explicit ones); reads are allowed except the
@@ -152,6 +153,7 @@ pub struct Status {
 pub struct Runtime {
     data_dir: PathBuf,
     scratch_root: PathBuf,
+    shared_root: PathBuf,
 }
 
 struct Ready {
@@ -160,15 +162,26 @@ struct Ready {
 }
 
 impl Runtime {
-    /// The runtime of the device whose data folder is `data_dir` (hidden from every sandbox). Scratch folders live
-    /// beside it (`<data>-scratch`), never inside it.
+    /// The runtime of the device whose data folder is `data_dir` (hidden from every sandbox). Beside it, never inside
+    /// it: the scratch folders (`<data>-scratch`) and the software sandboxes read and run, srt itself and the pinned
+    /// MCP packages (`<data>-shared`; srt refuses a session that grants a read inside the data folder, which the
+    /// Windows profile read grant excludes, #66).
     pub fn new(data_dir: &Path) -> Runtime {
-        let mut scratch = data_dir.as_os_str().to_os_string();
-        scratch.push("-scratch");
+        let sibling = |suffix: &str| {
+            let mut p = data_dir.as_os_str().to_os_string();
+            p.push(suffix);
+            PathBuf::from(p)
+        };
         Runtime {
             data_dir: data_dir.to_path_buf(),
-            scratch_root: PathBuf::from(scratch),
+            scratch_root: sibling("-scratch"),
+            shared_root: sibling("-shared"),
         }
+    }
+
+    /// Where the pinned MCP packages live (readable to sandboxes; `mcp_pkg`).
+    pub fn packages_dir(&self) -> PathBuf {
+        self.shared_root.join("mcp-packages")
     }
 
     pub fn backend() -> String {
@@ -176,7 +189,7 @@ impl Runtime {
     }
 
     fn root(&self) -> PathBuf {
-        self.data_dir.join("sandbox")
+        self.shared_root.join("sandbox")
     }
 
     fn dir(&self) -> PathBuf {
@@ -253,6 +266,8 @@ impl Runtime {
         if !self.installed() {
             return Err(format!("装完了但找不到 {SRT_PACKAGE}@{SRT_VERSION}"));
         }
+        // The runtime of builds before #66 sat inside the data folder.
+        let _ = std::fs::remove_dir_all(self.data_dir.join("sandbox"));
         // Earlier pinned versions.
         if let Ok(entries) = std::fs::read_dir(self.root()) {
             for e in entries.flatten() {
@@ -344,6 +359,7 @@ impl Runtime {
             std::fs::remove_dir_all(self.root()).map_err(|e| e.to_string())?;
             done.push(format!("删掉了 {}", shown(&self.root())));
         }
+        let _ = std::fs::remove_dir_all(self.data_dir.join("sandbox"));
         if self.scratch_root.exists() {
             let _ = std::fs::remove_dir_all(&self.scratch_root);
             done.push(format!("删掉了 {}", shown(&self.scratch_root)));
@@ -636,8 +652,7 @@ impl Runtime {
             .map(|p| shown(&p))
             .collect();
         deny_read.dedup();
-        // The runtime lives in the hidden data folder; its helpers that run inside the sandbox (Linux
-        // `apply-seccomp`, the Windows entry) must stay readable there.
+        // The runtime's helpers that run inside the sandbox (Linux `apply-seccomp`) stay readable.
         let mut allow_read: Vec<String> = launch
             .readable
             .iter()
@@ -646,8 +661,8 @@ impl Runtime {
             .map(|p| shown(&plain(p)))
             .collect();
         if cfg!(windows) {
-            // The sandbox account cannot open the person's profile at all; per-user runtimes it needs (nvm/fnm Node,
-            // npm's global folder, uv) get read+execute grants, removed again when the server ends.
+            // Per-user runtimes (nvm/fnm Node, npm's global folder, uv) created after the last profile read grant are
+            // not readable through it yet: read+execute grants for this session, removed again when the server ends.
             let mut extra = vec![launch.program.parent().map(Path::to_path_buf)];
             if let Ok(n) = node() {
                 extra.push(n.parent().map(Path::to_path_buf));
