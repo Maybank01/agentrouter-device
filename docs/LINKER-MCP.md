@@ -664,6 +664,7 @@ AGENTROUTER_DEVICE_HOME=/var/lib/agentrouter \
 | `AGENTROUTER_HOST_TOKEN` | Alternative to the file; removed from `hostd`'s environment at start, so no server or command the Agent runs inherits it. |
 | `AGENTROUTER_CONTROL_KEY` | The control plane's signing key (on a PC it is pinned at pairing); every request is verified against it (§3.3). Required. |
 | `AGENTROUTER_GATEWAY` (or `--gateway`) | The gateway; default the Dev gateway. Same `/device/v2/link` endpoint as a PC. |
+| `HTTPS_PROXY` / `NO_PROXY` | The link's WebSocket goes through an `http://` proxy with CONNECT when one is set (a cloud sandbox's only egress is its node's proxy; PCs behind a proxy too), curl's conventions: `HTTPS_PROXY`/`https_proxy` for `wss://`, `HTTP_PROXY` for `ws://`, `NO_PROXY` wins, credentials in the URL = Basic auth (issue #85, `crates/linker/src/proxy.rs`). |
 | `AGENTROUTER_HOST_ID` | The sandbox id; the link id is `link_id("cloud:<id>", first folder)` (stable across `hostd` restarts in the same sandbox). Default: the host name. |
 | folders (arguments) | The session's mounted views, absolute; the first is home. Fixed for the session. |
 
