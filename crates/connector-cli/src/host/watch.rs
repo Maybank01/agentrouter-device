@@ -21,6 +21,8 @@ const WAIT_MAX_MS: u64 = 30_000;
 /// After the first change of a long poll, more changes join the same answer until it is quiet this long (at most
 /// five times this in all).
 const BURST: Duration = Duration::from_millis(50);
+/// The guarantees of this feed, answered as `feed` (2: every change after an answered cursor is reported).
+const FEED_VERSION: u64 = 2;
 
 pub(super) fn tools() -> Vec<Value> {
     vec![tool(
@@ -222,7 +224,9 @@ impl Host {
             .iter()
             .map(|(f, e)| json!({"folder": shown(f), "ok": e.is_none(), "error": e}))
             .collect();
-        json!({"cursor": cursor, "changes": changes, "overflow": overflow, "watching": watching, "error": error})
+        // `feed`: this feed's guarantees (2: a change after an answered one is never folded into it, #91) — a client
+        // caching by the feed trusts only a version it knows.
+        json!({"cursor": cursor, "changes": changes, "overflow": overflow, "watching": watching, "error": error, "feed": FEED_VERSION})
     }
 }
 
@@ -239,6 +243,7 @@ mod tests {
         let call = Call::detached();
         let first = host.changes(&json!({}), &call).unwrap();
         assert_eq!(first["watching"][0]["ok"], true, "{first}");
+        assert_eq!(first["feed"], 2);
         let cursor = first["cursor"].as_u64().unwrap();
         std::fs::write(dir.join("src").join("a.txt"), "x").unwrap();
         let mut seen = Vec::new();
