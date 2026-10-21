@@ -200,7 +200,7 @@ impl Host {
             "stat" => self.stat(args)?,
             "list" => self.list(args)?,
             "search" => self.search(args, call)?,
-            "job_start" => self.job_start(args)?,
+            "job_start" => self.job_start(args, call)?,
             "job_read" => self.job_read(args, call)?,
             "job_stop" => self.job_stop(args)?,
             "jobs" => self.jobs_list()?,
