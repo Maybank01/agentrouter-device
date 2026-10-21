@@ -12,7 +12,7 @@ use crate::util::data_dir;
 pub const DEFAULT_GATEWAY: &str = "https://agent-gateway-dev.agentrouter.top";
 
 /// The access level of the old device chain. Console mode has none (the folder and `--read-only` are the boundary);
-/// only `agentrouter mcp-serve local` still reads it (deploy targets at `full`), pending its design (LINKER-MCP §4).
+/// only `agentrouter mcp-serve local` still reads it (deploy targets at `full`), pending its design (HOSTD-MCP §4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Access {

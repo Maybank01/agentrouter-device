@@ -1,4 +1,4 @@
-//! The whole device chain, as a person runs it (issue #50, docs/LINKER-MCP.md): the real `agentrouter link` binary in a
+//! The whole device chain, as a person runs it (issue #50, docs/HOSTD-MCP.md): the real `agentrouter link` binary in a
 //! folder, against a stub gateway on this computer that plays the control plane (signed MCP over `/device/v2/link`).
 //! A real MCP server runs in the OS sandbox; the boundary must hold:
 //!
@@ -194,7 +194,7 @@ fn a_linked_folder_end_to_end_and_the_boundary_holds() {
     agentrouter_sandbox::Runtime::new(&data)
         .setup()
         .expect("sandbox setup on the runner");
-    let link = agentrouter_linker::link_id(&device, &folder);
+    let link = agentrouter_hostd_link::link_id(&device, &folder);
 
     // The stub gateway: token calls answered, the link socket handed to the test.
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();

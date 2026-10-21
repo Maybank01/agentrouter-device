@@ -30,7 +30,7 @@ dependencies = [
  "agentrouter-aggregator",
  "agentrouter-checkpoint",
  "agentrouter-device-core",
- "agentrouter-linker",
+ "agentrouter-hostd-link",
  "agentrouter-sandbox",
  "chrono",
  "ctrlc",
@@ -65,7 +65,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "agentrouter-linker"
+name = "agentrouter-hostd-link"
 version = "0.1.0"
 dependencies = [
  "agentrouter-device-core",

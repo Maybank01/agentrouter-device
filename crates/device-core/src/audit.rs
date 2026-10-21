@@ -3,7 +3,7 @@
 //! when, what — the request's **arguments** ([`redact_args`]: secrets blanked, long strings stored as a
 //! hash) — how long it took and the outcome with a digest of the result ([`result_summary`]).
 //! The chain head (`seq`, `hash`, [`head`]) goes to the cloud with every heartbeat, so a log rewritten
-//! on the PC no longer matches what the platform last saw (docs/LINKER-MCP.md §7.1, #44).
+//! on the PC no longer matches what the platform last saw (docs/HOSTD-MCP.md §7.1, #44).
 
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};

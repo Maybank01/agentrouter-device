@@ -1,4 +1,4 @@
-//! `hostd` in a cloud sandbox (docs/LINKER-MCP.md §13.1, issue #82): `agentrouter link --placement cloud <folder>…`,
+//! `hostd` in a cloud sandbox (docs/HOSTD-MCP.md §13.1, issue #82): `agentrouter link --placement cloud <folder>…`,
 //! started by the sandbox's entrypoint. Same link, frames, signing, `host__*` tools and audit as on a PC; only the
 //! policy differs:
 //!
@@ -23,7 +23,7 @@ use agentrouter_aggregator::{Aggregator, Config as AggConfig, Feed, Hooks, Outco
 use agentrouter_device::config::Config;
 use agentrouter_device::protocol::{ControlKey, sha256_hex};
 use agentrouter_device::util::{b64url_decode, data_dir};
-use agentrouter_linker::{End, Event, LinkInfo};
+use agentrouter_hostd_link::{End, Event, LinkInfo};
 use serde_json::{Value, json};
 
 pub const ENV_TOKEN: &str = "AGENTROUTER_HOST_TOKEN";
@@ -208,7 +208,7 @@ pub fn link(opts: CloudOptions, interrupted: &'static AtomicBool) -> i32 {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| first.display().to_string());
-    let link_id = agentrouter_linker::link_id(&format!("cloud:{}", host_id()), &first);
+    let link_id = agentrouter_hostd_link::link_id(&format!("cloud:{}", host_id()), &first);
     let data = data_dir();
     let shown: Vec<String> = folders.iter().map(|f| f.display().to_string()).collect();
     line(&format!(
@@ -240,7 +240,7 @@ pub fn link(opts: CloudOptions, interrupted: &'static AtomicBool) -> i32 {
         }
     };
     let code = runtime.block_on(async move {
-        let handle_cell: Arc<std::sync::OnceLock<agentrouter_linker::Handle>> =
+        let handle_cell: Arc<std::sync::OnceLock<agentrouter_hostd_link::Handle>> =
             Arc::new(std::sync::OnceLock::new());
         let cell = handle_cell.clone();
         let agg = Aggregator::new(
@@ -263,10 +263,10 @@ pub fn link(opts: CloudOptions, interrupted: &'static AtomicBool) -> i32 {
             }),
         );
         let for_head = agg.clone();
-        let (handle, mut events) = agentrouter_linker::start(agentrouter_linker::Options {
+        let (handle, mut events) = agentrouter_hostd_link::start(agentrouter_hostd_link::Options {
             gateway,
             info,
-            tokens: agentrouter_linker::host_token(token_file, token_value),
+            tokens: agentrouter_hostd_link::host_token(token_file, token_value),
             audit_head: Arc::new(move || for_head.audit_head()),
         });
         let _ = handle_cell.set(handle.clone());

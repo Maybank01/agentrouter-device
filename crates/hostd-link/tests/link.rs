@@ -1,4 +1,4 @@
-//! The Linker against a stub gateway on this computer: hello v2 with the link, welcome, frames both ways,
+//! hostd's link layer against a stub gateway on this computer: hello v2 with the link, welcome, frames both ways,
 //! session close, the audit head on the heartbeat, reconnect after a drop (answers produced while down are not
 //! replayed), replacement (4409) and revocation end it.
 
@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use agentrouter_linker::{End, Event, LinkInfo, Options, TokenError, start};
+use agentrouter_hostd_link::{End, Event, LinkInfo, Options, TokenError, start};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
@@ -35,7 +35,7 @@ async fn next_event(rx: &mut tokio::sync::mpsc::UnboundedReceiver<Event>) -> Eve
     timeout(Duration::from_secs(20), rx.recv())
         .await
         .expect("an event in time")
-        .expect("the linker is running")
+        .expect("the link layer is running")
 }
 
 async fn read_json<S>(ws: &mut tokio_tungstenite::WebSocketStream<S>) -> Value
@@ -63,7 +63,7 @@ async fn hello_frames_heartbeat_reconnect_and_ends() {
         tokens: Arc::new(move || {
             let n = issued.fetch_add(1, Ordering::SeqCst);
             if n == 0 {
-                // The first try fails like a network error: the Linker retries.
+                // The first try fails like a network error: the link layer retries.
                 Err(TokenError::Retry("offline".into()))
             } else {
                 Ok(format!("ldt_{n}"))
@@ -156,7 +156,7 @@ async fn hello_frames_heartbeat_reconnect_and_ends() {
     handle.send("mcs_a", json!({"jsonrpc": "2.0", "id": 3, "result": {}}));
     assert_eq!(read_json(&mut ws).await["m"]["id"], 3, "id 2 was dropped");
 
-    // Another link for the same folder took over: the Linker ends, it does not fight back.
+    // Another link for the same folder took over: the link layer ends, it does not fight back.
     ws.send(Message::Close(Some(CloseFrame {
         code: CloseCode::from(4409),
         reason: "replaced".into(),

@@ -152,7 +152,7 @@ impl ServerDef {
     }
 
     /// A catalog preset runs exactly its pinned, digest-checked package through npx/uvx. Anything else is a
-    /// custom server: the person answers y/N on this computer first (LINKER-MCP §5).
+    /// custom server: the person answers y/N on this computer first (HOSTD-MCP §5).
     pub fn is_custom(&self) -> bool {
         !(self.preset.is_some()
             && self.pin.is_some()

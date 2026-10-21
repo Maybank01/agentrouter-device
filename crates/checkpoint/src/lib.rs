@@ -1,4 +1,4 @@
-//! Checkpoints and undo for a linked folder (docs/LINKER-MCP.md §7.2, issue #47): a **shadow git repository
+//! Checkpoints and undo for a linked folder (docs/HOSTD-MCP.md §7.2, issue #47): a **shadow git repository
 //! outside the folder** (`<data>/checkpoints/<lnk>.git`, work tree = the folder) takes a snapshot before the first
 //! non-read-only call of a turn, and `agentrouter undo` puts the folder back. This is the pattern Claude Code and
 //! Cline use.
@@ -374,7 +374,7 @@ pub fn folder_key(folder: &Path) -> String {
 /// A file bigger than this is not kept by the journal.
 pub const JOURNAL_FILE_MAX: u64 = 64 << 20;
 
-/// 完全访问's file journal (docs/LINKER-MCP.md §7.2): before a call that names a file by path outside the snapshotted
+/// 完全访问's file journal (docs/HOSTD-MCP.md §7.2): before a call that names a file by path outside the snapshotted
 /// folders, its previous content is copied to `<data>/checkpoints/journal/<link>/<turn>/` (a file that did not exist
 /// is recorded as absent), and `undo` puts the turn's files back.
 #[derive(Debug, Clone)]

@@ -1,6 +1,6 @@
 [package]
 name = "agentrouter-sandbox"
-description = "AgentRouter device: the sandbox launcher. Every local MCP server runs under Anthropic sandbox-runtime (srt), writes confined to the linked folder (docs/LINKER-MCP.md §6)."
+description = "AgentRouter device: the sandbox launcher. Every local MCP server runs under Anthropic sandbox-runtime (srt), writes confined to the linked folder (docs/HOSTD-MCP.md §6)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

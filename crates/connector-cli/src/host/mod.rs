@@ -1,4 +1,4 @@
-//! `agentrouter mcp-serve host <folder>…`: the SSH-like surface of a link (docs/LINKER-MCP.md §3.7, owner 2026-10-20
+//! `agentrouter mcp-serve host <folder>…`: the SSH-like surface of a link (docs/HOSTD-MCP.md §3.7, owner 2026-10-20
 //! 「就和Agent使用SSH同样的感觉会更好吧」). A plain stdio MCP server — commands in the real shell, files by their real
 //! path — that the console starts with every link like any other local server: inside the sandbox in folder mode (the
 //! OS refuses writes outside the folders), with the person's own rights in 完全访问. It decides nothing itself; the

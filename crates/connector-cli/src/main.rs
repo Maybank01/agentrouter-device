@@ -1,5 +1,5 @@
 //! `agentrouter`: console mode on the command line (see `cli.rs`, `console.rs`). The hidden `mcp-serve local`
-//! subcommand is the local-Agent stdio MCP entry (`mcp_serve.rs`), kept pending its design (LINKER-MCP §4).
+//! subcommand is the local-Agent stdio MCP entry (`mcp_serve.rs`), kept pending its design (HOSTD-MCP §4).
 
 mod cli;
 mod cloud;

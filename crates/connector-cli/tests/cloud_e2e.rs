@@ -1,4 +1,4 @@
-//! `hostd` in a cloud sandbox (issue #82, docs/LINKER-MCP.md §13.1), as the sandbox entrypoint starts it: the real
+//! `hostd` in a cloud sandbox (issue #82, docs/HOSTD-MCP.md §13.1), as the sandbox entrypoint starts it: the real
 //! binary with only a platform-issued host token, the control plane's key and a mounted folder, against a stub gateway
 //! on this computer. It must dial `/device/v2/link` without pairing (no `/device/v1/*` call), announce
 //! `placement: "cloud"`, answer `host__exec` streamed and `host__write` with versions, refuse folder adds, never
@@ -166,7 +166,7 @@ fn hostd_in_a_cloud_sandbox() {
     let link = hello["link"]["id"].as_str().unwrap().to_string();
     assert_eq!(
         link,
-        agentrouter_linker::link_id("cloud:sbx_e2e", &folder),
+        agentrouter_hostd_link::link_id("cloud:sbx_e2e", &folder),
         "stable per sandbox and folder"
     );
     assert!(

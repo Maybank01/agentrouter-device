@@ -1,5 +1,5 @@
 //! `agentrouter mcp-serve local`: the local-Agent entry, an MCP stdio service with a self-reported local identity
-//! (`lag_`/`lses_`, #37/#38). Kept as it is pending the communication design (docs/LINKER-MCP.md §4, owner Q2); the
+//! (`lag_`/`lses_`, #37/#38). Kept as it is pending the communication design (docs/HOSTD-MCP.md §4, owner Q2); the
 //! cloud's `mcp-serve workspace` mode was deleted with the old device chain (#49): the cloud reaches a folder only
 //! through `agentrouter link` and its sandboxed MCP servers.
 //!

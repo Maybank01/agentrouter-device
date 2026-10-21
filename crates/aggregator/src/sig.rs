@@ -1,4 +1,4 @@
-//! The link request signature v3 (docs/LINKER-MCP.md §3.3): only the control plane can make a request the device
+//! The link request signature v3 (docs/HOSTD-MCP.md §3.3): only the control plane can make a request the device
 //! acts on, carried in MCP's own extension point `params._meta["agentrouter.top/sig"]`:
 //!
 //! ```text

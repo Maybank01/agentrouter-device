@@ -1,6 +1,6 @@
 [package]
 name = "agentrouter-aggregator"
-description = "AgentRouter device: the MCP aggregator — one MCP endpoint towards the link, an MCP client towards every local server (each OS-confined to the folder), signature check, argument-level audit, checkpoints (docs/LINKER-MCP.md §2, §3.3–§3.5, §5, §7)."
+description = "AgentRouter device: the MCP aggregator — one MCP endpoint towards the link, an MCP client towards every local server (each OS-confined to the folder), signature check, argument-level audit, checkpoints (docs/HOSTD-MCP.md §2, §3.3–§3.5, §5, §7)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

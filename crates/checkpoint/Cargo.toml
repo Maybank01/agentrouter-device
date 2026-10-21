@@ -1,6 +1,6 @@
 [package]
 name = "agentrouter-checkpoint"
-description = "AgentRouter device: checkpoints and undo for a linked folder in a shadow git repository outside it (docs/LINKER-MCP.md §7.2)."
+description = "AgentRouter device: checkpoints and undo for a linked folder in a shadow git repository outside it (docs/HOSTD-MCP.md §7.2)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

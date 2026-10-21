@@ -1,5 +1,5 @@
-//! Console mode (docs/LINKER-MCP.md §8, issue #48): `agentrouter link` in any folder links **that folder** to the
-//! person's own AgentRouter account for as long as the command runs. The Linker keeps the link; the aggregator
+//! Console mode (docs/HOSTD-MCP.md §8, issue #48): `agentrouter link` in any folder links **that folder** to the
+//! person's own AgentRouter account for as long as the command runs. hostd's link layer keeps the link; the aggregator
 //! serves the cloud Agent one MCP endpoint whose servers the OS confines to the folder; the terminal shows every
 //! call in one line. Ctrl+C stops the servers and the link.
 //!
@@ -22,7 +22,7 @@ use agentrouter_checkpoint::{Journal, Shadow, folder_key};
 use agentrouter_device::config::Config;
 use agentrouter_device::util::{data_dir, home_dir};
 use agentrouter_device::{audit, keystore, link};
-use agentrouter_linker::{End, Event, LinkInfo};
+use agentrouter_hostd_link::{End, Event, LinkInfo};
 use serde_json::{Value, json};
 
 /// How long the person has to answer a y/N on this computer (no answer = no).
@@ -89,7 +89,7 @@ fn folder_name(folder: &Path) -> String {
 fn link_of(folder: &Path) -> Result<(keystore::Identity, String), String> {
     let identity =
         keystore::load().ok_or("这台电脑还没有链接：先在这个文件夹里运行 agentrouter link")?;
-    let link = agentrouter_linker::link_id(&identity.device, folder);
+    let link = agentrouter_hostd_link::link_id(&identity.device, folder);
     Ok((identity, link))
 }
 
@@ -145,7 +145,7 @@ struct Console {
     no_git_said: AtomicBool,
     /// The link's info and handle: `info` goes out when the folders change.
     info: Mutex<LinkInfo>,
-    handle: OnceLock<agentrouter_linker::Handle>,
+    handle: OnceLock<agentrouter_hostd_link::Handle>,
 }
 
 /// A folder gets shadow-git checkpoints unless it is the home folder, a drive root or AgentRouter's own data
@@ -531,12 +531,12 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
     }
 
     let link_id = if opts.full {
-        agentrouter_linker::link_id(
+        agentrouter_hostd_link::link_id(
             &identity.device,
             Path::new(&format!("full:{}", shown(&first))),
         )
     } else {
-        agentrouter_linker::link_id(&identity.device, &first)
+        agentrouter_hostd_link::link_id(&identity.device, &first)
     };
     let gateway = cfg.gateway.clone();
     let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -581,7 +581,7 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
             handle: OnceLock::new(),
         });
         console.set_folders(&folders);
-        let handle_cell: Arc<OnceLock<agentrouter_linker::Handle>> = Arc::new(OnceLock::new());
+        let handle_cell: Arc<OnceLock<agentrouter_hostd_link::Handle>> = Arc::new(OnceLock::new());
         let cell = handle_cell.clone();
         let agg = Aggregator::new(
             AggConfig {
@@ -603,10 +603,10 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
             }),
         );
         let for_head = agg.clone();
-        let (handle, mut events) = agentrouter_linker::start(agentrouter_linker::Options {
+        let (handle, mut events) = agentrouter_hostd_link::start(agentrouter_hostd_link::Options {
             gateway: gateway.clone(),
             info,
-            tokens: agentrouter_linker::keystore_tokens(gateway),
+            tokens: agentrouter_hostd_link::keystore_tokens(gateway),
             audit_head: Arc::new(move || for_head.audit_head()),
         });
         let _ = handle_cell.set(handle.clone());

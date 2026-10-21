@@ -7,6 +7,8 @@ cd D:\work\my-mod
 npx @agentrouter-top/cli link        # 或者装好后：agentrouter link
 ```
 
+`link` 启动的是 `hostd`（Host Daemon，宿主守护进程）：它在这台电脑上替云端 Agent 干活，`agentrouter hostd` 是同一条命令。
+
 第一次运行会给出一个配对码，在网页上确认后这台电脑就链接到你自己的账号（只链到自己的账号，没有分享码）。
 
 ## 边界
@@ -29,19 +31,19 @@ npx @agentrouter-top/cli link        # 或者装好后：agentrouter link
 
 ## Development
 
-Design: [`docs/LINKER-MCP.md`](docs/LINKER-MCP.md). One chain, MCP end to end:
+Design: [`docs/HOSTD-MCP.md`](docs/HOSTD-MCP.md). One chain, MCP end to end:
 
 | Crate | Role |
 | --- | --- |
-| `crates/linker` | The link: one outbound WebSocket per running `link` (`/device/v2/link`, hello v2, `{s, m}` frames, reconnect, heartbeat with the audit head). No capabilities. |
+| `crates/hostd-link` | `hostd`'s link layer (formerly the Linker): one outbound WebSocket per running `link` (`/device/v2/link`, hello v2, `{s, m}` frames, reconnect, heartbeat with the audit head). No capabilities. |
 | `crates/aggregator` | One MCP endpoint (official Rust SDK `rmcp`): checks the control plane's signature v3 in `params._meta`, argument-level audit, checkpoints, `link__*` server management; an MCP client per local server. |
 | `crates/sandbox` | Every server process OS-confined to the folder (Anthropic `sandbox-runtime`, pinned). |
 | `crates/checkpoint` | Shadow-git checkpoints outside the folder; `undo`. |
 | `crates/device-core` | Pairing/token, keys, protocol primitives, audit log, pinned MCP packages, config. |
-| `crates/connector-cli` | The `agentrouter` binary (console mode; `console.rs`), npm `@agentrouter-top/cli`. |
+| `crates/connector-cli` | The `agentrouter` binary = `hostd` (`agentrouter link`, alias `agentrouter hostd`; console mode `console.rs`, cloud sandbox `cloud.rs`), npm `@agentrouter-top/cli`. |
 
 Tests run on GitHub-hosted runners only (`.github/workflows/ci.yml`; the `Sandbox (…)` jobs exercise the OS boundary on Linux, macOS and Windows). Locally: `cargo build` / `cargo check` / `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all`, `bash scripts/av-hygiene.sh`. Build rules against antivirus false positives: [`docs/AV-HYGIENE.md`](docs/AV-HYGIENE.md).
 
 Removed with the old device chain (#49): the signed device action set and its dispatcher, the home-grown MCP host, the old WebSocket connection, the built-in `mcp-serve workspace` service, the screen tools, in-repo checkpoint refs, the `run`/`access`/`unlink`/`screen`/`mcp`/`workspace`/`deploy`/`agent` commands and the old Dev E2E driver (#50 brings the new E2E). The desktop shell (`app/`) is frozen: source kept, outside the workspace, CI and releases.
 
-Still here only for `agentrouter mcp-serve local` (local Agents, pending their own design, LINKER-MCP §4): `exec`, `shell`, `confine`/`confined`, `consent`, `deploy`, `workspace`, `worktree`, `gate`, `lockfile`, `local_agent`.
+Still here only for `agentrouter mcp-serve local` (local Agents, pending their own design, HOSTD-MCP §4): `exec`, `shell`, `confine`/`confined`, `consent`, `deploy`, `workspace`, `worktree`, `gate`, `lockfile`, `local_agent`.

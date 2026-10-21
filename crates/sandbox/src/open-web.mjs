@@ -1,4 +1,4 @@
-// AgentRouter device: srt's own CLI, with an open-web network decision (docs/LINKER-MCP.md §6.1; owner 2026-10-20
+// AgentRouter device: srt's own CLI, with an open-web network decision (docs/HOSTD-MCP.md §6.1; owner 2026-10-20
 // 「可以开放到完整的互联网」, browser presets only). Written next to the pinned srt and started instead of its cli.js
 // with the same arguments.
 //

@@ -1,6 +1,6 @@
 [package]
-name = "agentrouter-linker"
-description = "AgentRouter device: the Linker — one outbound WebSocket per linked folder (identity, token, reconnect, heartbeat, frame relay). It has no capabilities of its own (docs/LINKER-MCP.md §3)."
+name = "agentrouter-hostd-link"
+description = "AgentRouter device: the link layer of hostd (formerly the Linker) — one outbound WebSocket per linked folder (identity, token, reconnect, heartbeat, frame relay). It has no capabilities of its own (docs/HOSTD-MCP.md §3)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,7 +8,7 @@ repository.workspace = true
 publish.workspace = true
 
 [lib]
-name = "agentrouter_linker"
+name = "agentrouter_hostd_link"
 
 [dependencies]
 agentrouter-device-core.workspace = true
@@ -21,7 +21,7 @@ tokio = { workspace = true, features = ["rt", "macros", "sync", "time", "net", "
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake"] }
 
 # TLS: the system's (native-tls; Schannel / Secure Transport / OpenSSL) by default; rustls with the bundled web PKI
-# roots for the static Linux build of hostd (musl, no OpenSSL; LINKER-MCP §13.1).
+# roots for the static Linux build of hostd (musl, no OpenSSL; HOSTD-MCP §13.1).
 [features]
 default = ["native-tls"]
 native-tls = ["tokio-tungstenite/native-tls", "agentrouter-device-core/native-tls"]

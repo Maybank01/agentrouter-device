@@ -1,4 +1,4 @@
-//! The sandbox launcher (docs/LINKER-MCP.md §6, issue #42): every local MCP server process — and everything it
+//! The sandbox launcher (docs/HOSTD-MCP.md §6, issue #42): every local MCP server process — and everything it
 //! starts — runs inside an OS sandbox whose only writable places are the linked folder(s) and a scratch folder of
 //! its own. A write, rename or delete anywhere else fails in the kernel, whatever the server or a command it runs
 //! tries (2026-10-18: home dot-folders were deleted on the owner's PC by an unconfined process; #39).
