@@ -69,6 +69,7 @@ name = "agentrouter-linker"
 version = "0.1.0"
 dependencies = [
  "agentrouter-device-core",
+ "base64",
  "futures-util",
  "getrandom 0.4.3",
  "serde_json",
