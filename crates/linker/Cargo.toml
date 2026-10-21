@@ -17,7 +17,14 @@ getrandom = "0.4"
 serde_json.workspace = true
 sha2 = "0.11"
 tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
-tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake", "native-tls"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake"] }
+
+# TLS: the system's (native-tls; Schannel / Secure Transport / OpenSSL) by default; rustls with the bundled web PKI
+# roots for the static Linux build of hostd (musl, no OpenSSL; LINKER-MCP §13.1).
+[features]
+default = ["native-tls"]
+native-tls = ["tokio-tungstenite/native-tls", "agentrouter-device-core/native-tls"]
+rustls = ["tokio-tungstenite/rustls-tls-webpki-roots", "agentrouter-device-core/rustls"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "sync", "time"] }

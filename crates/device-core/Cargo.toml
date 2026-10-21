@@ -18,7 +18,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.11"
 agentrouter-sandbox.workspace = true
-ureq = { version = "3", default-features = false, features = ["native-tls", "json"] }
+ureq = { version = "3", default-features = false, features = ["json"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -44,3 +44,9 @@ windows-sys = { workspace = true, features = [
   "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
 ] }
+
+# TLS for pairing and tokens: native-tls by default; rustls (ring + bundled web PKI roots) for the static Linux build.
+[features]
+default = ["native-tls"]
+native-tls = ["ureq/native-tls"]
+rustls = ["ureq/rustls"]

@@ -12,6 +12,7 @@
 //!          gateway → device  {"op": "welcome", "link": "lnk_…"} | {"op": "error", "code", "message"} | {"op": "revoked", "reason"}
 //!          either way        {"op": "close", "s": "<session>"}
 //!          device → gateway  {"op": "audit_head", "seq": n, "hash": "<sha256>"}
+//!          (`link` also carries `folders`, `readOnly`, `full` and `placement`: `pc` | `cloud`, LINKER-MCP §13.1)
 //! ```
 //!
 //! Calls in flight when the link drops are not replayed: an answer produced while the link is down is dropped
@@ -66,6 +67,9 @@ pub struct LinkInfo {
     pub folders: Vec<String>,
     /// 完全访问 (`agentrouter link --full`, chosen on the computer only).
     pub full: bool,
+    /// Where this `hostd` runs (LINKER-MCP §13.1): `pc` (the person's computer) or `cloud` (a cloud sandbox,
+    /// started by its entrypoint with a platform-issued host token).
+    pub placement: String,
 }
 
 impl LinkInfo {
@@ -81,6 +85,7 @@ impl LinkInfo {
             "readOnly": self.read_only,
             "folders": self.folders,
             "full": self.full,
+            "placement": self.placement,
         })
     }
 }
@@ -124,6 +129,24 @@ pub fn keystore_tokens(gateway: String) -> TokenSource {
                 TokenError::Retry(e.to_string())
             }
         })
+    })
+}
+
+/// A token the platform issued for this host (a cloud sandbox, LINKER-MCP §13.1): no pairing, no device key. Read
+/// from the file (re-read before every connection, so the platform can rotate it) or, without a file, the fixed value.
+pub fn host_token(file: Option<std::path::PathBuf>, value: Option<String>) -> TokenSource {
+    Arc::new(move || {
+        let token = match &file {
+            Some(path) => std::fs::read_to_string(path).map_err(|e| {
+                TokenError::Retry(format!("读不到主机令牌 {}：{e}", path.display()))
+            })?,
+            None => value.clone().unwrap_or_default(),
+        };
+        let token = token.trim().to_string();
+        if token.is_empty() {
+            return Err(TokenError::Retry("主机令牌是空的".into()));
+        }
+        Ok(token)
     })
 }
 

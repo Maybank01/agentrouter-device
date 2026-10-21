@@ -564,6 +564,7 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
         read_only: opts.read_only,
         folders: folders.iter().map(|f| shown(f)).collect(),
         full: opts.full,
+        placement: "pc".into(),
     };
     let computer = cfg.name.clone();
     let code = runtime.block_on(async move {
@@ -592,6 +593,7 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
                 data_dir: data.clone(),
                 control: identity.control.clone(),
                 yes_servers: opts.yes_servers,
+                cloud: false,
             },
             console.clone(),
             Arc::new(move |s: &str, m: Value| {

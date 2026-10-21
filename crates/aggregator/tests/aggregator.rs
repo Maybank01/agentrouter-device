@@ -76,6 +76,7 @@ impl Harness {
                 data_dir: data.clone(),
                 control: control.clone(),
                 yes_servers,
+                cloud: false,
             },
             hooks.clone(),
             Arc::new(move |s: &str, m: Value| {

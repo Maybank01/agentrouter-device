@@ -27,11 +27,16 @@ impl std::fmt::Display for HttpError {
     }
 }
 
+#[cfg(feature = "native-tls")]
+const TLS_PROVIDER: ureq::tls::TlsProvider = ureq::tls::TlsProvider::NativeTls;
+#[cfg(not(feature = "native-tls"))]
+const TLS_PROVIDER: ureq::tls::TlsProvider = ureq::tls::TlsProvider::Rustls;
+
 fn agent() -> ureq::Agent {
     ureq::Agent::config_builder()
         .tls_config(
             ureq::tls::TlsConfig::builder()
-                .provider(ureq::tls::TlsProvider::NativeTls)
+                .provider(TLS_PROVIDER)
                 .build(),
         )
         .http_status_as_error(false)

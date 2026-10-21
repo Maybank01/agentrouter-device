@@ -233,6 +233,9 @@ pub struct Config {
     pub control: ControlKey,
     /// `--yes-servers`: custom servers are accepted without asking (a local flag only).
     pub yes_servers: bool,
+    /// `hostd` in a cloud sandbox (LINKER-MCP §13.1): the sandbox is the boundary (set `full` too), the folders are the
+    /// session's mounted views and stay fixed (`link__folder_add` answers `DENIED_BY_USER`), nobody is asked anything.
+    pub cloud: bool,
 }
 
 /// The audit log of one link.
@@ -369,7 +372,7 @@ impl Aggregator {
                 }
             }
         });
-        inner.record(json!({"kind": "link", "event": "start", "link": inner.cfg.link, "folder": inner.cfg.folder_name, "folders": inner.folders_shown(), "full": inner.cfg.full, "readOnly": inner.cfg.read_only, "sandbox": if inner.cfg.full { String::new() } else { agentrouter_sandbox::Runtime::backend() }}));
+        inner.record(json!({"kind": "link", "event": "start", "link": inner.cfg.link, "folder": inner.cfg.folder_name, "folders": inner.folders_shown(), "full": inner.cfg.full, "cloud": inner.cfg.cloud, "readOnly": inner.cfg.read_only, "sandbox": if inner.cfg.full { String::new() } else { agentrouter_sandbox::Runtime::backend() }}));
         Aggregator { inner }
     }
 
@@ -859,6 +862,7 @@ impl Inner {
             "folder": self.cfg.folder_name,
             "folders": self.folders_shown(),
             "full": self.cfg.full,
+            "cloud": self.cfg.cloud,
             "readOnly": self.cfg.read_only,
             "sandbox": {"backend": status.backend, "mechanism": status.mechanism, "ready": status.ready,
                         "problems": status.problems.iter().map(|p| json!({"message": p.message, "next": p.next})).collect::<Vec<_>>()},
@@ -1327,6 +1331,14 @@ impl Inner {
                 json!({"name": name, "state": server.state().label(), "lines": tail})
             }
             "package_put" => self.packages.store(args).map_err(Failure::from)?,
+            "folder_add" if self.cfg.cloud => {
+                self.record(json!({"kind": "link", "event": "folder_declined", "link": self.cfg.link, "folder": args.get("path").and_then(Value::as_str).unwrap_or(""), "reason": "cloud"}));
+                return Err(Failure::new(
+                    "DENIED_BY_USER",
+                    "云端沙箱的文件夹由平台挂载，这里不能再加文件夹",
+                )
+                .next("用已经挂载的文件夹（link__servers 会列出）；要别的作品，请平台把它挂进这次会话。"));
+            }
             "folder_add" => {
                 let path = args
                     .get("path")
@@ -1456,9 +1468,12 @@ impl ServerHandler for SessionHandler {
             .upgrade()
             .map(|i| (i.folders_shown().join(", "), i.cfg.full))
             .unwrap_or_default();
+        let cloud = self.inner.upgrade().is_some_and(|i| i.cfg.cloud);
         InitializeResult::new(ServerCapabilities::builder().enable_tools().enable_tool_list_changed().build())
             .with_server_info(Implementation::new("agentrouter-link", env!("CARGO_PKG_VERSION")))
-            .with_instructions(if full {
+            .with_instructions(if cloud {
+                format!("Tools in a cloud sandbox (hostd; the sandbox is the boundary, full rights inside it; folders {folders}, real paths, fixed for this session). Tool names are <server>__<tool>; link__* manage which servers run.")
+            } else if full {
                 format!("Tools on the person's own computer with full access (their normal rights over the whole computer; home folder {folders}). Paths are real. Tool names are <server>__<tool>; link__* manage which local servers run.")
             } else {
                 format!("Tools on the person's own computer, in the folders {folders} (real paths; the computer's sandbox refuses writes outside them; link__folder_add asks the person for another). Tool names are <server>__<tool>; link__* manage which local servers run.")
