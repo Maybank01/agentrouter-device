@@ -389,6 +389,32 @@ mod tests {
             let mode = std::fs::metadata(&path).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+        // One entry, this user's, nothing inherited (no Administrators, SYSTEM or other users).
+        #[cfg(windows)]
+        {
+            let probe = format!(
+                "$a = Get-Acl -LiteralPath '{}'; $me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value; \
+                 Write-Output (\"protected=\" + $a.AreAccessRulesProtected + \" count=\" + $a.Access.Count + \
+                 \" mine=\" + ($a.Access[0].IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -eq $me))",
+                path.display()
+            );
+            let out = std::process::Command::new("powershell.exe")
+                .args([
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    &probe,
+                ])
+                .output()
+                .unwrap();
+            let text = String::from_utf8_lossy(&out.stdout);
+            assert!(
+                text.contains("protected=True count=1 mine=True"),
+                "{text} {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
         drop(start);
         assert!(!path.exists());
         let _ = std::fs::remove_dir_all(&dir);
