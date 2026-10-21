@@ -38,6 +38,9 @@ grep-searcher = "0.1.17"
 portable-pty = "0.9.0"
 # File-change notifications (inotify, FSEvents, ReadDirectoryChangesW): notify-rs/notify, CC0-1.0.
 notify = "8.2.0"
+# Opens the pairing page in the default browser on a double-click start: Byron/open-rs, MIT. On Windows through
+# ShellExecuteExW (`shellexecute-on-windows`), never its default hidden PowerShell launcher (docs/AV-HYGIENE.md).
+open = { version = "5.4.4", features = ["shellexecute-on-windows"] }
 
 # TLS: native-tls by default (the person's PC); `--no-default-features --features rustls` for the static Linux
 # build of hostd that cloud sandboxes run (musl, no OpenSSL; HOSTD-MCP §13.1, .github/workflows/hostd.yml).
@@ -50,7 +53,9 @@ rustls = ["agentrouter-device-core/rustls", "agentrouter-hostd-link/rustls"]
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_System_Console", "Win32_Foundation", "Win32_Storage_FileSystem"] }
+windows-sys = { workspace = true, features = ["Win32_System_Console", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_UI_Shell", "Win32_System_Com"] }
+# The native folder picker on a double-click start (the shell's IFileOpenDialog): PolyMeilex/rfd, MIT.
+rfd = { version = "0.17.2", default-features = false }
 
 [build-dependencies]
 embed-resource = "3"

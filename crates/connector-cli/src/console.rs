@@ -37,6 +37,8 @@ pub struct LinkOptions {
     pub yes_servers: bool,
     pub gateway: Option<String>,
     pub name: Option<String>,
+    /// Started by a double-click (`start.rs`): it said the access line itself; pairing opens the browser.
+    pub double_click: bool,
 }
 
 fn now() -> String {
@@ -94,7 +96,7 @@ fn link_of(folder: &Path) -> Result<(keystore::Identity, String), String> {
 }
 
 /// Lines typed in the terminal, read on one thread for the whole run.
-fn stdin_lines() -> &'static Mutex<Receiver<String>> {
+pub(crate) fn stdin_lines() -> &'static Mutex<Receiver<String>> {
     static LINES: OnceLock<Mutex<Receiver<String>>> = OnceLock::new();
     LINES.get_or_init(|| {
         let (tx, rx) = mpsc::channel();
@@ -433,7 +435,9 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
         let _ = cfg.save();
     }
     let data = data_dir();
-    if opts.full {
+    if opts.double_click {
+        // start.rs printed the folder and the one access line.
+    } else if opts.full {
         line("AgentRouter · 完全访问");
         line(
             "  完全访问 云端 Agent 用你的账户权限，能读写这台电脑上的所有文件（包括密钥文件）。只在你信任的对话里用；审计照记，Ctrl+C 随时断开。",
@@ -478,11 +482,18 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
     }
     let identity = match keystore::load() {
         Some(identity) => {
-            line(&format!("  账号     这台电脑已链接（{}）", cfg.name));
+            line(&if opts.double_click {
+                "  确认        已经确认过，直接连上".to_string()
+            } else {
+                format!("  账号     这台电脑已链接（{}）", cfg.name)
+            });
             identity
         }
         None => {
             let paired = link::link(&cfg, interrupted, |pairing| {
+                if opts.double_click {
+                    return crate::start::show_pairing(pairing);
+                }
                 line(&format!(
                     "  账号     第一次使用：打开 {} 输入 {}（{} 分钟内有效）",
                     pairing.verify_url,
@@ -492,8 +503,18 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
             });
             match paired.ok().and_then(|_| keystore::load()) {
                 Some(identity) => {
-                    line("  账号     已确认");
+                    line(if opts.double_click {
+                        "  确认        已确认"
+                    } else {
+                        "  账号     已确认"
+                    });
                     identity
+                }
+                None if opts.double_click => {
+                    line(
+                        "没有链接上（配对码过期或被取消）。关掉这个窗口，再双击 agentrouter.exe 试一次。",
+                    );
+                    return 1;
                 }
                 None => {
                     eprintln!("没有链接上（配对码过期或被取消）。再运行一次 agentrouter link。");
@@ -668,6 +689,9 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
                             agg.link_up();
                             if was_up {
                                 line(&format!("{}  重新连上了", now()));
+                            } else if opts.double_click {
+                                line(&format!("\n已连上 · 在线。网页对话里选「{computer}」就能用，这里会逐条显示 Agent 做的事。"));
+                                line("要停止：关掉这个窗口（或按 Ctrl+C）。下次双击会直接连上，不用再确认。\n");
                             } else {
                                 let more = if typing && !opts.full { "要再加文件夹，在这里输入 + 路径。" } else { "" };
                                 line(&format!("已连上。网页对话里选「{computer}」就能用。{more}Ctrl+C 断开。"));
@@ -694,7 +718,11 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
                                 End::Stopped => 0,
                                 End::Revoked(_) => {
                                     keystore::forget();
-                                    line("这台电脑在网页上被移除了。要再用，在文件夹里重新运行 agentrouter link。");
+                                    line(if opts.double_click {
+                                        "这台电脑在网页上被移除了。要再用，重新双击 agentrouter.exe。"
+                                    } else {
+                                        "这台电脑在网页上被移除了。要再用，在文件夹里重新运行 agentrouter link。"
+                                    });
                                     1
                                 }
                                 End::Replaced => {
