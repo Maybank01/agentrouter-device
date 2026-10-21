@@ -171,6 +171,13 @@ fn command_line(command: Option<&str>) -> CommandBuilder {
             // The person's login shell, as an ssh session gets.
             None => CommandBuilder::new_default_prog(),
         };
+        // The person's terminal environment (#95); the terminal's own TERM over it.
+        if let Some(env) = agentrouter_device::shell_env::for_command() {
+            cmd.env_clear();
+            for (key, value) in env {
+                cmd.env(key, value);
+            }
+        }
         cmd.env("TERM", "xterm-256color");
         cmd
     }

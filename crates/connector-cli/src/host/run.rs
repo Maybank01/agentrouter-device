@@ -22,7 +22,7 @@ const PUSH_MAX: usize = 16 << 20;
 pub(super) fn tools() -> Vec<Value> {
     vec![tool(
         "exec",
-        "Run a command in this computer's shell (/bin/sh -lc on Linux/macOS, PowerShell on Windows), like over ssh. cwd defaults to the link's first folder; paths are real. With a progressToken, stdout/stderr stream as progress notifications (message = {\"stream\",\"data\"} JSON) while it runs; cancelling the call ends the command's whole process tree.",
+        "Run a command in this computer's shell (/bin/sh -lc on Linux/macOS, PowerShell on Windows) with the person's own terminal environment (PATH and variables from their shell start-up files), like over ssh. cwd defaults to the link's first folder; paths are real. With a progressToken, stdout/stderr stream as progress notifications (message = {\"stream\",\"data\"} JSON) while it runs; cancelling the call ends the command's whole process tree.",
         json!({"type": "object", "properties": {
             "command": {"type": "string"},
             "cwd": {"type": "string"},
