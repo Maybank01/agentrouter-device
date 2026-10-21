@@ -3,6 +3,12 @@
 //! its output since a byte offset (optionally waiting for more), `job_stop` ends its whole process tree, `jobs`
 //! lists them. They live as long as the link: when the host server ends (input closed, a stop signal) every job's
 //! tree is ended, and on Windows each job is a kill-on-close job object, so even a killed server takes them along.
+//!
+//! `job_start` with `wait_ms` also waits for the end (Cloud #2307: a bound session runs every command as a job, so a
+//! long one outlives any single call, while a short one still costs one call): while it waits, the output streams as
+//! progress exactly like `exec`; the answer is `job_read`'s shape from what was not streamed; a job that ended inside
+//! the wait and whose output was all answered is forgotten (`forgotten: true`, nothing to stop). Cancelling the call
+//! while it waits ends the job, as cancelling `exec` does.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -13,7 +19,7 @@ use serde_json::{Value, json};
 
 use agentrouter_device::exec::{self, Spawned};
 
-use super::run::utf8_head;
+use super::run::{PUSH_BYTES, PUSH_EVERY, utf8_head};
 use super::{Call, Host, arg_str, shell_name, shown, tool};
 
 /// Output kept per stream of a job; older bytes are dropped (a read from before them says so).
@@ -21,6 +27,10 @@ const KEEP: usize = 8 << 20;
 const READ_DEFAULT: u64 = 1 << 20;
 const READ_MAX: u64 = 4 << 20;
 const WAIT_MAX_MS: u64 = 30_000;
+/// `job_start`'s wait for the end, at most (as long as one `exec`).
+const START_WAIT_MAX_MS: u64 = exec::TIMEOUT_MAX_MS;
+/// After the process ended, how long its output pipes may stay open (a grandchild holding them) before the answer.
+const DRAIN: Duration = Duration::from_millis(200);
 const RUNNING_MAX: usize = 32;
 /// Jobs remembered (finished ones are forgotten oldest first).
 const KEPT_MAX: usize = 64;
@@ -29,10 +39,11 @@ pub(super) fn tools() -> Vec<Value> {
     vec![
         tool(
             "job_start",
-            "Start a command in the background in this computer's shell (dev servers, watchers, long builds); it keeps running after this call. Read its output with job_read, end it with job_stop. Jobs end with the link.",
+            "Start a command in the background in this computer's shell (dev servers, watchers, long builds); it keeps running after this call. Read its output with job_read, end it with job_stop. Jobs end with the link. wait_ms waits for its end first (output streams as progress like exec; a job that ended inside the wait is forgotten).",
             json!({"type": "object", "properties": {
                 "command": {"type": "string"},
                 "cwd": {"type": "string"},
+                "wait_ms": {"type": "integer", "minimum": 0, "maximum": START_WAIT_MAX_MS},
             }, "required": ["command"]}),
             false,
         ),
@@ -107,6 +118,8 @@ struct State {
     /// `(exit_code, signal)` once it ended.
     exit: Option<(Option<i32>, Option<i32>)>,
     ended_ms: Option<u64>,
+    /// Output pipes still open (each pump closes its own at end of file).
+    open: u8,
 }
 
 pub(super) struct Job {
@@ -222,11 +235,15 @@ fn pump(job: &Arc<Job>, stream: impl std::io::Read + Send + 'static, i: usize) {
                 }
             }
         }
+        let mut state = job.state.lock().unwrap();
+        state.open = state.open.saturating_sub(1);
+        drop(state);
+        job.changed.notify_all();
     });
 }
 
 impl Host {
-    pub(super) fn job_start(&self, args: &Value) -> Result<Value, String> {
+    pub(super) fn job_start(&self, args: &Value, call: &Call) -> Result<Value, String> {
         let command = arg_str(args, "command").unwrap_or("");
         if command.trim().is_empty() {
             return Err("command 不能是空的".into());
@@ -264,7 +281,10 @@ impl Host {
             pid: spawned.child.id(),
             started: Instant::now(),
             spawned: Mutex::new(Some(spawned)),
-            state: Mutex::default(),
+            state: Mutex::new(State {
+                open: u8::from(stdout.is_some()) + u8::from(stderr.is_some()),
+                ..State::default()
+            }),
             changed: Condvar::new(),
         });
         if let Some(s) = stdout {
@@ -273,12 +293,26 @@ impl Host {
         if let Some(s) = stderr {
             pump(&job, s, 1);
         }
-        // Notice the end without holding the child's lock for long.
+        // Notice the end without holding the child's lock for long: looked at every 100 ms, and at once (then every
+        // 5 ms for a second) when its output pipes have closed, which is usually the moment it ended.
         {
             let job = job.clone();
             std::thread::spawn(move || {
+                let mut closed_at: Option<Instant> = None;
                 loop {
-                    std::thread::sleep(Duration::from_millis(100));
+                    {
+                        let state = job.state.lock().unwrap();
+                        if state.open == 0 && closed_at.is_none() {
+                            closed_at = Some(Instant::now());
+                        }
+                        let quick = closed_at.is_some_and(|t| t.elapsed() < Duration::from_secs(1));
+                        let pause = if quick { 5 } else { 100 };
+                        drop(
+                            job.changed
+                                .wait_timeout(state, Duration::from_millis(pause))
+                                .unwrap(),
+                        );
+                    }
                     let mut spawned = job.spawned.lock().unwrap();
                     let Some(s) = spawned.as_mut() else { break };
                     match s.child.try_wait() {
@@ -298,7 +332,130 @@ impl Host {
             });
         }
         self.jobs.all.lock().unwrap().push(job.clone());
-        Ok(json!({"job": job.id, "pid": job.pid, "cwd": shown(&cwd), "shell": shell_name()}))
+        let started =
+            json!({"job": job.id, "pid": job.pid, "cwd": shown(&cwd), "shell": shell_name()});
+        let wait = args
+            .get("wait_ms")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            .min(START_WAIT_MAX_MS);
+        if wait == 0 {
+            return Ok(started);
+        }
+        self.wait_for_end(&job, started, Duration::from_millis(wait), call)
+    }
+
+    /// `job_start`'s wait: stream new output as progress (coalesced like `exec`), until the job ended and its pipes
+    /// drained, the wait is over, or the call is cancelled (which ends the job).
+    fn wait_for_end(
+        &self,
+        job: &Arc<Job>,
+        started: Value,
+        wait: Duration,
+        call: &Call,
+    ) -> Result<Value, String> {
+        let until = Instant::now() + wait;
+        let mut sent = [0u64; 2];
+        let mut exited: Option<Instant> = None;
+        let mut last_push = Instant::now();
+        let done = loop {
+            let mut state = job.state.lock().unwrap();
+            let finished = |state: &State, exited: &mut Option<Instant>| {
+                if state.exit.is_some() && exited.is_none() {
+                    *exited = Some(Instant::now());
+                }
+                state.exit.is_some()
+                    && (state.open == 0 || exited.is_some_and(|t| t.elapsed() >= DRAIN))
+            };
+            let pending = |state: &State| -> usize {
+                (0..2)
+                    .map(|i| state.out[i].end().saturating_sub(sent[i]) as usize)
+                    .sum()
+            };
+            let mut done = finished(&state, &mut exited);
+            let streams = call.streams();
+            // Wait for output, the end or the next push time.
+            while !done && !call.cancelled() && Instant::now() < until {
+                let waiting = if streams { pending(&state) } else { 0 };
+                if waiting >= PUSH_BYTES || (waiting > 0 && last_push.elapsed() >= PUSH_EVERY) {
+                    break;
+                }
+                let next = if waiting > 0 {
+                    PUSH_EVERY.saturating_sub(last_push.elapsed())
+                } else if exited.is_some() {
+                    DRAIN.saturating_sub(exited.unwrap().elapsed())
+                } else {
+                    Duration::from_millis(250)
+                };
+                let left = until.saturating_duration_since(Instant::now());
+                state = job
+                    .changed
+                    .wait_timeout(state, next.min(left).max(Duration::from_millis(1)))
+                    .unwrap()
+                    .0;
+                done = finished(&state, &mut exited);
+            }
+            let mut chunks = Vec::new();
+            if streams {
+                for (i, name) in [(0usize, "stdout"), (1usize, "stderr")] {
+                    if state.out[i].end() <= sent[i] {
+                        continue;
+                    }
+                    let part = state.out[i].read(sent[i], PUSH_BYTES * 4, done);
+                    sent[i] = part["next_offset"].as_u64().unwrap_or(sent[i]);
+                    let data = part["data"].as_str().unwrap_or("").to_string();
+                    if !data.is_empty() {
+                        chunks.push((name, data));
+                    }
+                }
+            }
+            drop(state);
+            if !chunks.is_empty() {
+                for (name, data) in chunks {
+                    call.progress(&json!({"stream": name, "data": data}));
+                }
+                last_push = Instant::now();
+            }
+            if call.cancelled() {
+                job.stop(Duration::from_millis(500));
+                self.jobs
+                    .all
+                    .lock()
+                    .unwrap()
+                    .retain(|j| !Arc::ptr_eq(j, job));
+                let mut out = job.summary();
+                out["cancelled"] = json!(true);
+                return Ok(out);
+            }
+            if done {
+                break true;
+            }
+            if Instant::now() >= until {
+                break false;
+            }
+        };
+        let state = job.state.lock().unwrap();
+        let stdout = state.out[0].read(sent[0], READ_DEFAULT as usize, done);
+        let stderr = state.out[1].read(sent[1], READ_DEFAULT as usize, done);
+        let exit = state.exit;
+        drop(state);
+        let forgotten = done && stdout["more"] == json!(false) && stderr["more"] == json!(false);
+        if forgotten {
+            self.jobs
+                .all
+                .lock()
+                .unwrap()
+                .retain(|j| !Arc::ptr_eq(j, job));
+        }
+        let mut out = started;
+        out["running"] = json!(exit.is_none());
+        out["exit_code"] = json!(exit.and_then(|e| e.0));
+        out["signal"] = json!(exit.and_then(|e| e.1));
+        out["ms"] = json!(job.summary()["ms"]);
+        out["stdout"] = stdout;
+        out["stderr"] = stderr;
+        out["forgotten"] = json!(forgotten);
+        Ok(out)
     }
 
     pub(super) fn job_read(&self, args: &Value, call: &Call) -> Result<Value, String> {
@@ -397,6 +554,7 @@ pub(super) fn ids(host: &Host) -> std::collections::HashMap<String, bool> {
 mod tests {
     use super::super::tests::{host_in, temp};
     use super::*;
+    use std::sync::atomic::AtomicU64;
 
     #[test]
     fn a_job_runs_on_its_output_is_read_by_offset_and_stop_ends_it() {
@@ -407,7 +565,9 @@ mod tests {
         } else {
             "echo first; sleep 0.2; echo second; sleep 60"
         };
-        let started = host.job_start(&json!({"command": command})).unwrap();
+        let started = host
+            .job_start(&json!({"command": command}), &Call::detached())
+            .unwrap();
         let id = started["job"].as_str().unwrap().to_string();
         let call = Call::detached();
         let mut text = String::new();
@@ -438,10 +598,110 @@ mod tests {
     }
 
     #[test]
+    fn job_start_with_wait_ms_answers_a_short_command_in_one_call_and_forgets_it() {
+        let dir = temp("jobs-wait");
+        let host = host_in(&dir);
+        let command = if cfg!(windows) {
+            "Write-Output hello; [Console]::Error.WriteLine('oops'); exit 4"
+        } else {
+            "echo hello; echo oops >&2; exit 4"
+        };
+        let t = Instant::now();
+        let r = host
+            .job_start(
+                &json!({"command": command, "wait_ms": 20_000}),
+                &Call::detached(),
+            )
+            .unwrap();
+        assert!(t.elapsed() < Duration::from_secs(15), "{:?}", t.elapsed());
+        assert_eq!(r["running"], false);
+        assert_eq!(r["exit_code"], 4);
+        assert_eq!(r["forgotten"], true);
+        assert!(
+            r["stdout"]["data"].as_str().unwrap().contains("hello"),
+            "{r}"
+        );
+        assert!(
+            r["stderr"]["data"].as_str().unwrap().contains("oops"),
+            "{r}"
+        );
+        assert!(ids(&host).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn job_start_streams_while_it_waits_and_a_long_job_keeps_running_after_the_wait() {
+        let dir = temp("jobs-stream");
+        let host = host_in(&dir);
+        let seen: Arc<Mutex<Vec<Value>>> = Arc::default();
+        let call = Call {
+            token: Some(json!("t1")),
+            cancelled: Arc::default(),
+            seq: AtomicU64::new(0),
+            notify: {
+                let seen = seen.clone();
+                Arc::new(move |v: &Value| seen.lock().unwrap().push(v.clone()))
+            },
+        };
+        let command = if cfg!(windows) {
+            "Write-Output one; Start-Sleep -Seconds 30"
+        } else {
+            "echo one; sleep 30"
+        };
+        let r = host
+            .job_start(&json!({"command": command, "wait_ms": 1500}), &call)
+            .unwrap();
+        assert_eq!(r["running"], true);
+        assert_eq!(r["forgotten"], false);
+        let streamed: String = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v["params"]["message"].as_str().map(str::to_string))
+            .collect();
+        assert!(streamed.contains("one"), "{streamed}");
+        // What was streamed is not answered again; the offsets continue after it.
+        assert_eq!(r["stdout"]["data"], "");
+        assert!(r["stdout"]["next_offset"].as_u64().unwrap() >= 3);
+        let id = r["job"].as_str().unwrap().to_string();
+        assert_eq!(ids(&host).get(&id), Some(&true));
+        host.job_stop(&json!({"job": id, "grace_ms": 200})).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cancelling_a_waiting_job_start_ends_the_job() {
+        let dir = temp("jobs-cancel");
+        let host = host_in(&dir);
+        let call = Call::detached();
+        let cancel = call.cancelled.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            cancel.store(true, Ordering::Relaxed);
+        });
+        let sleep = if cfg!(windows) {
+            "Start-Sleep -Seconds 60"
+        } else {
+            "sleep 60"
+        };
+        let t = Instant::now();
+        let r = host
+            .job_start(&json!({"command": sleep, "wait_ms": 60_000}), &call)
+            .unwrap();
+        assert!(t.elapsed() < Duration::from_secs(10));
+        assert_eq!(r["cancelled"], true);
+        assert_eq!(r["running"], false);
+        assert!(ids(&host).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_finished_job_reports_its_exit_and_end_all_ends_running_ones() {
         let dir = temp("jobs-end");
         let host = host_in(&dir);
-        let quick = host.job_start(&json!({"command": "exit 3"})).unwrap();
+        let quick = host
+            .job_start(&json!({"command": "exit 3"}), &Call::detached())
+            .unwrap();
         let id = quick["job"].as_str().unwrap();
         let r = host
             .job_read(&json!({"job": id, "wait_ms": 10_000}), &Call::detached())
@@ -453,7 +713,8 @@ mod tests {
         } else {
             "sleep 60"
         };
-        host.job_start(&json!({"command": sleep})).unwrap();
+        host.job_start(&json!({"command": sleep}), &Call::detached())
+            .unwrap();
         host.jobs.end_all();
         assert!(ids(&host).is_empty());
         let _ = std::fs::remove_dir_all(&dir);

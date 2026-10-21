@@ -13,9 +13,9 @@ use super::{Call, Host, arg_str, shell_name, shown, tool};
 
 const TIMEOUT_DEFAULT_S: u64 = 120;
 /// Output pushed as one progress notification once this much is waiting…
-const PUSH_BYTES: usize = 32 << 10;
+pub(super) const PUSH_BYTES: usize = 32 << 10;
 /// …or this long after the last push.
-const PUSH_EVERY: Duration = Duration::from_millis(100);
+pub(super) const PUSH_EVERY: Duration = Duration::from_millis(100);
 /// Streamed per stream at most (a runaway log must not flood the link); the rest is counted, not sent.
 const PUSH_MAX: usize = 16 << 20;
 
