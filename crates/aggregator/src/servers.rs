@@ -518,38 +518,54 @@ async fn start_once(
         read_only: agg.cfg.read_only,
         open_web: def.open_web(),
     };
-    let (policy, std_cmd) = if agg.cfg.full {
+    let (policy, std_cmd, pipe) = if agg.cfg.full {
         // 完全访问 (§6.4): the person's own rights and environment, no sandbox.
         let mut cmd = std::process::Command::new(&program);
         cmd.args(&args).current_dir(&home);
         for (k, v) in &env {
             cmd.env(k, v);
         }
-        (json!({"full": true}), cmd)
+        (json!({"full": true}), cmd, None)
     } else {
         let policy = agg
             .sandbox
             .policy(&launch)
             .map_err(StartError::Unavailable)?;
-        let cmd = agg
+        let confined = agg
             .sandbox
-            .command(&launch)
+            .stdio_command(&launch)
             .map_err(StartError::Unavailable)?;
-        (policy, cmd)
+        (policy, confined.command, confined.pipe)
     };
     agg.audit_server_start(def, &program, &args, &policy);
     let mut cmd = tokio::process::Command::from(std_cmd);
     #[cfg(unix)]
     cmd.process_group(0);
     cmd.kill_on_drop(true);
+    let handler = Downstream {
+        name: def.name.clone(),
+        agg: Arc::downgrade(agg),
+    };
+    #[cfg(windows)]
+    if let Some(pipe) = pipe {
+        return piped::start(server, cmd, pipe, handler).await;
+    }
+    #[cfg(not(windows))]
+    let _ = pipe;
     let (transport, stderr) = rmcp::transport::TokioChildProcess::builder(cmd)
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| StartError::Failed(format!("没能启动：{e}")))?;
     let pid = transport.id();
+    started(server, pid, stderr);
+    handshake(server, handler, transport, pid).await
+}
+
+/// The start line and the server's stderr into its log.
+fn started(server: &Arc<Server>, pid: Option<u32>, stderr: Option<tokio::process::ChildStderr>) {
     server.log(&format!(
         "[agentrouter] started {} (pid {})",
-        def.shown(),
+        server.def.shown(),
         pid.map(|p| p.to_string()).unwrap_or_default()
     ));
     if let Some(stderr) = stderr {
@@ -561,10 +577,19 @@ async fn start_once(
             }
         });
     }
-    let handler = Downstream {
-        name: def.name.clone(),
-        agg: Arc::downgrade(agg),
-    };
+}
+
+/// MCP `initialize` over the server's transport, within [`HANDSHAKE`] and until the server is stopped.
+async fn handshake<T, E, A>(
+    server: &Arc<Server>,
+    handler: Downstream,
+    transport: T,
+    pid: Option<u32>,
+) -> Result<(Running, Option<u32>), StartError>
+where
+    T: rmcp::transport::IntoTransport<RoleClient, E, A>,
+    E: std::error::Error + Send + Sync + 'static,
+{
     let running = tokio::select! {
         r = tokio::time::timeout(HANDSHAKE, handler.serve(transport)) => match r {
             Ok(Ok(running)) => running,
@@ -583,6 +608,96 @@ async fn start_once(
         }
     };
     Ok((running, pid))
+}
+
+/// Windows folder mode (#112): the confined server's stdin and stdout travel over the sandbox crate's named pipe,
+/// because srt-win gives a sandboxed child an empty stdin. The sandbox entry inside connects to it and relays; the
+/// child's own stdout carries nothing and its stderr is the server's log, as elsewhere.
+#[cfg(windows)]
+mod piped {
+    use std::pin::Pin;
+    use std::sync::Arc;
+    use std::task::{Context, Poll};
+
+    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+    use tokio::net::windows::named_pipe::NamedPipeServer;
+    use tokio::process::Child;
+
+    use super::{Downstream, HANDSHAKE, Running, Server, StartError, handshake, started};
+
+    /// The pipe as the MCP transport; it owns the confined process, which ends (kill on drop) with the transport.
+    struct PipeTransport {
+        pipe: NamedPipeServer,
+        _child: Child,
+    }
+
+    impl AsyncRead for PipeTransport {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.get_mut().pipe).poll_read(cx, buf)
+        }
+    }
+
+    impl AsyncWrite for PipeTransport {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            Pin::new(&mut self.get_mut().pipe).poll_write(cx, buf)
+        }
+        fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.get_mut().pipe).poll_flush(cx)
+        }
+        fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.get_mut().pipe).poll_shutdown(cx)
+        }
+    }
+
+    pub(super) async fn start(
+        server: &Arc<Server>,
+        mut cmd: tokio::process::Command,
+        pipe: agentrouter_sandbox::StdioPipe,
+        handler: Downstream,
+    ) -> Result<(Running, Option<u32>), StartError> {
+        use std::os::windows::io::IntoRawHandle;
+        // SAFETY: an overlapped named pipe server end that nothing else owns (agentrouter_sandbox::StdioPipe).
+        let pipe = unsafe { NamedPipeServer::from_raw_handle(pipe.handle.into_raw_handle()) }
+            .map_err(|e| StartError::Failed(format!("本机工具的输入输出通道打不开：{e}")))?;
+        let mut child = cmd
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| StartError::Failed(format!("没能启动：{e}")))?;
+        let pid = child.id();
+        started(server, pid, child.stderr.take());
+        tokio::select! {
+            r = tokio::time::timeout(HANDSHAKE, pipe.connect()) => match r {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => return Err(StartError::Failed(format!("本机工具没连上输入输出通道：{e}"))),
+                Err(_) => return Err(StartError::Failed("本机工具没连上输入输出通道（超时）".into())),
+            },
+            status = child.wait() => {
+                let status = status.map(|s| s.to_string()).unwrap_or_else(|e| e.to_string());
+                return Err(StartError::Failed(format!("本机工具在连上输入输出通道之前退出了（{status}）")));
+            }
+            _ = server.stop.cancelled() => return Err(StartError::Failed("已停止".into())),
+        }
+        handshake(
+            server,
+            handler,
+            PipeTransport {
+                pipe,
+                _child: child,
+            },
+            pid,
+        )
+        .await
+    }
 }
 
 /// End the server's whole process tree (it runs in its own process group on Unix; on Windows srt runs it as the
