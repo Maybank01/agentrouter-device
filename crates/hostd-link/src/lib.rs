@@ -12,6 +12,8 @@
 //!          gateway → device  {"op": "welcome", "link": "lnk_…"} | {"op": "error", "code", "message"} | {"op": "revoked", "reason"}
 //!          either way        {"op": "close", "s": "<session>"}
 //!          device → gateway  {"op": "audit_head", "seq": n, "hash": "<sha256>"}
+//!          device → gateway  {"op": "load", "cpu_percent", "load1", "free_memory_mb", "free_disk_mb", "environments",
+//!                             "free_slots"}   (every heartbeat; static `capacity` and `labels` ride in `link`)
 //!          (`link` also carries `folders`, `readOnly`, `full` and `placement`: `pc` | `cloud`, HOSTD-MCP §13.1)
 //!          gateway → device  {"op": "port_open", "id": "pst_…", "port": n, "ticket": "…"}   (a preview stream, [`port`])
 //!          device → gateway  {"op": "port_error", "id": "pst_…", "code": "PORT_CLOSED" | …}
@@ -75,6 +77,11 @@ pub struct LinkInfo {
     /// Where this `hostd` runs (HOSTD-MCP §13.1): `pc` (the person's computer) or `cloud` (a cloud sandbox,
     /// started by its entrypoint with a platform-issued host token).
     pub placement: String,
+    /// What this host can take (Cloud VISION §4 D1, `agentrouter_device::capacity`): cores, memory, disk, GPUs and how
+    /// many environments; null when not measured.
+    pub capacity: Value,
+    /// `{os, arch, tools, runtimes, custom}` (the owner's own labels in `custom`); null when not measured.
+    pub labels: Value,
 }
 
 impl LinkInfo {
@@ -91,6 +98,8 @@ impl LinkInfo {
             "folders": self.folders,
             "full": self.full,
             "placement": self.placement,
+            "capacity": self.capacity,
+            "labels": self.labels,
         })
     }
 }
@@ -121,6 +130,9 @@ pub enum TokenError {
 pub type TokenSource = Arc<dyn Fn() -> Result<String, TokenError> + Send + Sync>;
 /// The audit chain head as `{seq, hash}`.
 pub type AuditHead = Arc<dyn Fn() -> Value + Send + Sync>;
+
+/// This host's live load for the heartbeat (`agentrouter_device::capacity::LoadMeter`).
+pub type Load = Arc<dyn Fn() -> Value + Send + Sync>;
 
 /// The token of the paired identity in the key store.
 pub fn keystore_tokens(gateway: String) -> TokenSource {
@@ -161,6 +173,8 @@ pub struct Options {
     pub info: LinkInfo,
     pub tokens: TokenSource,
     pub audit_head: AuditHead,
+    /// Sent as `{"op": "load", …}` with every heartbeat (Cloud VISION §4 D1); None sends nothing.
+    pub load: Option<Load>,
 }
 
 /// What the link reports to its consumer.
@@ -510,6 +524,15 @@ async fn connection(
             _ = heartbeat.tick(), if *welcomed => {
                 if let Err(e) = ws.send(Message::text(head(options).to_string())).await {
                     break Conn::Lost(e.to_string());
+                }
+                if let Some(load) = &options.load {
+                    let mut frame = load();
+                    if let Some(map) = frame.as_object_mut() {
+                        map.insert("op".into(), json!("load"));
+                        if let Err(e) = ws.send(Message::text(frame.to_string())).await {
+                            break Conn::Lost(e.to_string());
+                        }
+                    }
                 }
             }
             _ = sleep(silence) => {

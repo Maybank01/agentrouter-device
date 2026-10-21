@@ -180,6 +180,8 @@ control  device → gateway  {"op": "hello", "v": 2, "token": "ldt_…", "link":
          gateway → device  {"op": "welcome", "link": "lnk_…"} | {"op": "error", "code"} | {"op": "revoked", "reason"}
          either way        {"op": "close", "s": "<session>"}                              (session ended)
          device → gateway  {"op": "audit_head", "seq": n, "hash": "<sha256>"}            (§7, every heartbeat)
+         device → gateway  {"op": "load", cpu_percent, load1, free_memory_mb, free_disk_mb,
+                            environments, free_slots}                                  (every heartbeat)
 ```
 
 `hello.link` = `{id, folder: "<display name of the first folder>", folders: ["<real absolute path>", …], full,
@@ -189,6 +191,18 @@ the link's home (relative paths resolve there). In 完全访问 `full` is `true`
 command line (checkpointed, §7.2) or the start folder, and `sandbox` is `""` (nothing is confined, §6.4). The `lnk_`
 id is derived from device id + the first folder's canonical path (`full:` + it in 完全访问), so adding a folder keeps
 the id.
+
+**Capacity and labels (Cloud VISION §4 D1).** The platform places work by what `hostd` reports and never estimates it
+(`agentrouter_device::capacity`). `hello.link` and `host__info` also carry:
+- `capacity` = `{cores, physical_cores, memory_mb, disk_mb, gpus: [{vendor, name, memory_mb}], environments}`.
+  `disk_mb` is the disk that holds the home folder. GPUs are NVIDIA ones from `nvidia-smi` (any OS) and Apple silicon.
+  `environments` is how many Agents' workplaces this host takes at once: `config.json` `max_environments`, else one
+  per two cores and 4 GiB of memory, at least one.
+- `labels` = `{os, arch, tools, runtimes, custom}`. `tools` and `runtimes` are the names a task's `requires` uses,
+  found on PATH. `custom` holds the owner's own labels from `config.json` `labels` (`gpu`, `rack-2`, 「我的渲染机」).
+
+The `load` frame goes with every heartbeat. An environment is a conversation with an open MCP session on this
+host. `load1` is null on Windows. `free_slots` = `environments` capacity minus running ones.
 
 ```text
          device → gateway  {"op": "info", "link": {…same fields as hello.link, same id…}}  (the folders changed)

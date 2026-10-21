@@ -108,6 +108,10 @@ pub struct Config {
     pub headless: bool,
     /// The folder the double-click start links (chosen once in the folder picker, then reused; `start.rs`).
     pub start_folder: Option<String>,
+    /// The owner's labels for this host (`gpu`, `rack-2`, 「我的渲染机」), reported with its capacity (`capacity.rs`).
+    pub labels: Vec<String>,
+    /// How many environments (Agents' workplaces) this host takes at once; unset = from cores and memory.
+    pub max_environments: Option<u32>,
 }
 
 impl Default for Config {
@@ -120,6 +124,8 @@ impl Default for Config {
             unattended: false,
             headless: false,
             start_folder: None,
+            labels: Vec::new(),
+            max_environments: None,
         }
     }
 }

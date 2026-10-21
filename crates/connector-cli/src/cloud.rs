@@ -228,7 +228,11 @@ pub fn link(opts: CloudOptions, interrupted: &'static AtomicBool) -> i32 {
         folders: shown,
         full: true,
         placement: "cloud".into(),
+        capacity: agentrouter_device::capacity::capacity(&first, None),
+        labels: agentrouter_device::capacity::labels(&[]),
     };
+    let meter = Arc::new(agentrouter_device::capacity::LoadMeter::new(None));
+    let load_home = first.clone();
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -263,11 +267,13 @@ pub fn link(opts: CloudOptions, interrupted: &'static AtomicBool) -> i32 {
             }),
         );
         let for_head = agg.clone();
+        let for_load = agg.clone();
         let (handle, mut events) = agentrouter_hostd_link::start(agentrouter_hostd_link::Options {
             gateway,
             info,
             tokens: agentrouter_hostd_link::host_token(token_file, token_value),
             audit_head: Arc::new(move || for_head.audit_head()),
+            load: Some(Arc::new(move || meter.sample(&load_home, for_load.environments()))),
         });
         let _ = handle_cell.set(handle.clone());
 

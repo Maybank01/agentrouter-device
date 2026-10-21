@@ -588,7 +588,13 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
         folders: folders.iter().map(|f| shown(f)).collect(),
         full: opts.full,
         placement: "pc".into(),
+        capacity: agentrouter_device::capacity::capacity(&first, cfg.max_environments),
+        labels: agentrouter_device::capacity::labels(&cfg.labels),
     };
+    let meter = Arc::new(agentrouter_device::capacity::LoadMeter::new(
+        cfg.max_environments,
+    ));
+    let load_home = first.clone();
     let computer = cfg.name.clone();
     let code = runtime.block_on(async move {
         let console = Arc::new(Console {
@@ -626,11 +632,13 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
             }),
         );
         let for_head = agg.clone();
+        let for_load = agg.clone();
         let (handle, mut events) = agentrouter_hostd_link::start(agentrouter_hostd_link::Options {
             gateway: gateway.clone(),
             info,
             tokens: agentrouter_hostd_link::keystore_tokens(gateway),
             audit_head: Arc::new(move || for_head.audit_head()),
+            load: Some(Arc::new(move || meter.sample(&load_home, for_load.environments()))),
         });
         let _ = handle_cell.set(handle.clone());
         let _ = console.handle.set(handle.clone());

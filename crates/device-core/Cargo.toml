@@ -19,6 +19,7 @@ serde_json.workspace = true
 sha2 = "0.11"
 agentrouter-sandbox.workspace = true
 ureq = { version = "3", default-features = false, features = ["json"] }
+sysinfo = { version = "0.39", default-features = false, features = ["system", "disk"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

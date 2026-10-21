@@ -192,6 +192,8 @@ mod tests {
             folders: vec![],
             full: false,
             placement: "pc".into(),
+            capacity: serde_json::Value::Null,
+            labels: serde_json::Value::Null,
         };
         assert!(!allowed(&info));
         info.full = true;
