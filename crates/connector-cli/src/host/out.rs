@@ -79,7 +79,20 @@ pub(super) struct Out {
 
 impl Default for Out {
     fn default() -> Out {
-        Out::at(std::env::temp_dir().join("agentrouter-out"))
+        // The temp folder as the link's commands see it (folder mode points it at the link's scratch folder). Only data
+        // is written there; nothing runs from it (docs/AV-HYGIENE.md).
+        let temp = ["TMPDIR", "TEMP", "TMP"]
+            .iter()
+            .find_map(|k| std::env::var_os(k).filter(|v| !v.is_empty()))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                if cfg!(windows) {
+                    std::env::current_dir().unwrap_or_default()
+                } else {
+                    PathBuf::from("/tmp")
+                }
+            });
+        Out::at(temp.join("agentrouter-out"))
     }
 }
 
@@ -301,6 +314,8 @@ mod tests {
         std::thread::sleep(Duration::from_millis(20));
         let (b, mut fb) = out.create("ses-2", "y.txt").unwrap();
         fb.write_all(&[b'b'; 100]).unwrap();
+        // Windows deletes no open file (a running job's copy stays until it ends).
+        drop((fa, fb));
         out.caps(AGE, 150);
         assert!(!a.exists() && b.exists(), "the oldest goes first");
         assert!(out.release("ses-2") && !b.exists());

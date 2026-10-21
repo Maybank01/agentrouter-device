@@ -479,6 +479,8 @@ mod tests {
             ("pty_close", false),
             ("info", true),
             ("changes", true),
+            ("spill_write", false),
+            ("out_release", false),
         ];
         let list = tools();
         let got: Vec<(&str, bool)> = list
