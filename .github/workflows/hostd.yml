@@ -56,7 +56,7 @@ jobs:
         run: |
           bin=target/${{ matrix.target }}/release/agentrouter
           file "$bin"
-          file "$bin" | grep -Eq 'static(-pie)? linked'
+          file "$bin" | grep -Eq 'statically linked|static-pie linked'
           if ldd "$bin" 2>/dev/null | grep -q '=>'; then echo "dynamically linked"; exit 1; fi
           "$bin" version
           # Cloud mode refuses to start without its platform inputs (exit 2), and never waits for a prompt.
