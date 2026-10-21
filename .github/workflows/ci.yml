@@ -137,7 +137,10 @@ jobs:
         shell: bash
         run: |
           for tool in node npm npx corepack uv uvx; do
-            { which -a "$tool" 2>/dev/null || true; } | sort -u | while read -r p; do sudo mv "$p" "$p.hidden-by-ci"; done
+            { which -a "$tool" 2>/dev/null || true; } | sort -u | while read -r p; do
+              # /bin and /usr/bin can be one folder: the second name is gone once the first is moved.
+              if [ -e "$p" ] || [ -L "$p" ]; then sudo mv "$p" "$p.hidden-by-ci"; fi
+            done
           done
           hash -r
           for tool in node npx uvx; do
