@@ -35,6 +35,9 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 
+  # Merge-path budget (Cloud #2479, owner 2026-10-21 「几分钟我都嫌久了」): a PR runs fmt, clippy and tests on the Rust
+  # cache (p90 ~2.5 min); the release build, version resource check, npm packages and the artifact (~2 min more) run
+  # after the merge, on the push to main. The job name stays: it is the required check.
   windows:
     name: Windows (command line + unsigned build)
     runs-on: windows-latest
@@ -49,8 +52,10 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
       - name: Release build
+        if: github.event_name != 'pull_request'
         run: cargo build --release --locked -p agentrouter-device-cli
       - name: Version resource present (docs/AV-HYGIENE.md)
+        if: github.event_name != 'pull_request'
         shell: pwsh
         run: |
           foreach ($exe in 'target/release/agentrouter.exe', 'target/release/agentrouter-device.exe') {
@@ -59,6 +64,7 @@ jobs:
             if (-not $v.CompanyName -or -not $v.ProductName -or -not $v.FileVersion -or -not $v.FileDescription) { throw "$exe has no complete version resource" }
           }
       - name: npm packages (built and installed from local tarballs; publishing is M2)
+        if: github.event_name != 'pull_request'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -74,6 +80,7 @@ jobs:
           "npx agentrouter version -> $v"
           if ($v -notmatch '^agentrouter \d+\.\d+\.\d+') { throw 'the npm wrapper did not run the binary' }
       - name: Collect
+        if: github.event_name != 'pull_request'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
@@ -86,6 +93,7 @@ jobs:
           Get-ChildItem dist | Format-Table Name, Length
           Get-FileHash dist/*.exe -Algorithm SHA256 | Format-Table Hash, Path
       - uses: actions/upload-artifact@v7
+        if: github.event_name != 'pull_request'
         with:
           name: agentrouter-windows-x64-unsigned
           path: dist/
