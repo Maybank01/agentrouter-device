@@ -6,9 +6,11 @@
 //!
 //! `job_start` with `wait_ms` also waits for the end (Cloud #2307: a bound session runs every command as a job, so a
 //! long one outlives any single call, while a short one still costs one call): while it waits, the output streams as
-//! progress exactly like `exec`; the answer is `job_read`'s shape from what was not streamed; a job that ended inside
-//! the wait and whose output was all answered is forgotten (`forgotten: true`, nothing to stop). Cancelling the call
-//! while it waits ends the job, as cancelling `exec` does.
+//! progress like `exec` (for watching: the end's output is never only in progress, which can lose the race with the
+//! answer); the answer is `job_read`'s shape and repeats the whole output when a stream fits (≤ 1 MiB), so it is the
+//! record and the client keeps what it lacks by the offsets; a job that ended inside the wait and whose output was all
+//! answered is forgotten (`forgotten: true`, nothing to stop). Cancelling the call while it waits ends the job, as
+//! cancelling `exec` does.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -396,7 +398,9 @@ impl Host {
                 done = finished(&state, &mut exited);
             }
             let mut chunks = Vec::new();
-            if streams {
+            // The end's output goes in the answer, not as progress: a notification sent right before the answer can
+            // lose the race with it on the way (the aggregator and the client drop progress of a call that answered).
+            if streams && !done {
                 for (i, name) in [(0usize, "stdout"), (1usize, "stderr")] {
                     if state.out[i].end() <= sent[i] {
                         continue;
@@ -434,9 +438,12 @@ impl Host {
                 break false;
             }
         };
+        // The answer repeats what was streamed when it all fits (≤ 1 MiB a stream): progress is for watching, the answer
+        // is the record, and the client keeps what it has not seen by the offsets.
         let state = job.state.lock().unwrap();
-        let stdout = state.out[0].read(sent[0], READ_DEFAULT as usize, done);
-        let stderr = state.out[1].read(sent[1], READ_DEFAULT as usize, done);
+        let from = |i: usize| if sent[i] <= READ_DEFAULT { 0 } else { sent[i] };
+        let stdout = state.out[0].read(from(0), READ_DEFAULT as usize, done);
+        let stderr = state.out[1].read(from(1), READ_DEFAULT as usize, done);
         let exit = state.exit;
         drop(state);
         let forgotten = done && stdout["more"] == json!(false) && stderr["more"] == json!(false);
@@ -660,8 +667,9 @@ mod tests {
             .filter_map(|v| v["params"]["message"].as_str().map(str::to_string))
             .collect();
         assert!(streamed.contains("one"), "{streamed}");
-        // What was streamed is not answered again; the offsets continue after it.
-        assert_eq!(r["stdout"]["data"], "");
+        // The answer repeats what was streamed (it is the record; the client keeps what it lacks by the offsets).
+        assert_eq!(r["stdout"]["offset"], 0);
+        assert!(r["stdout"]["data"].as_str().unwrap().contains("one"), "{r}");
         assert!(r["stdout"]["next_offset"].as_u64().unwrap() >= 3);
         let id = r["job"].as_str().unwrap().to_string();
         assert_eq!(ids(&host).get(&id), Some(&true));
