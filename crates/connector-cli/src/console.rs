@@ -769,6 +769,7 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
                     match event {
                         Event::Up { .. } => {
                             agg.link_up();
+                            crate::leases::after_welcome(&agg, &handle);
                             if opts.service {
                                 crate::service::record("online", "");
                             }
@@ -801,6 +802,7 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
                         }
                         Event::Data { s, m } => agg.on_message(&s, m),
                         Event::Close { s } => agg.on_close(&s),
+                        Event::LeaseLost { jobs } => crate::leases::lost(&agg, jobs, line),
                         Event::Ended(end) => {
                             if opts.service {
                                 crate::service::record("ended", &match &end {

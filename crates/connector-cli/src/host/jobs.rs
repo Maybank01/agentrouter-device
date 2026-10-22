@@ -55,6 +55,9 @@ pub(super) fn tools() -> Vec<Value> {
                 "wait_ms": {"type": "integer", "minimum": 0, "maximum": START_WAIT_MAX_MS},
                 "tag": {"type": "string", "maxLength": TAG_MAX},
                 "scope": {"type": "string", "maxLength": 64},
+                "lease": {"type": "object", "description": "The platform's control lease this job runs under (an instance and its epoch, Cloud PROJECT-SERVICE §4.8 \"Lease epochs\"): listed after the link reconnects, so a job whose instance ended meanwhile is stopped (lease_lost).", "properties": {
+                    "instance": {"type": "string"}, "epoch": {"type": "integer", "minimum": 1},
+                }, "required": ["instance", "epoch"]},
                 "output": {"type": "object", "properties": {
                     "stdout": {"$ref": "#/$defs/stream"}, "stderr": {"$ref": "#/$defs/stream"},
                 }},
@@ -78,16 +81,18 @@ pub(super) fn tools() -> Vec<Value> {
         ),
         tool(
             "job_stop",
-            "End a background job's whole process tree (a polite stop, then a kill after grace_ms, default 2000) and forget it.",
+            "End a background job's whole process tree (a polite stop, then a kill after grace_ms, default 2000) and forget it. With instance: only when the job runs under that instance's lease (else LEASE_MISMATCH); reason is answered back.",
             json!({"type": "object", "properties": {
                 "job": {"type": "string"},
                 "grace_ms": {"type": "integer", "minimum": 0, "maximum": 30_000},
+                "instance": {"type": "string"},
+                "reason": {"type": "string", "maxLength": 64},
             }, "required": ["job"]}),
             false,
         ),
         tool(
             "jobs",
-            "The background jobs of this link: id, command, cwd, pid, running, exit code, output sizes.",
+            "The background jobs of this link: id, command, cwd, pid, running, exit code, output sizes, and the lease a platform instance's job runs under.",
             json!({"type": "object", "properties": {}}),
             true,
         ),
@@ -209,6 +214,8 @@ pub(super) struct Job {
     id: String,
     command: String,
     tag: Option<String>,
+    /// `{instance, epoch}`: the platform's control lease this job runs under (Cloud §4.8 "Lease epochs").
+    lease: Option<Value>,
     cwd: PathBuf,
     pid: u32,
     started: Instant,
@@ -270,7 +277,7 @@ impl Job {
         let state = self.state.lock().unwrap();
         json!({
             "job": self.id, "command": self.command, "tag": self.tag, "cwd": shown(&self.cwd), "pid": self.pid,
-            "running": state.exit.is_none(),
+            "lease": self.lease, "running": state.exit.is_none(),
             "exit_code": state.exit.and_then(|e| e.0), "signal": state.exit.and_then(|e| e.1),
             "ms": state.ended_ms.unwrap_or_else(|| self.started.elapsed().as_millis() as u64),
             "stdout_bytes": state.out[0].end(), "stderr_bytes": state.out[1].end(),
@@ -353,6 +360,7 @@ impl Host {
         if command.trim().is_empty() {
             return Err("command 不能是空的".into());
         }
+        let lease = lease_of(args)?;
         let cwd = self.work_dir("job_start", args)?;
         {
             let mut all = self.jobs.all.lock().unwrap();
@@ -379,6 +387,7 @@ impl Host {
             tag: arg_str(args, "tag")
                 .filter(|t| !t.is_empty() && t.len() <= TAG_MAX)
                 .map(str::to_string),
+            lease,
             cwd: cwd.clone(),
             pid: spawned.child.id(),
             started: Instant::now(),
@@ -618,6 +627,24 @@ impl Host {
 
     pub(super) fn job_stop(&self, args: &Value) -> Result<Value, String> {
         let job = self.jobs.get(arg_str(args, "job").unwrap_or(""))?;
+        // A stop on an instance's behalf (the platform's lease_lost after a reconnect) ends only that instance's job:
+        // job ids restart with hostd, so the id alone may name another job by now.
+        if let Some(instance) = arg_str(args, "instance") {
+            let runs_under = job
+                .lease
+                .as_ref()
+                .and_then(|l| l.get("instance"))
+                .and_then(Value::as_str);
+            if runs_under != Some(instance) {
+                return Err(format!(
+                    "LEASE_MISMATCH: {} runs under {}, not {instance}; nothing was stopped",
+                    job.id,
+                    runs_under.map_or("no instance's lease".to_string(), |i| format!(
+                        "the lease of {i}"
+                    ))
+                ));
+            }
+        }
         let grace = Duration::from_millis(
             args.get("grace_ms")
                 .and_then(Value::as_u64)
@@ -630,7 +657,14 @@ impl Host {
             .lock()
             .unwrap()
             .retain(|j| !Arc::ptr_eq(j, &job));
-        Ok(job.summary())
+        let mut answer = job.summary();
+        if let (Some(reason), Some(obj)) = (
+            arg_str(args, "reason").filter(|r| !r.is_empty() && r.len() <= 64),
+            answer.as_object_mut(),
+        ) {
+            obj.insert("reason".into(), json!(reason));
+        }
+        Ok(answer)
     }
 
     pub(super) fn jobs_list(&self) -> Result<Value, String> {
@@ -644,6 +678,28 @@ impl Host {
             .collect();
         Ok(json!({"jobs": all}))
     }
+}
+
+/// A job's `lease` argument: `{instance: ins_…|inst_…, epoch ≥ 1}` (Cloud §4.8 "Lease epochs"), or none.
+fn lease_of(args: &Value) -> Result<Option<Value>, String> {
+    let Some(lease) = args.get("lease").filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    let instance = lease.get("instance").and_then(Value::as_str).unwrap_or("");
+    let epoch = lease.get("epoch").and_then(Value::as_u64).unwrap_or(0);
+    let id_ok = ["ins_", "inst_"].iter().any(|p| {
+        instance.strip_prefix(p).is_some_and(|h| {
+            h.len() == 24
+                && h.bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        })
+    });
+    if !id_ok || epoch == 0 {
+        return Err(format!(
+            "lease is {{instance: ins_…|inst_… (24 hex), epoch: ≥ 1}}; got {lease}"
+        ));
+    }
+    Ok(Some(json!({"instance": instance, "epoch": epoch})))
 }
 
 /// Jobs by id for tests.
@@ -663,6 +719,59 @@ mod tests {
     use super::super::tests::{host_in, temp};
     use super::*;
     use std::sync::atomic::AtomicU64;
+
+    #[test]
+    fn a_job_under_an_instance_lease_is_listed_with_it_and_stopped_only_for_that_instance() {
+        let dir = temp("jobs-lease");
+        let host = host_in(&dir);
+        let command = if cfg!(windows) {
+            "Start-Sleep -Seconds 60"
+        } else {
+            "sleep 60"
+        };
+        let instance = format!("ins_{}", "a1".repeat(12));
+        let started = host
+            .job_start(
+                &json!({"command": command, "lease": {"instance": instance, "epoch": 3}}),
+                &Call::detached(),
+            )
+            .unwrap();
+        let id = started["job"].as_str().unwrap().to_string();
+        let listed = host.jobs_list().unwrap();
+        assert_eq!(
+            listed["jobs"][0]["lease"],
+            json!({"instance": instance, "epoch": 3})
+        );
+        // Another instance's stop (an id reused after a restart) stops nothing.
+        let other = format!("ins_{}", "b2".repeat(12));
+        let refused = host
+            .job_stop(&json!({"job": id, "instance": other}))
+            .unwrap_err();
+        assert!(refused.starts_with("LEASE_MISMATCH"), "{refused}");
+        assert_eq!(ids(&host).get(&id), Some(&true));
+        let stopped = host
+            .job_stop(
+                &json!({"job": id, "instance": instance, "reason": "lease_lost", "grace_ms": 100}),
+            )
+            .unwrap();
+        assert_eq!(
+            (stopped["running"].as_bool(), stopped["reason"].as_str()),
+            (Some(false), Some("lease_lost"))
+        );
+        // A malformed lease is refused before anything starts.
+        for bad in [
+            json!({"instance": "ins_x", "epoch": 1}),
+            json!({"instance": instance, "epoch": 0}),
+        ] {
+            assert!(
+                host.job_start(
+                    &json!({"command": command, "lease": bad}),
+                    &Call::detached()
+                )
+                .is_err()
+            );
+        }
+    }
 
     #[test]
     fn a_job_runs_on_its_output_is_read_by_offset_and_stop_ends_it() {

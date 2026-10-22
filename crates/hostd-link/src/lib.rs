@@ -17,6 +17,10 @@
 //!          (`link` also carries `folders`, `readOnly`, `full` and `placement`: `pc` | `cloud`, HOSTD-MCP §13.1)
 //!          gateway → device  {"op": "port_open", "id": "pst_…", "port": n, "ticket": "…"}   (a preview stream, [`port`])
 //!          device → gateway  {"op": "port_error", "id": "pst_…", "code": "PORT_CLOSED" | …}
+//!          device → gateway  {"op": "instances", "instances": [{instance, epoch, job}]}   (after each welcome: the running
+//!                             jobs that hold a platform instance's control lease, Cloud PROJECT-SERVICE §4.8 "Lease epochs")
+//!          gateway → device  {"op": "lease_lost", "jobs": [{job, instance, reason}]}   (those whose instance ended or
+//!                             runs another job by now: the consumer stops them, [`Event::LeaseLost`])
 //! ```
 //!
 //! Calls in flight when the link drops are not replayed: an answer produced while the link is down is dropped
@@ -198,6 +202,10 @@ pub enum Event {
     Data { s: String, m: Value },
     /// The cloud ended a session.
     Close { s: String },
+    /// Jobs this host still runs for platform instances that ended (or run another job) while the link was down:
+    /// `[{job, instance, reason}]`, at most [`LEASE_LOST_MAX`]. The consumer stops each one that runs under that
+    /// instance's lease.
+    LeaseLost { jobs: Vec<Value> },
     /// The link layer stopped for good (after this, no more events).
     Ended(End),
 }
@@ -229,6 +237,7 @@ enum Out {
         id: String,
         code: &'static str,
     },
+    Instances(Value),
 }
 
 type SharedInfo = std::sync::Arc<std::sync::Mutex<LinkInfo>>;
@@ -264,6 +273,12 @@ impl Handle {
     /// Close the link for good ([`End::Stopped`]).
     pub fn stop(&self) {
         let _ = self.stop.send(true);
+    }
+
+    /// The running jobs that hold a platform instance's control lease (`[{instance, epoch, job}]`), sent once the link
+    /// is welcomed; the platform answers the stale ones with `lease_lost` ([`Event::LeaseLost`]).
+    pub fn instances(&self, list: Value) {
+        let _ = self.out.send(Out::Instances(list));
     }
 }
 
@@ -523,6 +538,7 @@ async fn connection(
                     Out::Close { s } => json!({"op": "close", "s": s}),
                     Out::Info => json!({"op": "info", "link": info.lock().unwrap().to_json()}),
                     Out::PortError { id, code } => json!({"op": "port_error", "id": id, "code": code}),
+                    Out::Instances(list) => json!({"op": "instances", "instances": list}),
                 };
                 let text = frame.to_string();
                 if text.len() > FRAME_MAX {
@@ -573,6 +589,9 @@ enum Inbound {
     PortOpen(port::Open),
 }
 
+/// Jobs one `lease_lost` frame may name (a host runs at most 32 jobs).
+pub const LEASE_LOST_MAX: usize = 64;
+
 /// Codes after which retrying is pointless: the link layer ends with [`End::Refused`].
 const FINAL_CODES: &[&str] = &[
     "DEVICE_OUTDATED",
@@ -612,6 +631,26 @@ fn on_text(text: &str, events: &mpsc::UnboundedSender<Event>) -> Inbound {
         }
         "revoked" => Inbound::End(End::Revoked(field("reason"))),
         "port_open" => port::parse(&frame).map_or(Inbound::None, Inbound::PortOpen),
+        "lease_lost" => {
+            let jobs: Vec<Value> = frame
+                .get("jobs")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter(|j| {
+                            j.get("job").and_then(Value::as_str).is_some()
+                                && j.get("instance").and_then(Value::as_str).is_some()
+                        })
+                        .take(LEASE_LOST_MAX)
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !jobs.is_empty() {
+                let _ = events.send(Event::LeaseLost { jobs });
+            }
+            Inbound::None
+        }
         "error" => {
             let code = field("code");
             let message = field("message");
@@ -707,5 +746,24 @@ mod tests {
             Inbound::Lost(_)
         ));
         assert!(matches!(on_text("not json", &tx), Inbound::None));
+        // lease_lost: the named jobs (malformed entries dropped); nothing when none is left.
+        assert!(matches!(
+            on_text(
+                r#"{"op":"lease_lost","jobs":[{"job":"job-3","instance":"ins_a","reason":"ended"},{"job":"job-4"}]}"#,
+                &tx
+            ),
+            Inbound::None
+        ));
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            Event::LeaseLost {
+                jobs: vec![json!({"job":"job-3","instance":"ins_a","reason":"ended"})]
+            }
+        );
+        assert!(matches!(
+            on_text(r#"{"op":"lease_lost","jobs":[]}"#, &tx),
+            Inbound::None
+        ));
+        assert!(rx.try_recv().is_err());
     }
 }

@@ -313,6 +313,7 @@ pub fn link(opts: CloudOptions, interrupted: &'static AtomicBool) -> i32 {
                     match event {
                         Event::Up { link } => {
                             agg.link_up();
+                            crate::leases::after_welcome(&agg, &handle);
                             downs = 0;
                             line(&format!("link up {link}"));
                         }
@@ -325,6 +326,7 @@ pub fn link(opts: CloudOptions, interrupted: &'static AtomicBool) -> i32 {
                         }
                         Event::Data { s, m } => agg.on_message(&s, m),
                         Event::Close { s } => agg.on_close(&s),
+                        Event::LeaseLost { jobs } => crate::leases::lost(&agg, jobs, line),
                         Event::Ended(end) => {
                             break match end {
                                 End::Stopped => 0,
