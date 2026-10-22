@@ -245,7 +245,6 @@ pub fn link(opts: CloudOptions, interrupted: &'static AtomicBool) -> i32 {
         resources: Value::Null,
         software: Value::Null,
         local_data: Value::Null,
-        rules: Value::Null,
     };
     let meter = Arc::new(agentrouter_device::capacity::LoadMeter::new(None));
     let load_home = first.clone();

@@ -124,9 +124,9 @@ pub struct Config {
     /// Named local data (Cloud DEVICES §2.5): folders the person registered once with a name (`agentrouter data add`),
     /// reported as `link.localData` and, in folder mode, inside the link's grants.
     pub local_data: Vec<crate::local_data::LocalData>,
-    /// The owner's usage rules for this computer (Cloud DEVICES §3.1, `agentrouter rules set`): reported as
-    /// `link.rules` and enforced by this host on every session and call. Unset = the defaults (every own Agent).
-    pub rules: crate::rules::Rules,
+    // `rules` (the former recipe lists, `agentrouter rules set`) is gone (Cloud #2836): which Agent may use this computer
+    // is the grant of its device space. A config.json an older version saved with `rules` still reads (serde skips it)
+    // until the minimum device version moves past it.
 }
 
 impl Default for Config {
@@ -145,7 +145,6 @@ impl Default for Config {
             limits: Default::default(),
             software: Default::default(),
             local_data: Vec::new(),
-            rules: Default::default(),
         }
     }
 }
@@ -200,6 +199,15 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_config_an_older_version_saved_with_recipe_lists_still_reads() {
+        let text = r#"{"name":"书房","labels":["game"],"rules":{"agents":["w_me/agents/剪辑"],"local_data":{"素材":[]}}}"#;
+        let cfg: Config = serde_json::from_str(text).unwrap();
+        assert_eq!(cfg.name, "书房");
+        assert_eq!(cfg.labels, vec!["game".to_string()]);
+        assert!(serde_json::to_value(&cfg).unwrap().get("rules").is_none());
+    }
 
     #[test]
     fn a_pool_is_sent_only_when_it_is_a_usable_name() {

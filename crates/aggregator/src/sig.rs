@@ -48,10 +48,6 @@ pub fn params_digest(params: &Value) -> String {
 /// top-level param, so the v3 digest signs it.
 pub const ACCOUNT_PARAM: &str = "agentrouter.top/account";
 
-/// The `initialize` param that names the person's own recipe the session runs (`<space>/<path>@<version>`; absent for
-/// the Main Agent and platform Agents), signed the same way: checked against the owner's rules (DEVICES §3.1).
-pub const RECIPE_PARAM: &str = "agentrouter.top/recipe";
-
 /// The string the control plane signs to tell a link whose it is (the gateway's `welcome` carries it as `owner`):
 ///
 /// ```text
