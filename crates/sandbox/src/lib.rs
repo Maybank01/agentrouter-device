@@ -790,6 +790,10 @@ impl Runtime {
             ("PIP_CACHE_DIR".to_string(), p("pip")),
         ];
         if !cfg!(windows) {
+            // srt hands its child TMPDIR = CLAUDE_CODE_TMPDIR, else /tmp/claude, which bubblewrap can only make writable
+            // when it already exists on the host (#130: missing on a person's Ubuntu, so `<temp>/agentrouter-run`
+            // failed read-only). One temp folder: the scratch one the policy grants. (srt drops TMPDIR on Windows.)
+            env.push(("CLAUDE_CODE_TMPDIR".to_string(), p("tmp")));
             env.push(("XDG_CACHE_HOME".to_string(), p("cache")));
             // A home of its own: servers that keep state in `~` (DesktopCommander's `~/.claude-server-commander`,
             // #63) can start; the person's real home stays readable (minus the secrets) but not writable. On Windows
