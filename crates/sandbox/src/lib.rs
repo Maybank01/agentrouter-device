@@ -9,9 +9,10 @@
 //! the device's own pinned copies ([`runtimes`], #116): the person installs nothing.
 //!
 //! - macOS: Seatbelt (`sandbox-exec`) profile; no setup.
-//! - Linux: bubblewrap + a network namespace. srt's ripgrep and socat are the device's own pinned copies (#119);
-//!   `bwrap` is the distribution's (on Ubuntu 24.04+ only the packaged one may create user namespaces), and when it is
-//!   missing [`Runtime::status`] names the one-line install command for this distribution ([`NEEDS_ADMIN`]).
+//! - Linux: bubblewrap + a network namespace. bubblewrap, and srt's ripgrep and socat, are the device's own pinned
+//!   copies (#119, #122); the person installs nothing. Where AppArmor restricts unprivileged user namespaces (Ubuntu
+//!   23.10+), the bubblewrap that runs is a root-owned copy that one AppArmor profile lets make them ([`userns`]), set
+//!   up by one admin line that [`Runtime::status`] names ([`NEEDS_ADMIN`]).
 //! - Windows (alpha upstream): the command runs as the dedicated `srt-sandbox` account (one elevated setup:
 //!   [`Runtime::setup`]); write access is explicit ACEs on the folder and the scratch folder, network is a WFP
 //!   fence keyed on that account. srt-win gives the child a fresh environment and runs it through `cmd /c`, so the
@@ -39,6 +40,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 pub mod runtimes;
+pub mod userns;
 
 /// The npm package and the exact version the device runs (re-vet licence, release notes and Windows status on each
 /// bump; the lockfile in `runtime/` pins every dependency's integrity).
@@ -134,10 +136,37 @@ impl std::fmt::Display for Unavailable {
     }
 }
 
-/// Allows capability-bearing unprivileged user namespaces now and after a restart (srt README, "Ubuntu 24.04+ note":
-/// bubblewrap and srt's seccomp layer need them; the AppArmor restriction strips their capabilities).
+/// User namespaces the sandbox cannot get, and the one admin line that gives them (#122). Where AppArmor restricts them,
+/// the line installs the profile for the device's root-owned bubblewrap ([`userns::install`]). Where a kernel switch
+/// refuses them, the line is that switch.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-const USERNS_LINE: &str = "echo kernel.apparmor_restrict_unprivileged_userns=0 | sudo tee /etc/sysctl.d/60-agentrouter-userns.conf && sudo sysctl -p /etc/sysctl.d/60-agentrouter-userns.conf";
+fn userns_needs_admin(detail: Option<&str>) -> Unavailable {
+    let seen = detail.map(|d| format!("（{d}）")).unwrap_or_default();
+    if userns::restricted() {
+        return Unavailable::needs_admin(
+            format!(
+                "这台电脑只让登记过的程序建带权限的用户命名空间（Ubuntu 23.10 起默认这样），文件夹模式的隔离靠它；AgentRouter 自己的隔离程序 bubblewrap 还没登记{seen}"
+            ),
+            format!(
+                "请用户在终端运行这一行（会要电脑的登录密码；只给 AgentRouter 自己的这一个隔离程序加一条 AppArmor 规则，重启后也有效）：{}；然后再试。撤销用 {}。或者在信任的情况下用 agentrouter start --full。",
+                userns::admin_line("install"),
+                userns::admin_line("remove")
+            ),
+        );
+    }
+    match userns::kernel_line() {
+        Some(line) => Unavailable::needs_admin(
+            format!("这台电脑的内核关掉了普通程序的用户命名空间，文件夹模式的隔离靠它{seen}"),
+            format!(
+                "请用户在终端运行这一行（会要电脑的登录密码，重启后也有效）：{line}；然后再试。或者在信任的情况下用 agentrouter start --full。"
+            ),
+        ),
+        None => Unavailable::new(
+            format!("隔离环境试运行失败：用户命名空间建不起来{seen}"),
+            NEXT_SETUP,
+        ),
+    }
+}
 
 const NEXT_SETUP: &str = "请用户在这台电脑上运行 agentrouter sandbox setup（装好隔离环境；Windows 会弹一次管理员确认），然后再试。";
 
@@ -550,15 +579,6 @@ impl Runtime {
         }
         #[cfg(target_os = "linux")]
         {
-            if system_bwrap().is_none() {
-                return Err(Unavailable::needs_admin(
-                    "这台电脑缺少 bubblewrap（bwrap）：文件夹模式靠它把本机工具关在所选文件夹里，它是系统自带的隔离程序，要管理员权限才能装",
-                    format!(
-                        "请用户在终端运行这一行（会要电脑的登录密码）：{}；装好后再试，不用重启。",
-                        install_line(&os_release(), "bubblewrap")
-                    ),
-                ));
-            }
             let root = self.runtimes_dir();
             if let Some(rt) = runtimes::SANDBOX_LINUX
                 .iter()
@@ -568,6 +588,9 @@ impl Runtime {
                     format!("隔离环境要用的 {} 还没准备好", rt.title),
                     NEXT_SETUP,
                 ));
+            }
+            if userns::restricted() && !userns::installed() {
+                return Err(userns_needs_admin(None));
             }
         }
         #[cfg(not(windows))]
@@ -728,10 +751,7 @@ impl Runtime {
                             .iter()
                             .any(|n| text.contains(n));
                         if cfg!(target_os = "linux") && userns {
-                            Err(Unavailable::needs_admin(
-                                format!("这台电脑不让程序建带权限的用户命名空间（Ubuntu 24.04 起默认这样），文件夹模式的隔离靠它，起不来（{clipped}）"),
-                                format!("请用户在终端运行这一行（会要电脑的登录密码，重启后也有效）：{USERNS_LINE}；然后再试。或者在信任的情况下用 agentrouter start --full。"),
-                            ))
+                            Err(userns_needs_admin(Some(clipped.as_str())))
                         } else {
                             Err(Unavailable::new(
                                 format!("隔离环境试运行失败：{clipped}"),
@@ -883,8 +903,8 @@ impl Runtime {
         Ok(policy)
     }
 
-    /// Linux: the programs srt runs, by absolute path (#119): the device's pinned ripgrep and socat (never the
-    /// person's own, whatever version that is) and the distribution's bubblewrap. Nothing elsewhere.
+    /// Linux: the programs srt runs, by absolute path (#119, #122): the device's pinned ripgrep, socat and bubblewrap,
+    /// never the person's own (whatever version that is). Nothing elsewhere.
     fn linux_programs(&self, policy: &mut Value) {
         if !cfg!(target_os = "linux") {
             return;
@@ -892,8 +912,16 @@ impl Runtime {
         let root = self.runtimes_dir();
         policy["ripgrep"] = json!({"command": shown(&runtimes::RG.bin_dir(&root).join("rg"))});
         policy["socatPath"] = json!(shown(&runtimes::SOCAT.bin_dir(&root).join("socat")));
-        if let Some(bwrap) = system_bwrap() {
-            policy["bwrapPath"] = json!(shown(&bwrap));
+        policy["bwrapPath"] = json!(shown(&self.bwrap()));
+    }
+
+    /// The bubblewrap srt runs: where AppArmor restricts user namespaces, the root-owned copy its profile names
+    /// ([`userns`]); elsewhere the device's own copy in its runtimes folder.
+    fn bwrap(&self) -> PathBuf {
+        if userns::restricted() {
+            userns::bwrap()
+        } else {
+            runtimes::BWRAP.bin_dir(&self.runtimes_dir()).join("bwrap")
         }
     }
 
@@ -1225,84 +1253,6 @@ fn home_dir() -> PathBuf {
     plain(&std::env::var_os(var).map(PathBuf::from).unwrap_or_default())
 }
 
-/// The distribution's bubblewrap: `/usr/bin/bwrap` first (on Ubuntu 24.04+ its AppArmor profile is what lets it create
-/// user namespaces), then PATH.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn system_bwrap() -> Option<PathBuf> {
-    ["/usr/bin/bwrap", "/bin/bwrap"]
-        .into_iter()
-        .map(PathBuf::from)
-        .find(|p| p.is_file())
-        .or_else(|| find_program("bwrap", None))
-}
-
-/// `/etc/os-release` (or `/usr/lib/os-release`), empty when neither is there.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn os_release() -> String {
-    ["/etc/os-release", "/usr/lib/os-release"]
-        .into_iter()
-        .find_map(|p| std::fs::read_to_string(p).ok())
-        .unwrap_or_default()
-}
-
-/// The one line that installs `package` with this distribution's package manager, from os-release's `ID` and
-/// `ID_LIKE` (the package is `bubblewrap` everywhere); a package manager on PATH when the distribution is unknown.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn install_line(os_release: &str, package: &str) -> String {
-    let field = |key: &str| -> Vec<String> {
-        os_release
-            .lines()
-            .find_map(|l| l.strip_prefix(&format!("{key}=")))
-            .map(|v| {
-                v.trim_matches(|c| c == '"' || c == '\'')
-                    .split_whitespace()
-                    .map(str::to_ascii_lowercase)
-                    .collect()
-            })
-            .unwrap_or_default()
-    };
-    let ids: Vec<String> = field("ID").into_iter().chain(field("ID_LIKE")).collect();
-    let is = |names: &[&str]| ids.iter().any(|i| names.contains(&i.as_str()));
-    let managers: [(&[&str], &str, String); 6] = [
-        (
-            &["debian", "ubuntu"],
-            "apt-get",
-            format!("sudo apt-get install -y {package}"),
-        ),
-        (
-            &["fedora", "rhel", "centos"],
-            "dnf",
-            format!("sudo dnf install -y {package}"),
-        ),
-        (
-            &["arch", "manjaro"],
-            "pacman",
-            format!("sudo pacman -S --needed {package}"),
-        ),
-        (
-            &["opensuse", "suse", "sles"],
-            "zypper",
-            format!("sudo zypper install -y {package}"),
-        ),
-        (&["alpine"], "apk", format!("sudo apk add {package}")),
-        (
-            &["gentoo"],
-            "emerge",
-            format!("sudo emerge sys-apps/{package}"),
-        ),
-    ];
-    managers
-        .iter()
-        .find(|(names, _, _)| is(names))
-        .or_else(|| {
-            managers
-                .iter()
-                .find(|(_, program, _)| find_program(program, None).is_some())
-        })
-        .map(|(_, _, line)| line.clone())
-        .unwrap_or_else(|| format!("用这台电脑的软件包管理器装 {package}（它提供 bwrap 命令）"))
-}
-
 /// A program on PATH (and beside `near`, for npm next to node), with Windows extensions.
 pub fn find_program(name: &str, near: Option<&Path>) -> Option<PathBuf> {
     let exts: &[&str] = if cfg!(windows) {
@@ -1548,15 +1498,22 @@ mod tests {
         assert!(domains.iter().any(|d| d == "api.example.com"));
         assert!(!domains.iter().any(|d| d == "bad domain"));
         assert!(!rt.scratch(launch.key).starts_with(&rt.data_dir));
-        // Linux: srt runs the device's own ripgrep and socat (#119), never whatever is on PATH; elsewhere neither.
+        // Linux: srt runs the device's own ripgrep, socat and bubblewrap (#119, #122), never whatever is on PATH;
+        // elsewhere none. Where AppArmor restricts user namespaces, bubblewrap is the root-owned copy its profile names.
         let runtimes = shown(&rt.runtimes_dir());
-        for (got, program) in [(&p["ripgrep"]["command"], "rg"), (&p["socatPath"], "socat")] {
+        for (got, program) in [
+            (&p["ripgrep"]["command"], "rg"),
+            (&p["socatPath"], "socat"),
+            (&p["bwrapPath"], "bwrap"),
+        ] {
             if cfg!(target_os = "linux") {
                 let got = got.as_str().unwrap();
-                assert!(
-                    got.starts_with(&runtimes) && got.ends_with(program),
-                    "{got}"
-                );
+                let base = if program == "bwrap" && userns::restricted() {
+                    userns::ROOT.to_string()
+                } else {
+                    runtimes.clone()
+                };
+                assert!(got.starts_with(&base) && got.ends_with(program), "{got}");
             } else {
                 assert!(got.is_null());
             }
@@ -1565,29 +1522,34 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_bwrap_names_the_install_line_of_this_distribution() {
-        let apt = "sudo apt-get install -y bubblewrap";
-        let dnf = "sudo dnf install -y bubblewrap";
-        for (os_release, line) in [
-            ("NAME=\"Ubuntu\"\nID=ubuntu\nID_LIKE=debian\n", apt),
-            ("ID=debian\n", apt),
-            ("ID=linuxmint\nID_LIKE=\"ubuntu debian\"\n", apt),
-            ("ID=fedora\n", dnf),
-            ("ID=\"rhel\"\nID_LIKE=\"fedora\"\n", dnf),
-            ("ID=arch\n", "sudo pacman -S --needed bubblewrap"),
-            (
-                "ID=\"opensuse-tumbleweed\"\nID_LIKE=\"opensuse suse\"\n",
-                "sudo zypper install -y bubblewrap",
-            ),
-            ("ID=alpine\n", "sudo apk add bubblewrap"),
-        ] {
-            assert_eq!(install_line(os_release, "bubblewrap"), line, "{os_release}");
+    fn user_namespaces_the_sandbox_cannot_get_name_an_admin_line() {
+        let missing = userns_needs_admin(Some("setgroups: Permission denied"));
+        if userns::restricted() {
+            assert_eq!(missing.code, NEEDS_ADMIN);
+            assert!(
+                missing.next.contains(&userns::admin_line("install")),
+                "{}",
+                missing.next
+            );
+            assert!(
+                missing.next.contains(&userns::admin_line("remove")),
+                "{}",
+                missing.next
+            );
+            assert!(
+                !missing
+                    .next
+                    .contains("apparmor_restrict_unprivileged_userns=0")
+            );
+        } else if userns::kernel_line().is_some() {
+            assert_eq!(missing.code, NEEDS_ADMIN);
+        } else {
+            assert_eq!(missing.code, UNAVAILABLE);
         }
-        let missing = Unavailable::needs_admin("x", install_line("ID=ubuntu\n", "bubblewrap"));
-        assert_eq!(missing.code, NEEDS_ADMIN);
+        assert!(missing.message.contains("setgroups: Permission denied"));
         assert!(
-            !missing.setup_helps(),
-            "sandbox setup cannot install a system package"
+            !Unavailable::needs_admin("x", "y").setup_helps(),
+            "sandbox setup cannot change a system setting"
         );
         assert!(Unavailable::new("x", NEXT_SETUP).setup_helps());
     }

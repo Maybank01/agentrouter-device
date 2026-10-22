@@ -34,6 +34,9 @@ link 启动 hostd（宿主守护进程）；agentrouter hostd 是同一条命令
                                 这个文件夹的审计记录（每次调用连参数一起记，密钥不记）；verify 检查有没有被改过
   agentrouter sandbox setup|status|remove
                                 本机工具的隔离环境（Windows 会弹一次管理员确认）
+  sudo agentrouter sandbox userns install|remove
+                                Ubuntu 这类限制用户命名空间的 Linux：给 AgentRouter 自己的隔离程序 bubblewrap
+                                加一条只管它的 AppArmor 规则（装一份 root 所有的副本）；remove 撤销
   agentrouter status            账号、网关、沙箱、当前文件夹
   agentrouter logout            这台电脑退出链接（删掉本机的链接身份）
 ";
@@ -174,7 +177,7 @@ pub fn main() {
     std::process::exit(code);
 }
 
-/// `agentrouter sandbox setup|status|remove` (docs/HOSTD-MCP.md §6, #42).
+/// `agentrouter sandbox setup|status|remove|userns` (docs/HOSTD-MCP.md §6, #42, #122).
 fn cmd_sandbox(flags: Flags) -> i32 {
     let rt = agentrouter_sandbox::Runtime::new(&data_dir());
     let report = |done: Result<Vec<String>, String>| match done {
@@ -202,13 +205,25 @@ fn cmd_sandbox(flags: Flags) -> i32 {
             code
         }
         Some("remove") => report(rt.remove()),
+        // Run with sudo: nothing here reads the person's data folder (#122).
+        Some("userns") => match flags.positional.get(1).map(String::as_str) {
+            Some("install") => report(agentrouter_sandbox::userns::install()),
+            Some("remove") => report(agentrouter_sandbox::userns::remove()),
+            _ => {
+                eprintln!(
+                    "用法：{}（或 remove 撤销）。只在 AppArmor 限制用户命名空间的 Linux（Ubuntu 23.10 起）上需要",
+                    agentrouter_sandbox::userns::admin_line("install")
+                );
+                2
+            }
+        },
         None | Some("status") => {
             let st = rt.status();
             print_sandbox_status(&st);
             if st.ready { 0 } else { 1 }
         }
         Some(other) => {
-            eprintln!("不认识的 sandbox 子命令：{other}（setup、status 或 remove）");
+            eprintln!("不认识的 sandbox 子命令：{other}（setup、status、remove 或 userns）");
             2
         }
     }

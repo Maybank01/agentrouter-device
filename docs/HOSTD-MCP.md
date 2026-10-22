@@ -501,12 +501,31 @@ call answers `SANDBOX_UNAVAILABLE` with a `next` that tells the person what to r
 - **macOS:** Seatbelt profile generated per link; no setup step.
 - **Linux:** bubblewrap + a network namespace. srt also runs ripgrep (its scan for dangerous files below a folder)
   and socat (the network relay: host side a Unix socket to srt's proxy, inside bubblewrap TCP 3128/1080 to that
-  socket); both are the device's own pinned copies (§6.5, device #119) and srt gets their absolute paths
-  (`ripgrep.command`, `socatPath`). `bwrap` is the distribution's, passed as `bwrapPath` (`/usr/bin/bwrap` first: on
-  Ubuntu 24.04+ only the packaged one may create user namespaces, through its AppArmor profile). A missing `bwrap`, or
-  user namespaces the kernel refuses, is `HOSTD_SANDBOX_NEEDS_ADMIN` (Cloud error catalog): `sandbox setup` cannot fix
-  it, and `next` is the exact one line for this distribution (`sudo apt-get install -y bubblewrap`, `dnf`, `pacman`,
-  `zypper`, `apk` from os-release) and what it is for.
+  socket). All three are the device's own pinned copies (§6.5, device #119, #122), and srt gets their absolute paths
+  (`ripgrep.command`, `socatPath`, `bwrapPath`). The person installs nothing.
+
+  **Ubuntu's user-namespace restriction (#122).** Ubuntu 23.10+ sets `kernel.apparmor_restrict_unprivileged_userns=1`.
+  An unconfined process's new user namespace then has no capabilities. The packaged `/usr/bin/bwrap` is exempt
+  through Ubuntu's `bwrap-userns-restrict` profile, but that profile stacks every child with `unpriv_bwrap` (`audit
+  deny capability`). srt's seccomp helper (`apply-seccomp`) runs inside bubblewrap and makes a nested namespace, so it
+  fails with `setgroups: Permission denied`. The coordinator decided on least privilege: no global sysctl, and the
+  seccomp layer stays on. The device therefore lifts the restriction for one program only:
+  - `sudo agentrouter sandbox userns install` puts a **root-owned** copy of the pinned bubblewrap at
+    `/usr/local/libexec/agentrouter/bwrap-<version>/bwrap`. It is downloaded and checked like `sandbox setup` does.
+  - It writes `/etc/apparmor.d/agentrouter-bwrap` in the pattern of Ubuntu's own per-application profiles:
+    `abi <abi/4.0>`, `flags=(unconfined)`, `userns,`, attached to that exact path, nothing else. Then it loads the
+    profile with `apparmor_parser --replace`. The apparmor service loads it again at boot.
+  - It is idempotent. `sudo agentrouter sandbox userns remove` unloads and deletes both.
+  - Everything bubblewrap starts inherits the profile: srt's relay, `apply-seccomp`, and the command. The command runs
+    under the helper's filter, which refuses new user namespaces, so the grant ends at the helper.
+  - The grant never names a path the person's processes can write. A profile on a home-folder path would hand
+    capability-bearing namespaces to anything that drops a file there, which is what the restriction prevents.
+  - With the restriction on, srt runs the root-owned copy. `HOSTD_SANDBOX_NEEDS_ADMIN` (Cloud error catalog) names the
+    install line with the running executable's absolute path while that copy or its profile is missing, or while a
+    confined start still fails for user namespaces (profile not loaded).
+  - With the restriction off (Debian, Fedora, Arch…), srt runs the device's own copy, and nothing needs an admin.
+  - A kernel switch that refuses user namespaces (`kernel.unprivileged_userns_clone=0`, `user.max_user_namespaces=0`)
+    gets its own one persistent `sysctl.d` line under the same code.
 - Screen (Windows-MCP) cannot be confined to a folder and is **off** (owner Q1 「屏幕操作可以先关掉」):
   not in the catalog, `screen on` / `--screen` removed. A separately started screen mode can be designed
   later; it is not planned.
@@ -522,7 +541,7 @@ reading arguments (not the kernel) is bypassed by any shell command (`cat ~/.ssh
 promise a protection that is not there. The console says it in one line (§8). Kept: argument-level audit (the chain
 head still goes to the cloud on every heartbeat, so a rewritten log is detected), checkpoints (§7.2), the local `y`
 for custom servers, Ctrl+C. Folder mode is unchanged (deny list, OS boundary). A full link works on a computer whose
-sandbox is unavailable (e.g. Ubuntu 24.04 with restricted user namespaces).
+sandbox is unavailable (e.g. Ubuntu before `sandbox userns install`).
 
 ### 6.5 The device's own runtimes (device #116)
 
@@ -540,10 +559,11 @@ start and the first `link` run), and `--full` provisions them too:
 - One path: srt, the Windows sandbox entry, `npm ci` (as `node npm-cli.js`, no `npm.cmd`), `npx` and `uvx` use these,
   never the person's own installs; they go first on every local server's PATH. Without uv only `uvx` tools are
   missing (a line in setup, `RUNTIME_MISSING` on start). A cloud placement provisions nothing (its image has them).
-- Linux also gets srt's **ripgrep** (15.2.0, the official static musl build) and **socat** (1.8.1.3, built statically
-  from the official source by `.github/workflows/socat.yml`, published with that source; no maintained upstream static
-  build exists), from GitHub, in `sandbox setup` only (`--full` does not need them). srt gets their paths; they are not
-  put on a server's PATH. Still the person's: `bwrap` (§6.3).
+- Linux also gets srt's **ripgrep** (15.2.0, the official static musl build), **socat** (1.8.1.3) and **bubblewrap**
+  (0.13.1). socat and bubblewrap are built statically from the official source by `.github/workflows/socat.yml` and
+  `bwrap.yml` and published with that source, because upstream has no maintained static build. They come from GitHub,
+  in `sandbox setup` only (`--full` does not need them). srt gets their paths; they are not put on a server's PATH.
+  Where Ubuntu restricts user namespaces, the bubblewrap that runs is the root-owned copy of the same pin (§6.3).
 
 ## 7. Audit and undo
 
