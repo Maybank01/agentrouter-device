@@ -521,7 +521,7 @@ Folder mode never asks the person to install anything (the product is for ordina
 on Node.js, `uvx` servers (serena, §13.2) on uv, so the device provisions both in `sandbox setup` (which the double-click
 start and the first `link` run), and `--full` provisions them too:
 
-- One pinned version each (Node.js 22 LTS — 24 refuses the long Unix socket path srt uses on macOS —, uv), the project's official portable archive per OS and architecture, the
+- One pinned version each (Node.js 22 LTS, uv; Node 24 refuses the Unix socket path srt uses under the macOS data folder, longer than 104 bytes), the project's official portable archive per OS and architecture, the
   SHA-256 in source (`crates/sandbox/src/runtimes.rs`; Node's from the release's signed `SHASUMS256.txt`). Sources in
   order: the project's own host, then one mirror (npmmirror for Node, GitHub for uv); a source that stays too slow is
   left for the next. An archive that does not match is deleted, never unpacked.
