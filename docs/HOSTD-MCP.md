@@ -266,6 +266,7 @@ what a bound cloud session uses as its local machine (below).
 | `host__exec` | `command`, `cwd?` (default: the first folder), `timeout_s?` (1–600, default 120) | `exit_code` (null on timeout, cancel or a signal), `signal` (Unix), `timed_out`, `cancelled`, `stdout`, `stderr` (each ≤ 256 KiB, a clip marker inside), `cwd`, `shell`, `ms`; streamed while it runs (below) |
 | `host__read` | `path`, `offset?`, `length?` (≤ 4 MiB, default whole file up to that), `encoding?` `utf8`/`base64`, `sha256?` | `path` (absolute, real), `size`, `offset`, `length`, `eof`, `encoding`, `data`, `version`, `mtime_ms`, `sha256` (whenever the whole file was read; else when asked), whole text files also `line_ending` (`lf`/`crlf`/`mixed`/null) and `bom` |
 | `host__write` | `path`, `data`, `encoding?` `utf8`/`base64`, `offset?`, `truncate?`, `expected?` `{version, sha256?}` / `{absent: true}`, `executable?` (whole-file writes, Unix: mode 755 / 644; without it a replaced file keeps its mode) | `path`, `size`, `written`, `created`, `version`, `mtime_ms`, `executable` (Unix), `sha256` (whole-file writes); a failed guard is `isError` with `structuredContent` `{code: STALE_VERSION / EXISTS, message, version}` |
+| `host__remove` | `path`, `expected?` `{version, sha256?}` (a file: only that version) | `path`, `removed`, `kind` (`file` / `folder` / `symlink`); a missing path is `removed: false, exists: false`. Exactly what is named, inside the linked folders in every mode (also 完全访问), never a linked folder itself, never recursive (a folder with entries: `NOT_EMPTY`), a symlink is removed itself, not followed; `OUTSIDE_FOLDER` / `STALE_VERSION` as coded `isError`. Cross-platform (before it the space sync ran `rm` through `exec`, which breaks in PowerShell; Cloud #2383 / #2246). Not read-only: checkpointed and audited like `write` |
 | `host__stat` | `paths` (≤ 1000), `content_max?` (≤ 256 KiB) | `entries`: per path `path` (real), `exists`, `kind` `file`/`dir`/`symlink`/`other`, `size`, `mtime_ms`, `readonly`, `executable` (files, Unix), `version` (files and folders), `symlink?` + `link` (its target as written), `error?`; files up to `content_max` also `data` + `encoding` (utf8, else base64; ≤ 4 MiB per call) |
 | `host__list` | `path` or `paths` (≤ 64), `depth?` (1–16, default 1), `hidden?` (default true), `ignore?` (.gitignore/.ignore like ripgrep, default false), `limit?` (default 5000) | `listings`: per folder `path`, `entries` (`name` relative, `kind`, `size`, `mtime_ms`, `executable` (files, Unix), `link` (symlinks: the target); sorted by name, pre-order), `truncated`; or `error` |
 | `host__search` | `mode` `files` (= `rg --files`) / `content` (= `rg --regexp`, default), `pattern`, `path?`, `cwd?`, `globs?` (rg `--glob`, `!` excludes), `hidden?`, `no_ignore?`, `ignore_case?`, `fixed_strings?`, `sort?` `path`/`modified`, `max_results?` (default 10 000), `max_line_bytes?` (default 2000), `timeout_s?` | `root`; files: `paths`; content: `matches` (`path`, `line_number`, `text` without its line ending, or base64 `bytes` for non-UTF-8, `clipped?`), `files`; both `count` (all), `truncated`, `timed_out`. ripgrep's own crates: .gitignore/.ignore/.rgignore inside a git repo, hidden skipped, NUL = binary (walked files skipped, a named file converted), BOM-sniffed UTF-16, Rust regex; paths as `rg` prints them; order = path (or mtime ascending) |
@@ -348,7 +349,7 @@ from `remote_*` tools.
 | per-turn read cache invalidation | `host__changes` (cursor + long poll; `overflow` = drop the cache) |
 
 - **The device stays in charge.** Folder mode or 完全访问, the sandbox, the local `y`, argument-level audit (every call,
-  including each long poll) and checkpoints before every tool without `readOnlyHint` (`write`, `exec`, `job_start`,
+  including each long poll) and checkpoints before every tool without `readOnlyHint` (`write`, `remove`, `exec`, `job_start`,
   `job_stop`, `pty_*` except `pty_read`) apply exactly as for any other call; a bound session cannot reach anything the
   link does not already allow. `agentrouter undo` undoes a bound session's turn like any other.
 - **One native host per session.** A conversation binds one host as the session's "local machine"; other links stay
@@ -644,7 +645,7 @@ the audit line carries the ids (`folder → id`).
 
 **完全访问:** the folders named on the command line (or the start folder, unless it is the home folder or a drive root)
 are snapshotted as above. Beyond them, a **file journal** keeps the previous content of each file a tool names by path
-before a non-read-only call (`host__write`'s `path`; other servers' `path`/`file_path`/`destination`/`target`
+before a non-read-only call (`host__write`'s and `host__remove`'s `path`; other servers' `path`/`file_path`/`destination`/`target`
 arguments): files up to 64 MiB are copied to `<data>/checkpoints/journal/<turn>/`, a file that did not exist is
 recorded as absent. `agentrouter undo --journal [turn]` puts them back (and removes the absent ones). What a shell
 command changes outside the snapshotted folders is **not** undoable; the audit holds the command line.

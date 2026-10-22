@@ -62,6 +62,18 @@ pub(super) fn tools() -> Vec<Value> {
             false,
         ),
         tool(
+            "remove",
+            "Remove one file, symlink (the link itself, never what it points to) or empty folder inside the linked folders — exactly what is named, never a folder's contents (no recursive delete) and never a linked folder itself. A path that does not exist answers removed:false. expected {version, sha256?} guards a file: removed only if it is still that version (else STALE_VERSION with the current version). Outside the linked folders: OUTSIDE_FOLDER; a folder with entries: NOT_EMPTY.",
+            json!({"type": "object", "properties": {
+                "path": {"type": "string"},
+                "expected": {"type": "object", "properties": {
+                    "version": {"type": "string"},
+                    "sha256": {"type": "string"},
+                }},
+            }, "required": ["path"]}),
+            false,
+        ),
+        tool(
             "stat",
             "Metadata of many paths in one call (kind, size, mtime, readonly, executable, symlink and its link target); a missing path is exists:false, not an error. content_max > 0 also returns the content of files up to that size (utf8, else base64).",
             json!({"type": "object", "properties": {
@@ -524,6 +536,85 @@ fn list_one(
     Ok(json!({"path": shown(dir), "entries": entries, "truncated": truncated}))
 }
 
+impl Host {
+    /// `remove` (Cloud #2383 / #2246: the space sync removes what a 作品 no longer has; before this it ran `rm` through
+    /// `exec`, which breaks under PowerShell). Only inside the linked folders, in every mode (in folder mode the sandbox
+    /// refuses anything else as well); the entry itself under its real parent, so a symlink is removed, not followed.
+    pub(super) fn remove(&self, args: &Value) -> Result<Value, Fail> {
+        let raw = arg_str(args, "path").unwrap_or("");
+        if raw.trim().is_empty() {
+            return Err("path 不能是空的".to_string().into());
+        }
+        let named = self.absolute(raw);
+        let (Some(parent), Some(name)) = (named.parent(), named.file_name()) else {
+            return Err(format!("{} 不是一个文件或文件夹", shown(&named)).into());
+        };
+        let gone =
+            |path: &Path| Ok(json!({"path": shown(path), "removed": false, "exists": false}));
+        let Ok(parent) = std::fs::canonicalize(parent) else {
+            return gone(&named);
+        };
+        let path = std::path::PathBuf::from(shown(&parent)).join(name);
+        let folders: Vec<std::path::PathBuf> = self
+            .folders
+            .iter()
+            .map(|f| {
+                std::fs::canonicalize(f)
+                    .map(|r| std::path::PathBuf::from(shown(&r)))
+                    .unwrap_or_else(|_| f.clone())
+            })
+            .collect();
+        if !folders.iter().any(|f| path.starts_with(f) && path != *f) {
+            return Err(Fail::coded(
+                "OUTSIDE_FOLDER",
+                format!(
+                    "{} 不在链接的文件夹里（或就是链接的文件夹本身）：remove 只删文件夹里点名的东西",
+                    shown(&path)
+                ),
+                json!({"folders": folders.iter().map(|f| shown(f)).collect::<Vec<_>>()}),
+            ));
+        }
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(m) => m,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return gone(&path),
+            Err(e) => return Err(format!("读不了 {}：{e}", shown(&path)).into()),
+        };
+        let fail = |e: std::io::Error| format!("删不了 {}：{e}", shown(&path));
+        let kind = if meta.file_type().is_symlink() {
+            // A Windows symlink or junction to a folder is removed as a folder entry; elsewhere a link is a file.
+            if std::fs::remove_file(&path).is_err() {
+                std::fs::remove_dir(&path).map_err(fail)?;
+            }
+            "symlink"
+        } else if meta.is_dir() {
+            if let Err(e) = std::fs::remove_dir(&path) {
+                let entries = std::fs::read_dir(&path)
+                    .map(|d| d.take(1000).count())
+                    .unwrap_or(0);
+                if entries > 0 {
+                    return Err(Fail::coded(
+                        "NOT_EMPTY",
+                        format!(
+                            "{} 里还有东西：remove 只删空文件夹，先删里面点名的文件",
+                            shown(&path)
+                        ),
+                        json!({"entries": entries}),
+                    ));
+                }
+                return Err(fail(e).into());
+            }
+            "folder"
+        } else {
+            if let Some(expected) = args.get("expected").filter(|e| e.is_object()) {
+                check_expected(&path, Some(&meta), expected)?;
+            }
+            std::fs::remove_file(&path).map_err(fail)?;
+            "file"
+        };
+        Ok(json!({"path": shown(&path), "removed": true, "kind": kind}))
+    }
+}
+
 /// A guarded write's precondition: still absent, or still the version (and content) the caller read.
 fn check_expected(
     path: &Path,
@@ -591,6 +682,115 @@ pub(super) fn sha256_file(path: &Path) -> Result<String, String> {
 mod tests {
     use super::super::tests::{host_in, temp};
     use super::*;
+
+    fn code_of(r: Result<Value, Fail>) -> &'static str {
+        match r {
+            Err(Fail { code: Some(c), .. }) => c,
+            other => panic!(
+                "expected a coded failure, got {:?}",
+                other.map_err(|f| f.message)
+            ),
+        }
+    }
+
+    #[test]
+    fn remove_takes_exactly_what_is_named_inside_the_folder() {
+        let base = temp("remove");
+        let dir = base.join("work");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(dir.join("sub").join("deep")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(dir.join("a.txt"), "a").unwrap();
+        std::fs::write(dir.join("sub").join("deep").join("b.txt"), "b").unwrap();
+        std::fs::write(outside.join("keep.txt"), "keep").unwrap();
+        let host = host_in(&dir);
+        // A file, relative to the first folder.
+        let r = host.remove(&json!({"path": "a.txt"})).unwrap();
+        assert_eq!(
+            (r["removed"].clone(), r["kind"].clone()),
+            (json!(true), json!("file")),
+            "{r}"
+        );
+        assert!(!dir.join("a.txt").exists());
+        // Gone already: not an error (a sync may repeat itself).
+        assert_eq!(
+            host.remove(&json!({"path": "a.txt"})).unwrap()["removed"],
+            false
+        );
+        assert_eq!(
+            host.remove(&json!({"path": "nowhere/x.txt"})).unwrap()["removed"],
+            false
+        );
+        // A folder with entries is never emptied by it.
+        assert_eq!(code_of(host.remove(&json!({"path": "sub"}))), "NOT_EMPTY");
+        assert!(dir.join("sub").join("deep").join("b.txt").is_file());
+        // A guarded file: only the version that was read.
+        let stale =
+            host.remove(&json!({"path": "sub/deep/b.txt", "expected": {"version": "not-it"}}));
+        assert_eq!(code_of(stale), "STALE_VERSION");
+        let v = host.stat(&json!({"paths": ["sub/deep/b.txt"]})).unwrap()["entries"][0]["version"]
+            .clone();
+        let r = host
+            .remove(&json!({"path": "sub/deep/b.txt", "expected": {"version": v}}))
+            .unwrap();
+        assert_eq!(r["removed"], true, "{r}");
+        // Empty folders, one by one.
+        assert_eq!(
+            host.remove(&json!({"path": "sub/deep"})).unwrap()["kind"],
+            "folder"
+        );
+        assert_eq!(
+            host.remove(&json!({"path": "sub"})).unwrap()["kind"],
+            "folder"
+        );
+        // Outside the folders, a path that climbs out, and the linked folder itself: refused, nothing touched.
+        let out = outside.join("keep.txt");
+        assert_eq!(
+            code_of(host.remove(&json!({"path": out.to_string_lossy()}))),
+            "OUTSIDE_FOLDER"
+        );
+        assert_eq!(
+            code_of(host.remove(&json!({"path": "../outside/keep.txt"}))),
+            "OUTSIDE_FOLDER"
+        );
+        assert_eq!(
+            code_of(host.remove(&json!({"path": dir.to_string_lossy()}))),
+            "OUTSIDE_FOLDER"
+        );
+        assert!(out.is_file() && dir.is_dir());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remove_takes_a_symlink_never_what_it_points_to() {
+        let base = temp("remove-link");
+        let dir = base.join("work");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("target.txt"), "keep").unwrap();
+        std::os::unix::fs::symlink(outside.join("target.txt"), dir.join("link.txt")).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("linkdir")).unwrap();
+        let host = host_in(&dir);
+        assert_eq!(
+            host.remove(&json!({"path": "link.txt"})).unwrap()["kind"],
+            "symlink"
+        );
+        assert_eq!(
+            host.remove(&json!({"path": "linkdir"})).unwrap()["kind"],
+            "symlink"
+        );
+        assert!(outside.join("target.txt").is_file());
+        // Through a linked-folder symlink that leads outside: the entry's real parent is outside, so refused.
+        std::os::unix::fs::symlink(&outside, dir.join("out")).unwrap();
+        assert_eq!(
+            code_of(host.remove(&json!({"path": "out/target.txt"}))),
+            "OUTSIDE_FOLDER"
+        );
+        assert!(outside.join("target.txt").is_file());
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     #[test]
     fn chunked_write_then_read_back_with_the_same_hash() {

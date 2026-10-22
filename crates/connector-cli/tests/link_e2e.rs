@@ -484,6 +484,127 @@ fn a_linked_folder_end_to_end_and_the_boundary_holds() {
     );
     assert!(!ok(&refused) && !host_escape.exists(), "{refused}");
 
+    // The change feed in folder mode (Cloud #2383 / #2246, the space sync): the host server watches the folder from
+    // inside the sandbox and reports, after a cursor, an Agent's write and the person's own edit (made outside it).
+    let paths_of = |a: &Value| -> Vec<(String, String)> {
+        a["result"]["structuredContent"]["changes"]
+            .as_array()
+            .map(|l| {
+                l.iter()
+                    .map(|c| {
+                        let p = c["path"].as_str().unwrap_or("").replace('\\', "/");
+                        (p, c["kind"].as_str().unwrap_or("").to_string())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let first = call(&mut ws, 200, "tools/call", host("changes", json!({})), true);
+    assert!(ok(&first), "{first}");
+    let feed = &first["result"]["structuredContent"];
+    assert_eq!(
+        feed["watching"][0]["ok"], true,
+        "the folder is watched: {first}"
+    );
+    assert!(feed["error"].is_null(), "{first}");
+    assert_eq!(feed["feed"], 2, "{first}");
+    let mut cursor = feed["cursor"].as_u64().unwrap();
+    std::fs::write(folder.join("person-edit.txt"), "by the person").unwrap();
+    let agent = call(
+        &mut ws,
+        201,
+        "tools/call",
+        host(
+            "write",
+            json!({"path": "agent-edit.txt", "data": "by the Agent"}),
+        ),
+        true,
+    );
+    assert!(ok(&agent), "{agent}");
+    let mut seen: Vec<(String, String)> = Vec::new();
+    let mut id = 202;
+    let has = |seen: &[(String, String)], name: &str, kind: Option<&str>| {
+        seen.iter()
+            .any(|(p, k)| p.ends_with(name) && kind.is_none_or(|want| k == want))
+    };
+    let until = Instant::now() + Duration::from_secs(40);
+    while !(has(&seen, "person-edit.txt", None) && has(&seen, "agent-edit.txt", None))
+        && Instant::now() < until
+    {
+        id += 1;
+        let r = call(
+            &mut ws,
+            id,
+            "tools/call",
+            host("changes", json!({"cursor": cursor, "wait_ms": 3000})),
+            true,
+        );
+        assert!(ok(&r), "{r}");
+        assert_eq!(r["result"]["structuredContent"]["overflow"], false, "{r}");
+        cursor = r["result"]["structuredContent"]["cursor"].as_u64().unwrap();
+        seen.extend(paths_of(&r));
+    }
+    assert!(
+        has(&seen, "person-edit.txt", None),
+        "the person's edit is in the feed: {seen:?}"
+    );
+    assert!(
+        has(&seen, "agent-edit.txt", None),
+        "the Agent's write is in the feed: {seen:?}"
+    );
+
+    // remove (the space sync's removals, cross-platform): exactly the named file, reported by the feed; nothing
+    // outside the folders.
+    let removed = call(
+        &mut ws,
+        230,
+        "tools/call",
+        host("remove", json!({"path": "agent-edit.txt"})),
+        true,
+    );
+    assert!(ok(&removed), "{removed}");
+    assert_eq!(
+        removed["result"]["structuredContent"]["removed"], true,
+        "{removed}"
+    );
+    assert!(!folder.join("agent-edit.txt").exists() && folder.join("person-edit.txt").is_file());
+    let mut gone = false;
+    let until = Instant::now() + Duration::from_secs(40);
+    let mut id = 231;
+    while !gone && Instant::now() < until {
+        id += 1;
+        let r = call(
+            &mut ws,
+            id,
+            "tools/call",
+            host("changes", json!({"cursor": cursor, "wait_ms": 3000})),
+            true,
+        );
+        cursor = r["result"]["structuredContent"]["cursor"]
+            .as_u64()
+            .unwrap_or(cursor);
+        // The kind is the OS's (FSEvents may fold a quick write and removal into one event): any change of it counts.
+        gone = paths_of(&r)
+            .iter()
+            .any(|(p, _)| p.ends_with("agent-edit.txt"));
+    }
+    assert!(gone, "the removal is in the feed");
+    let keep = outside.join("keep-me.txt");
+    std::fs::write(&keep, "keep").unwrap();
+    let outside_remove = call(
+        &mut ws,
+        260,
+        "tools/call",
+        host("remove", json!({"path": keep.to_string_lossy()})),
+        true,
+    );
+    assert!(!ok(&outside_remove), "{outside_remove}");
+    assert_eq!(
+        outside_remove["result"]["structuredContent"]["code"], "OUTSIDE_FOLDER",
+        "{outside_remove}"
+    );
+    assert!(keep.is_file());
+
     // A preview stream into the sandbox: a server the Agent started inside is reached from outside on every OS — Linux
     // through the host server's bridge in the sandbox's own namespace (device #136), Windows and macOS on the shared
     // loopback once its listener is the link's own (device #139). A port the person's own program listens on is never
