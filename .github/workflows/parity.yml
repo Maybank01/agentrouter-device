@@ -9,7 +9,8 @@ name: Parity bench (PC)
 # Secrets (this repository is public): the pinned Dev test account `pcbench` (Dev only, Dev quota, no money) lives in the
 # environment `dev-bench`, whose only deployment branch is `main`; the only trigger is workflow_dispatch (write access).
 # Pull requests — from forks or not — never run this workflow, and GitHub gives fork pull requests no secrets anyway.
-# The pairing code never reaches the log (bench.mjs `pair`); only the results and the report are uploaded.
+# The pairing code never reaches the log (bench.mjs `pair`); uploaded are the results, the report and the redacted
+# diagnostics (`bench.mjs collect`, Cloud #2703).
 #
 # T4 (a screenshot) goes through a tool the person granted the screen (device #97, #145): folder mode has no display, so
 # the bench, as the person, adds one with `agentrouter mcp add <name> --display --yes -- …` before linking. Vetted
@@ -175,6 +176,29 @@ jobs:
           if (-not (Test-Path $results)) { "No results." >> $env:GITHUB_STEP_SUMMARY; exit 0 }
           node cloud/deploy/maintenance/parity-bench/bench.mjs report $results
           Get-Content (Join-Path $env:PB_ROOT 'parity-report.md') >> $env:GITHUB_STEP_SUMMARY
+      # Diagnostics (Cloud #2703), on every OS, on failure and success: hostd's output per task, each local tool's log
+      # (`<device home>/logs/server-<name>.log`: its stderr, its MCP log messages, start/handshake/ready lines), the
+      # device audit, and on Linux the Xvfb log and DesktopCommander's own folder. `bench.mjs collect` redacts them first
+      # (account values by value, keys/tokens/bearer/JWT/pairing codes by shape) — this repository is public.
+      - name: Diagnostics (redacted)
+        if: always()
+        continue-on-error: true
+        env:
+          SMOKE_ORIGIN: ${{ secrets.PB_SMOKE_ORIGIN }}
+          SMOKE_USER: ${{ secrets.PB_SMOKE_USER }}
+          SMOKE_PASSWORD: ${{ secrets.PB_SMOKE_PASSWORD }}
+        shell: pwsh
+        run: |
+          $extra = @()
+          if ($IsLinux) { $extra = @((Join-Path $env:RUNNER_TEMP 'xvfb.log'), (Join-Path $HOME '.claude-server-commander')) }
+          node cloud/deploy/maintenance/parity-bench/bench.mjs collect (Join-Path $env:RUNNER_TEMP 'pb-diag') @extra
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: parity-diag-${{ inputs.os }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/pb-diag
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Unpair
         if: always()
         env:

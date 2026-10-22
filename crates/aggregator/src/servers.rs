@@ -8,6 +8,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
+#[allow(deprecated)]
+use rmcp::model::LoggingMessageNotificationParam;
 use rmcp::model::{
     ClientCapabilities, ClientConfig, Implementation, ProgressNotificationParam, Tool,
 };
@@ -34,6 +36,8 @@ const STOP_GRACE: Duration = Duration::from_secs(3);
 pub const MAX_SERVERS: usize = 12;
 /// Limit events kept per server.
 const LIMIT_EVENTS: usize = 20;
+/// A server's log file is moved to `<name>.log.1` when it reaches this size at a start (one old file kept).
+const LOG_FILE_MAX: u64 = 2 * 1024 * 1024;
 
 fn valid_name(name: &str) -> bool {
     let mut chars = name.chars();
@@ -264,6 +268,9 @@ pub struct Server {
     pub peer: Mutex<Option<Peer<RoleClient>>>,
     pub tools: Mutex<Vec<Tool>>,
     pub logs: Mutex<VecDeque<String>>,
+    /// The same lines, appended to `<device data>/logs/server-<name>.log` ([`log_path`]): a server that never gets
+    /// ready (no tools, `starting` for the whole task) is diagnosable after the link ended (Cloud #2703).
+    file: Mutex<Option<std::fs::File>>,
     pub stop: CancellationToken,
     pub changed: tokio::sync::Notify,
     pub restarts: AtomicU32,
@@ -276,14 +283,36 @@ pub struct Server {
     pub limit_events: Mutex<VecDeque<(Instant, String)>>,
 }
 
+/// Where one server's log lines go on disk, under the device data folder (hidden from every sandbox).
+pub fn log_path(data_dir: &std::path::Path, name: &str) -> PathBuf {
+    data_dir.join("logs").join(format!("server-{name}.log"))
+}
+
+/// The server's log file, opened for appending (after moving a full one aside). A failure only means no file.
+fn open_log(path: &std::path::Path) -> Option<std::fs::File> {
+    std::fs::create_dir_all(path.parent()?).ok()?;
+    if std::fs::metadata(path).is_ok_and(|m| m.len() >= LOG_FILE_MAX) {
+        let mut old = path.as_os_str().to_owned();
+        old.push(".1");
+        let _ = std::fs::rename(path, old);
+    }
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .ok()
+}
+
 impl Server {
-    pub fn new(def: ServerDef) -> Arc<Server> {
+    /// `log_file`: also append its log lines there ([`log_path`]); `None` keeps them in memory only.
+    pub fn new(def: ServerDef, log_file: Option<&std::path::Path>) -> Arc<Server> {
         Arc::new(Server {
             def,
             state: Mutex::new(State::Starting),
             peer: Mutex::new(None),
             tools: Mutex::new(Vec::new()),
             logs: Mutex::new(VecDeque::new()),
+            file: Mutex::new(log_file.and_then(open_log)),
             stop: CancellationToken::new(),
             changed: tokio::sync::Notify::new(),
             restarts: AtomicU32::new(0),
@@ -319,11 +348,16 @@ impl Server {
         for s in self.def.secrets() {
             text = text.replace(s.as_str(), "[secret]");
         }
+        let text = agentrouter_device::util::clip(&text, LOG_LINE_MAX);
+        if let Some(file) = self.file.lock().unwrap().as_mut() {
+            use std::io::Write;
+            let _ = writeln!(file, "{} {text}", agentrouter_device::util::iso_now());
+        }
         let mut logs = self.logs.lock().unwrap();
         if logs.len() >= LOG_LINES {
             logs.pop_front();
         }
-        logs.push_back(agentrouter_device::util::clip(&text, LOG_LINE_MAX));
+        logs.push_back(text);
     }
 
     /// Wait until it is ready or has given up, at most `wait`.
@@ -373,11 +407,12 @@ impl Server {
     }
 }
 
-/// The SDK client handler of one server: list changes and progress go back to the aggregator (its log lines are
-/// its stderr).
+/// The SDK client handler of one server: list changes and progress go back to the aggregator; its log is its stderr
+/// plus the MCP log messages it sends (many servers log only that way, DesktopCommander among them).
 pub struct Downstream {
     pub name: String,
     pub agg: Weak<Inner>,
+    pub server: Weak<Server>,
 }
 
 impl ClientHandler for Downstream {
@@ -401,6 +436,26 @@ impl ClientHandler for Downstream {
     ) {
         if let Some(agg) = self.agg.upgrade() {
             agg.forward_progress(&self.name, params).await;
+        }
+    }
+
+    // MCP logging is deprecated (SEP-2577) but servers in use still send it; it is their only log for some.
+    #[allow(deprecated)]
+    async fn on_logging_message(
+        &self,
+        params: LoggingMessageNotificationParam,
+        _context: NotificationContext<RoleClient>,
+    ) {
+        if let Some(server) = self.server.upgrade() {
+            let data = match &params.data {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            let level = serde_json::to_value(params.level)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_default();
+            server.log(&format!("[mcp {level}] {data}"));
         }
     }
 }
@@ -459,7 +514,10 @@ pub async fn supervise(agg: Arc<Inner>, server: Arc<Server>) {
                 *server.pid.lock().unwrap() = pid;
                 *server.peer.lock().unwrap() = Some(running.peer().clone());
                 match running.peer().list_all_tools().await {
-                    Ok(tools) => server.set_tools(tools),
+                    Ok(tools) => {
+                        server.log(&format!("[agentrouter] ready: {} tools", tools.len()));
+                        server.set_tools(tools);
+                    }
                     Err(e) => server.log(&format!("[agentrouter] tools/list failed: {e}")),
                 }
                 server.set_state(State::Ready);
@@ -664,6 +722,7 @@ async fn start_once(
     let handler = Downstream {
         name: def.name.clone(),
         agg: Arc::downgrade(agg),
+        server: Arc::downgrade(server),
     };
     #[cfg(windows)]
     if let Some(pipe) = pipe {
@@ -836,6 +895,7 @@ where
             return Err(StartError::Failed("已停止".into()));
         }
     };
+    server.log("[agentrouter] MCP handshake done; listing tools");
     Ok((running, pid))
 }
 

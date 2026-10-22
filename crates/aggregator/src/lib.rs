@@ -699,7 +699,10 @@ impl Inner {
             }
             old.stop.cancel();
             old.wait_settled(Duration::from_secs(5)).await;
-            let fresh = Server::new(old.def.clone());
+            let fresh = Server::new(
+                old.def.clone(),
+                Some(&servers::log_path(&self.cfg.data_dir, &old.def.name)),
+            );
             self.servers
                 .lock()
                 .unwrap()
@@ -1282,7 +1285,8 @@ impl Inner {
             old.stop.cancel();
             old.wait_settled(Duration::from_secs(5)).await;
         }
-        let server = Server::new(def);
+        let log = servers::log_path(&self.cfg.data_dir, &def.name);
+        let server = Server::new(def, Some(&log));
         self.servers
             .lock()
             .unwrap()
