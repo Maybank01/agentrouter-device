@@ -145,6 +145,8 @@ pub fn is_boundary_refusal(text: &str) -> bool {
         "eperm",
         "erofs",
         "permission denied",
+        // The host server's coded refusal (`PERMISSION_DENIED: …`), first in its text whatever the path's length.
+        "permission_denied",
         "access is denied",
         "read-only file system",
         "operation not permitted",

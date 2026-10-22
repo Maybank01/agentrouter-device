@@ -13,7 +13,13 @@
 //!   relinking.
 //! - **Bounded:** the capture runs with stdin `/dev/null`, its own process group and a 10 s limit (a start-up file
 //!   that waits for input or starts tmux is killed); `AGENTROUTER_RESOLVING_ENVIRONMENT=1` lets a start-up file skip
-//!   slow parts. On failure the commands keep `hostd`'s own environment, as before.
+//!   slow parts. When the person's shell fails, `/bin/sh`'s login environment is captured the same way (`/etc/profile`,
+//!   `~/.profile`); when that fails too, the commands keep `hostd`'s own environment.
+//! - **The only place start-up files run:** commands start `/bin/sh -c`, not a login shell, with the captured
+//!   environment ([`crate::command_text::UNIX_STDIN_RUNNER`]). What a start-up file prints or fails at stays here (its
+//!   stderr is dropped) and never lands in a command's output (Cloud #2246: Ubuntu's `im-config` logging through
+//!   `systemd-cat` inside the sandbox put `Failed to create stream fd: Operation not permitted` ahead of every
+//!   command's own error).
 //! - **What `hostd` sets wins:** the egress proxy of a sandbox (folder mode's `srt`, a cloud sandbox's node proxy),
 //!   `TMPDIR`, and `AGENTROUTER_*` keep `hostd`'s values; variables only `hostd` has are kept. In folder mode the
 //!   capture runs inside the same OS sandbox as the commands, so it only reads what the sandbox lets it read.
@@ -256,8 +262,9 @@ struct Cached {
 #[cfg(unix)]
 static CACHE: Mutex<Option<Cached>> = Mutex::new(None);
 
-/// The person's captured environment, captured again when a start-up file changed; `None` when it cannot be captured
-/// (the commands then keep `hostd`'s environment) or when `AGENTROUTER_SHELL_ENV=off`.
+/// The person's captured environment (their shell's, else `/bin/sh`'s login environment), captured again when a
+/// start-up file changed; `None` when neither can be captured (the commands then keep `hostd`'s environment) or when
+/// `AGENTROUTER_SHELL_ENV=off`.
 #[cfg(unix)]
 pub fn captured() -> Option<Arc<Vec<(OsString, OsString)>>> {
     if std::env::var_os("AGENTROUTER_SHELL_ENV").is_some_and(|v| v == "off") {
@@ -276,7 +283,10 @@ pub fn captured() -> Option<Arc<Vec<(OsString, OsString)>>> {
     {
         return c.vars.clone();
     }
-    let vars = capture(&shell).map(Arc::new);
+    let sh = Path::new("/bin/sh");
+    let vars = capture(&shell)
+        .or_else(|| (shell != sh).then(|| capture(sh)).flatten())
+        .map(Arc::new);
     *cache = Some(Cached {
         shell,
         stamp: now,

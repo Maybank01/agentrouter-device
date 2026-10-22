@@ -4,7 +4,7 @@
 
 | 要求 | 怎么做到 | 自动检查 |
 | --- | --- | --- |
-| 命令行普通、可见 | `pwsh/powershell -NoLogo -NoProfile -NonInteractive -Command "<固定的运行器>"`（Linux/macOS 是 `/bin/sh -lc "<固定的运行器>"`）：命令文字本身从不放进命令行（工作区规则「命令行里不传数据」，#99），一次性命令走 stdin，终端里的命令放进只有本人能打开的文件、读完即删；运行器是明文、固定不变（`crates/device-core/src/command_text.rs`）。不用 `-EncodedCommand`，不解 Base64，不改执行策略，不用 `-File` 运行脚本 | 是 |
+| 命令行普通、可见 | `pwsh/powershell -NoLogo -NoProfile -NonInteractive -Command "<固定的运行器>"`（Linux/macOS 是 `/bin/sh -c "<固定的运行器>"`）：命令文字本身从不放进命令行（工作区规则「命令行里不传数据」，#99），一次性命令走 stdin，终端里的命令放进只有本人能打开的文件、读完即删；运行器是明文、固定不变（`crates/device-core/src/command_text.rs`）。不用 `-EncodedCommand`，不解 Base64，不改执行策略，不用 `-File` 运行脚本 | 是 |
 | 不隐藏 shell 窗口 | 不用 `CREATE_NO_WINDOW` / `WindowStyle Hidden`：桌面版里每个命令有自己可见的控制台窗口，命令行版共用当前终端 | 是 |
 | 不挂起、不注入 | 创建时就用 `PROC_THREAD_ATTRIBUTE_JOB_LIST` 放进 Job Object；不用 `CREATE_SUSPENDED`、`ResumeThread`、跨进程写内存；文件夹级别的命令用本人令牌的受限、低完整性副本启动（只降权，不提权） | 是 |
 | 先同意再执行 | 本机确认框在任何 shell 启动之前；只读级别从不启动 shell | 单元测试（`crates/device-core/tests`） |

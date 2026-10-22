@@ -295,8 +295,12 @@ for start-up files that want to skip work) and keeps it in memory; it captures a
 changes. So `PATH` from `~/.zshrc` (nvm, mise, pyenv, Homebrew), exported variables and `SSH_AUTH_SOCK` are there as in
 the person's terminal. `hostd`'s own proxy variables, `TMPDIR` and `AGENTROUTER_*` win (a sandbox's way out). In folder
 mode the capture runs inside the same OS sandbox, so it reads only what the sandbox allows; a credential agent's socket
-is reachable only if the sandbox allows it (owner decision pending). On failure the commands keep `hostd`'s environment;
-`AGENTROUTER_SHELL_ENV=off` turns it off. Windows: a process the person starts already has their registry variables;
+is reachable only if the sandbox allows it (owner decision pending). When the person's shell fails, `/bin/sh`'s login
+environment is captured instead; when that fails too, the commands keep `hostd`'s environment; `AGENTROUTER_SHELL_ENV=off`
+turns it off. The capture is the only place start-up files run: commands start `/bin/sh -c` (not a login shell) with the
+captured environment, so nothing a start-up file prints or fails at reaches a command's output (Cloud #2246: Ubuntu's
+`im-config` logs through `systemd-cat`, the sandbox's seccomp refuses the journal socket, and every command's stderr
+began with `Failed to create stream fd: Operation not permitted` ahead of its own error). Windows: a process the person starts already has their registry variables;
 nothing is captured. Values are never logged.
 
 **The output folder (Cloud #2435, device #100, #102).** A job's stream past its window and an oversize tool result stay
@@ -308,7 +312,7 @@ When the folder passes `AGENTROUTER_OUT_WARN` (default `1G`) or the disk's free 
 `storage_low` (the `host__out_status` answer) once per crossing; the runner turns it into the environment's
 `environment.storage_low` event and the Agent decides what to delete.
 
-- The shell is real: `/bin/sh -lc` on Linux/macOS, PowerShell (`pwsh`, else Windows PowerShell) on Windows; `shell`
+- The shell is real: `/bin/sh -c` with the person's login environment on Linux/macOS, PowerShell (`pwsh`, else Windows PowerShell) on Windows; `shell`
   names it. The command's whole process tree ends on timeout (process group / job object). Paths are real; relative ones resolve against the first folder.
 - **Streamed output:** a `host__exec` call that carries `_meta.progressToken` gets its stdout/stderr as it arrives, as
   `notifications/progress` (`progress` counts up; `message` = the JSON text of `{"stream": "stdout"|"stderr", "data":

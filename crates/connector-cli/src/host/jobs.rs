@@ -23,7 +23,7 @@ use agentrouter_device::exec::{self, Spawned};
 
 use super::out::{Out, Spill};
 use super::run::{PUSH_BYTES, PUSH_EVERY, utf8_head};
-use super::{Call, Host, arg_str, shell_name, shown, tool};
+use super::{Call, Fail, Host, arg_str, shell_name, shown, tool};
 
 /// Output kept in memory per stream of a job; older bytes are read from the stream's copy in the output folder.
 const KEEP: usize = 8 << 20;
@@ -348,24 +348,18 @@ impl Host {
         }
     }
 
-    pub(super) fn job_start(&self, args: &Value, call: &Call) -> Result<Value, String> {
+    pub(super) fn job_start(&self, args: &Value, call: &Call) -> Result<Value, Fail> {
         let command = arg_str(args, "command").unwrap_or("");
         if command.trim().is_empty() {
             return Err("command 不能是空的".into());
         }
-        let cwd = match arg_str(args, "cwd") {
-            Some(c) if !c.trim().is_empty() => self.resolve(c)?,
-            _ => self.home(),
-        };
-        if !cwd.is_dir() {
-            return Err(format!("{} 不是一个文件夹", shown(&cwd)));
-        }
+        let cwd = self.work_dir("job_start", args)?;
         {
             let mut all = self.jobs.all.lock().unwrap();
             if all.iter().filter(|j| j.running()).count() >= RUNNING_MAX {
-                return Err(format!(
-                    "后台任务最多同时 {RUNNING_MAX} 个；先用 job_stop 结束不要的"
-                ));
+                return Err(
+                    format!("后台任务最多同时 {RUNNING_MAX} 个；先用 job_stop 结束不要的").into(),
+                );
             }
             while all.len() >= KEPT_MAX {
                 match all.iter().position(|j| !j.running()) {
@@ -451,7 +445,7 @@ impl Host {
         if wait == 0 {
             return Ok(started);
         }
-        self.wait_for_end(&job, started, Duration::from_millis(wait), call)
+        Ok(self.wait_for_end(&job, started, Duration::from_millis(wait), call)?)
     }
 
     /// `job_start`'s wait: stream new output as progress (coalesced like `exec`), until the job ended and its pipes
