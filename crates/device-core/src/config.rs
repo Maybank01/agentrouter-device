@@ -124,6 +124,9 @@ pub struct Config {
     /// Named local data (Cloud DEVICES §2.5): folders the person registered once with a name (`agentrouter data add`),
     /// reported as `link.localData` and, in folder mode, inside the link's grants.
     pub local_data: Vec<crate::local_data::LocalData>,
+    /// The owner's usage rules for this computer (Cloud DEVICES §3.1, `agentrouter rules set`): reported as
+    /// `link.rules` and enforced by this host on every session and call. Unset = the defaults (every own Agent).
+    pub rules: crate::rules::Rules,
 }
 
 impl Default for Config {
@@ -142,6 +145,7 @@ impl Default for Config {
             limits: Default::default(),
             software: Default::default(),
             local_data: Vec::new(),
+            rules: Default::default(),
         }
     }
 }
@@ -167,6 +171,19 @@ impl Config {
             .ok()
             .and_then(|text| serde_json::from_str(&text).ok())
             .unwrap_or_default()
+    }
+
+    /// The file as it is, or why it does not read (a missing file is the defaults). A running link applies rules and
+    /// local data only from a file that reads: a hand edit that breaks it never widens what this computer allows.
+    pub fn try_load() -> Result<Config, String> {
+        let path = Self::path();
+        match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                serde_json::from_str(&text).map_err(|e| format!("{} 读不懂：{e}", path.display()))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
+            Err(e) => Err(format!("{} 读不了：{e}", path.display())),
+        }
     }
 
     pub fn save(&self) -> std::io::Result<()> {

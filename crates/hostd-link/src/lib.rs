@@ -109,6 +109,9 @@ pub struct LinkInfo {
     /// Named local data (Cloud DEVICES §2.5, `agentrouter_device::local_data::view`): `[{name, path, readOnly?,
     /// present}]`; null on a cloud sandbox (it has none).
     pub local_data: Value,
+    /// The owner's usage rules (Cloud DEVICES §3.1, `agentrouter_device::rules::Rules::view`); null on a cloud sandbox
+    /// (its rules are the payer's budget).
+    pub rules: Value,
 }
 
 impl LinkInfo {
@@ -139,6 +142,9 @@ impl LinkInfo {
         }
         if !self.local_data.is_null() {
             v["localData"] = self.local_data.clone();
+        }
+        if !self.rules.is_null() {
+            v["rules"] = self.rules.clone();
         }
         v
     }
