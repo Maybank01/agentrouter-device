@@ -49,6 +49,17 @@ fn valid_name(name: &str) -> bool {
 }
 
 /// Environment names only the device sets (`AGENTROUTER_*`, any case): a definition from the cloud may not carry them.
+/// `{{folder}}` (and `{{folders}}` inside a longer value) in an environment value: the first linked folder.
+fn fill_folder(value: &str, home: &str) -> String {
+    if value.contains("{{folder") {
+        value
+            .replace("{{folders}}", home)
+            .replace("{{folder}}", home)
+    } else {
+        value.to_string()
+    }
+}
+
 pub fn reserved_env(name: &str) -> bool {
     name.len() >= 12 && name[..12].eq_ignore_ascii_case("AGENTROUTER_")
 }
@@ -722,7 +733,13 @@ async fn start_once(
     for name in &def.keep_out {
         agentrouter_device::mcp_pkg::keep_out(&home, name);
     }
-    let mut env = def.env.clone();
+    // A server that takes its data path only from an environment variable (the MCP memory server's MEMORY_FILE_PATH):
+    // `{{folder}}` there is the first linked folder too, the one place the folder sandbox lets it write (Cloud #2739).
+    let mut env: Vec<(String, String)> = def
+        .env
+        .iter()
+        .map(|(k, v)| (k.clone(), fill_folder(v, &shown(&home))))
+        .collect();
     if !env.iter().any(|(k, _)| k.eq_ignore_ascii_case("PATH")) {
         // The device's Node and uv first (`npx`'s `#!/usr/bin/env node` finds the device's Node, #116).
         let path = agg
@@ -1108,6 +1125,15 @@ fn kill_tree(pid: Option<u32>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_env_value_gets_the_first_linked_folder() {
+        assert_eq!(
+            fill_folder("{{folder}}/.memory/graph.jsonl", "/home/p/work"),
+            "/home/p/work/.memory/graph.jsonl"
+        );
+        assert_eq!(fill_folder("plain", "/home/p/work"), "plain");
+    }
 
     fn def(extra: Value) -> ServerDef {
         let mut args = json!({
