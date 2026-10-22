@@ -297,6 +297,11 @@ pub struct Aggregator {
     inner: Arc<Inner>,
 }
 
+/// One preview stream's local end through the host server ([`Aggregator::port_bridge`]).
+#[cfg(target_os = "linux")]
+pub type PortStream =
+    tokio::io::Join<tokio::net::unix::pipe::Receiver, tokio::net::unix::pipe::Sender>;
+
 fn now_ms() -> i64 {
     agentrouter_device::util::now_ms()
 }
@@ -337,6 +342,87 @@ pub fn hint_of(arguments: &Value) -> String {
 }
 
 impl Aggregator {
+    /// Folder mode on Linux (device #136, HOSTD-MCP §3.8): a preview stream to `port` in the sandbox's own loopback,
+    /// through the link's `host` server (it runs in the same sandbox and network namespace). Two FIFOs in its scratch
+    /// folder carry the bytes (no sockets inside the sandbox). `Err(code)`: `PORT_CLOSED` (nothing listens there),
+    /// `PORT_SANDBOXED` (no host server running, or the FIFOs could not be made).
+    #[cfg(target_os = "linux")]
+    pub async fn port_bridge(&self, port: u16) -> Result<PortStream, &'static str> {
+        let Some(server) = self.inner.servers.lock().unwrap().get("host").cloned() else {
+            return Err("PORT_SANDBOXED");
+        };
+        let Some(peer) = server.peer.lock().unwrap().clone() else {
+            return Err("PORT_SANDBOXED");
+        };
+        let dir = self
+            .inner
+            .sandbox
+            .scratch(&format!("host\u{1}{}", self.inner.cfg.link));
+        let id: String = agentrouter_device::util::random_bytes::<8>()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let input = dir.join(format!(".port-{id}.in"));
+        let output = dir.join(format!(".port-{id}.out"));
+        let gone = || {
+            let _ = std::fs::remove_file(&input);
+            let _ = std::fs::remove_file(&output);
+        };
+        for p in [&input, &output] {
+            let c = std::ffi::CString::new(p.as_os_str().as_encoded_bytes())
+                .map_err(|_| "PORT_SANDBOXED")?;
+            // SAFETY: a NUL-terminated path; mkfifo has no other effect.
+            if unsafe { libc::mkfifo(c.as_ptr(), 0o600) } != 0 {
+                gone();
+                return Err("PORT_SANDBOXED");
+            }
+        }
+        let mut params = CallToolRequestParams::new("_port_bridge".to_string());
+        params.arguments = json!({"port": port, "input": input.to_string_lossy(), "output": output.to_string_lossy()})
+            .as_object()
+            .cloned();
+        let answer = tokio::time::timeout(Duration::from_secs(10), peer.call_tool(params)).await;
+        let answer = match answer {
+            Ok(Ok(r)) if r.is_error != Some(true) => r,
+            Ok(Ok(r)) => {
+                gone();
+                let closed = r
+                    .structured_content
+                    .as_ref()
+                    .and_then(|v| v.get("code"))
+                    .and_then(Value::as_str)
+                    == Some("PORT_CLOSED");
+                return Err(if closed {
+                    "PORT_CLOSED"
+                } else {
+                    "PORT_SANDBOXED"
+                });
+            }
+            _ => {
+                gone();
+                return Err("PORT_SANDBOXED");
+            }
+        };
+        drop(answer);
+        // Our read end first (it never waits), then the write end read-write (Linux: never waits either); the host
+        // server's opens then complete and it removes both names.
+        let opened = tokio::net::unix::pipe::OpenOptions::new()
+            .open_receiver(&output)
+            .and_then(|rx| {
+                tokio::net::unix::pipe::OpenOptions::new()
+                    .read_write(true)
+                    .open_sender(&input)
+                    .map(|tx| (rx, tx))
+            });
+        match opened {
+            Ok((rx, tx)) => Ok(tokio::io::join(rx, tx)),
+            Err(_) => {
+                gone();
+                Err("PORT_SANDBOXED")
+            }
+        }
+    }
+
     /// Start the aggregator of one link (inside a tokio runtime). `out` sends to the link.
     pub fn new(cfg: Config, hooks: Arc<dyn Hooks>, out: Outbound) -> Aggregator {
         let audit = Audit::open(&audit_path(&cfg.data_dir, &cfg.link));

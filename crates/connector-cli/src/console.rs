@@ -651,12 +651,29 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
         );
         let for_head = agg.clone();
         let for_load = agg.clone();
+        // Folder mode on Linux: preview streams reach the sandbox's own loopback through the host server (#136).
+        #[cfg(target_os = "linux")]
+        let bridge: Option<agentrouter_hostd_link::port::Bridge> = (!opts.full).then(|| {
+            let agg = agg.clone();
+            let bridge: agentrouter_hostd_link::port::Bridge = Arc::new(move |port: u16| {
+                let agg = agg.clone();
+                Box::pin(async move {
+                    agg.port_bridge(port)
+                        .await
+                        .map(|s| Box::new(s) as Box<dyn agentrouter_hostd_link::port::Duplex>)
+                })
+            });
+            bridge
+        });
+        #[cfg(not(target_os = "linux"))]
+        let bridge = None;
         let (handle, mut events) = agentrouter_hostd_link::start(agentrouter_hostd_link::Options {
             gateway: gateway.clone(),
             info,
             tokens: agentrouter_hostd_link::keystore_tokens(gateway),
             audit_head: Arc::new(move || for_head.audit_head()),
             load: Some(Arc::new(move || meter.sample(&load_home, for_load.environments()))),
+            bridge,
         });
         let _ = handle_cell.set(handle.clone());
         let _ = console.handle.set(handle.clone());

@@ -74,6 +74,7 @@ async fn hello_frames_heartbeat_reconnect_and_ends() {
         }),
         audit_head: Arc::new(|| json!({"seq": 7, "hash": "ab".repeat(32)})),
         load: None,
+        bridge: None,
     });
 
     // The first token try failed: Down, then a connection.
@@ -195,6 +196,7 @@ async fn revocation_and_outdated_end_the_link_and_stop_is_clean() {
             tokens: Arc::new(|| Ok("ldt_x".into())),
             audit_head: Arc::new(|| json!({"seq": 0, "hash": ""})),
             load: None,
+            bridge: None,
         });
         let (tcp, _) = listener.accept().await.unwrap();
         let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
@@ -210,6 +212,7 @@ async fn revocation_and_outdated_end_the_link_and_stop_is_clean() {
         tokens: Arc::new(|| Err(TokenError::Revoked("gone".into()))),
         audit_head: Arc::new(|| json!({})),
         load: None,
+        bridge: None,
     });
     assert_eq!(
         next_event(&mut events).await,
@@ -224,6 +227,7 @@ async fn revocation_and_outdated_end_the_link_and_stop_is_clean() {
         tokens: Arc::new(|| Ok("ldt_x".into())),
         audit_head: Arc::new(|| json!({"seq": 0, "hash": ""})),
         load: None,
+        bridge: None,
     });
     let (tcp, _) = listener.accept().await.unwrap();
     let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();

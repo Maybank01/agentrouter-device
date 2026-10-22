@@ -405,7 +405,13 @@ pub async fn supervise(agg: Arc<Inner>, server: Arc<Server>) {
                 *server.pid.lock().unwrap() = pid;
                 *server.peer.lock().unwrap() = Some(running.peer().clone());
                 match running.peer().list_all_tools().await {
-                    Ok(tools) => *server.tools.lock().unwrap() = tools,
+                    // Tools named `_…` are hostd's own (the host server's `_port_bridge`, #136): never listed.
+                    Ok(tools) => {
+                        *server.tools.lock().unwrap() = tools
+                            .into_iter()
+                            .filter(|t| !t.name.starts_with('_'))
+                            .collect()
+                    }
                     Err(e) => server.log(&format!("[agentrouter] tools/list failed: {e}")),
                 }
                 server.set_state(State::Ready);

@@ -182,6 +182,9 @@ pub struct Options {
     pub audit_head: AuditHead,
     /// Sent as `{"op": "load", …}` with every heartbeat (Cloud VISION §4 D1); None sends nothing.
     pub load: Option<Load>,
+    /// Folder mode: how a preview stream reaches a port inside the sandbox ([`port::Bridge`], device #136); None
+    /// answers `PORT_SANDBOXED` there.
+    pub bridge: Option<port::Bridge>,
 }
 
 /// What the link reports to its consumer.
@@ -482,12 +485,14 @@ async fn connection(
                             Inbound::Lost(why) => break Conn::Lost(why),
                             Inbound::PortOpen(open) => {
                                 let refuse = |code| { let _ = out_tx.send(Out::PortError { id: open.id.clone(), code }); };
-                                if !port::allowed(&info.lock().unwrap()) {
+                                // Folder mode: only through the bridge into the sandbox (device #136).
+                                let bridge = (!port::allowed(&info.lock().unwrap())).then(|| options.bridge.clone());
+                                if matches!(bridge, Some(None)) {
                                     refuse("PORT_SANDBOXED");
                                 } else if let (Ok(permit), Some(stream_url)) = (streams.clone().try_acquire_owned(), port::stream_url(&url, &open.id)) {
                                     let out = out_tx.clone();
                                     tokio::spawn(async move {
-                                        if let Err(code) = port::serve(&stream_url, &open).await {
+                                        if let Err(code) = port::serve(&stream_url, &open, bridge.flatten().as_ref()).await {
                                             let _ = out.send(Out::PortError { id: open.id, code });
                                         }
                                         drop(permit);
