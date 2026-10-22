@@ -1,24 +1,25 @@
 //! The runtimes local tools run on (device #116, Cloud #2383): folder mode never asks the person to install anything
 //! (the product is for ordinary people). srt is a Node program and so are `npx` servers; `uvx` servers (serena, in the
 //! default bundle) need uv. On Linux srt also runs ripgrep (it finds the dangerous files to keep unwritable) and socat
-//! (it relays the sandbox's network to srt's proxy), #119. The device provisions all of them itself, once, in
-//! `sandbox setup` (the double-click start and the first `link` run it). bubblewrap is the one exception: on Ubuntu
-//! 24.04+ only the packaged `/usr/bin/bwrap` may create user namespaces (its AppArmor profile), so a missing one is a
-//! one-line install for the person (`Runtime::status` names the command).
+//! (it relays the sandbox's network to srt's proxy), #119, and bubblewrap (it makes the namespaces), #122. The device
+//! provisions all of them itself, once, in `sandbox setup` (the double-click start and the first `link` run it). Where
+//! AppArmor restricts unprivileged user namespaces (Ubuntu 23.10+), the bubblewrap that runs is a root-owned copy of
+//! the same pin that one AppArmor profile names (`crate::userns`, one admin line).
 //!
 //! - **Pinned:** one version per runtime and the project's official portable archive per OS and architecture, its
 //!   SHA-256 written here. Node: from the release's `SHASUMS256.txt`, whose signature was checked against the Node.js
 //!   release keys (`nodejs/release-keys`) when the pin was set. uv and ripgrep: the release's `.sha256` files (uv's
-//!   are the same on GitHub and on Astral's mirror). socat: our own static build of the official source
-//!   (`.github/workflows/socat.yml`; no maintained upstream static build exists), digests from its release's
-//!   SHA256SUMS. An archive that does not match is deleted, never unpacked.
+//!   are the same on GitHub and on Astral's mirror). socat and bubblewrap: our own static builds of the official source
+//!   (`.github/workflows/socat.yml`, `bwrap.yml`; upstream publishes no maintained static build), digests from their
+//!   releases' SHA256SUMS. An archive that does not match is deleted, never unpacked.
 //! - **Sources:** the project's own download host first, then a mirror (npmmirror for Node, GitHub for uv); a source
 //!   that stays too slow is left for the next one. The download is in-process (no curl, PowerShell or installer
 //!   program) and lands in `<data>-shared/runtimes/` beside the data folder, never in the temp folder
 //!   (docs/AV-HYGIENE.md).
 //! - **One path:** srt, the Windows sandbox entry, `npm ci`, and `npx`/`uvx` servers use these runtimes, never the
 //!   person's own Node or uv (whatever version that is, if any). [`TOOLS`] go first on a server's PATH; srt gets the
-//!   absolute paths of [`SANDBOX_LINUX`] in its settings (`ripgrep.command`, `socatPath`), never the person's own.
+//!   absolute paths of [`SANDBOX_LINUX`] in its settings (`ripgrep.command`, `socatPath`, `bwrapPath`), never the
+//!   person's own.
 //! - **Bumping a pin:** the new version and all six digests, re-vetted (licence, release notes). The new folder is put
 //!   in place first; the old version's folder is removed after.
 
@@ -223,11 +224,42 @@ pub const SOCAT: Pinned = Pinned {
     required: true,
 };
 
+/// bubblewrap (LGPL-2.0-or-later), what srt confines with on Linux. 0.13.1, released 2026-10-14, built statically
+/// against musl with libcap by `.github/workflows/bwrap.yml` (release `bwrap-static-<version>`, with its source); `-r1`
+/// is the build revision. The same pin is the root-owned copy `sandbox userns install` puts under
+/// `/usr/local/libexec/agentrouter` (`crate::userns`).
+pub const BWRAP: Pinned = Pinned {
+    title: "bubblewrap",
+    name: "bwrap",
+    version: "0.13.1-r1",
+    sources: &[
+        "https://github.com/Maybank01/agentrouter-device/releases/download/bwrap-static-{version}/{file}",
+    ],
+    archives: &[
+        Archive {
+            os: "linux",
+            arch: "x86_64",
+            file: "bwrap-0.13.1-x86_64-linux-musl.tar.gz",
+            sha256: "e74b6609a092314dab5309b3e20ef7f64d6bf55e8df5a66bf44d1ac968d2fbc4",
+        },
+        Archive {
+            os: "linux",
+            arch: "aarch64",
+            file: "bwrap-0.13.1-aarch64-linux-musl.tar.gz",
+            sha256: "f6962376ff55c74f55ead5686f4a96d4fd3280bc007ec2dedb9a61609f19c79d",
+        },
+    ],
+    bin_windows: "",
+    bin_unix: "",
+    programs: &["bwrap"],
+    required: true,
+};
+
 /// What local tools run on, on every OS (first on their PATH), in the order `sandbox setup` provisions them.
 pub const TOOLS: [&Pinned; 2] = [&NODE, &UV];
 
 /// What srt itself runs on Linux besides Node (it gets their absolute paths).
-pub const SANDBOX_LINUX: [&Pinned; 2] = [&RG, &SOCAT];
+pub const SANDBOX_LINUX: [&Pinned; 3] = [&RG, &SOCAT, &BWRAP];
 
 /// What srt runs on this OS besides Node: [`SANDBOX_LINUX`] on Linux, nothing elsewhere.
 pub fn sandbox_programs() -> &'static [&'static Pinned] {
@@ -587,6 +619,10 @@ mod tests {
         for a in SOCAT.archives {
             assert!(a.file.starts_with(&format!("socat-{socat_release}-")));
         }
+        let bwrap_release = BWRAP.version.split("-r").next().unwrap();
+        for a in BWRAP.archives {
+            assert!(a.file.starts_with(&format!("bwrap-{bwrap_release}-")));
+        }
     }
 
     /// Only the projects' own hosts and their well-known mirrors (docs/AV-HYGIENE.md).
@@ -606,15 +642,20 @@ mod tests {
                 "releases.astral.sh",
                 "github.com",
                 "github.com",
+                "github.com",
                 "github.com"
             ]
         );
-        // On GitHub: the projects' own release pages (ripgrep's; socat's static build is ours, beside its source).
+        // On GitHub: the projects' own release pages (ripgrep's; the static socat and bubblewrap builds are ours,
+        // beside their source).
         assert!(
             RG.sources[0].starts_with("https://github.com/BurntSushi/ripgrep/releases/download/")
         );
         assert!(SOCAT.sources[0].starts_with(
             "https://github.com/Maybank01/agentrouter-device/releases/download/socat-static-"
+        ));
+        assert!(BWRAP.sources[0].starts_with(
+            "https://github.com/Maybank01/agentrouter-device/releases/download/bwrap-static-"
         ));
     }
 

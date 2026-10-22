@@ -158,23 +158,52 @@ jobs:
           foreach ($t in 'node', 'npx', 'uvx') {
             if (Get-Command $t -ErrorAction SilentlyContinue) { throw "$t is still on PATH" }
           }
-      # #119: srt's ripgrep and socat are the device's own (`sandbox setup` provisions them); only bubblewrap is the
-      # distribution's. Any socat/rg on the runner is hidden, so nothing here can fall back to them.
-      - name: Linux sandbox dependencies (bubblewrap only; user namespaces; no socat or rg)
+      # #119, #122: bubblewrap, ripgrep and socat are the device's own (`sandbox setup` provisions them); any on the
+      # runner are hidden, so nothing here can fall back to them. Ubuntu's AppArmor user-namespace restriction stays on,
+      # as on people's Ubuntu PCs: the tests below run through the one admin line (`sandbox userns install`).
+      - name: Linux sandbox dependencies (none from the distribution; user-namespace restriction on)
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -yq bubblewrap
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          for tool in socat rg; do
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1
+          for tool in bwrap socat rg; do
             { which -a "$tool" 2>/dev/null || true; } | sort -u | while read -r p; do
               if [ -e "$p" ] || [ -L "$p" ]; then sudo mv "$p" "$p.hidden-by-ci"; fi
             done
           done
           hash -r
-          for tool in socat rg; do
+          for tool in bwrap socat rg; do
             if command -v "$tool"; then echo "$tool is still on PATH"; exit 1; fi
           done
+      # #122: the status names the one admin line; that line gives one root-owned copy of the device's bubblewrap an
+      # AppArmor `userns` profile (idempotent), and the device's own user-writable copy still gets nothing.
+      - name: The user-namespace restriction asks for one admin line, and that line lifts it for the device's bubblewrap only (Linux)
+        if: runner.os == 'Linux'
+        env:
+          AGENTROUTER_DEVICE_HOME: ${{ runner.temp }}/userns/data
+        run: |
+          cargo build -q -p agentrouter-device-cli --bin agentrouter
+          bin="$PWD/target/debug/agentrouter"
+          "$bin" sandbox setup | tee setup.txt
+          grep -q "准备好了 bubblewrap" setup.txt && grep -q "准备好了 socat" setup.txt && grep -q "准备好了 ripgrep" setup.txt
+          set +e; "$bin" sandbox status > status.txt; code=$?; set -e
+          cat status.txt
+          test "$code" = 1
+          grep -qF "sudo $bin sandbox userns install" status.txt
+          sudo "$bin" sandbox userns install | tee install.txt
+          grep -q "AppArmor 已加载规则 agentrouter-bwrap" install.txt
+          sudo "$bin" sandbox userns install | tee again.txt
+          if grep -q "装好了\|写好了" again.txt; then echo "the second run changed something"; exit 1; fi
+          ls -l /usr/local/libexec/agentrouter/*/bwrap
+          test "$(stat -c %u:%a /usr/local/libexec/agentrouter/bwrap-*/bwrap)" = "0:755"
+          cat /etc/apparmor.d/agentrouter-bwrap
+          "$bin" sandbox status
+          own=$(ls "$AGENTROUTER_DEVICE_HOME"-shared/runtimes/bwrap-*/bwrap)
+          if "$own" --ro-bind / / --unshare-user --unshare-pid --proc /proc --dev /dev true 2>/dev/null; then
+            echo "the user-writable copy made a user namespace with the restriction on"; exit 1
+          fi
+          /usr/local/libexec/agentrouter/bwrap-*/bwrap --ro-bind / / --unshare-user --unshare-pid --proc /proc --dev /dev \
+            cat /proc/self/attr/current | tee label.txt
+          grep -q "^agentrouter-bwrap" label.txt
       # srt-win starts the sandbox account's processes with CreateProcessWithLogonW, which needs Secondary Logon
       # (stopped on the hosted image; on people's PCs it starts on demand).
       - name: Windows Secondary Logon service
@@ -191,21 +220,19 @@ jobs:
         run: cargo test -p agentrouter-aggregator -- --nocapture
       - name: The whole chain through the real CLI, and the escape cases (issue #50)
         run: cargo test -p agentrouter-device-cli --test link_e2e -- --nocapture
-      # #119: without bubblewrap, setup still provisions everything else and the status names the one-line install.
-      - name: A missing bubblewrap names the install line (Linux)
+      # #122: remove undoes it and the status asks again; without the restriction (Debian, Fedora, Arch…) the device's
+      # own copy needs no admin step.
+      - name: Remove undoes it; without the restriction nothing needs an admin (Linux)
         if: runner.os == 'Linux'
         env:
-          AGENTROUTER_DEVICE_HOME: ${{ runner.temp }}/no-bwrap/data
+          AGENTROUTER_DEVICE_HOME: ${{ runner.temp }}/userns/data
         run: |
-          sudo mv /usr/bin/bwrap /usr/bin/bwrap.hidden-by-ci
-          hash -r
-          if command -v bwrap; then echo "bwrap is still on PATH"; exit 1; fi
-          cargo build -q -p agentrouter-device-cli --bin agentrouter
-          target/debug/agentrouter sandbox setup | tee setup.txt
-          set +e; target/debug/agentrouter sandbox status > status.txt; code=$?; set -e
+          bin="$PWD/target/debug/agentrouter"
+          sudo "$bin" sandbox userns remove
+          test ! -e /etc/apparmor.d/agentrouter-bwrap && test ! -e /usr/local/libexec/agentrouter
+          set +e; "$bin" sandbox status > status.txt; code=$?; set -e
           cat status.txt
-          sudo mv /usr/bin/bwrap.hidden-by-ci /usr/bin/bwrap
           test "$code" = 1
-          grep -q "准备好了 socat" setup.txt && grep -q "准备好了 ripgrep" setup.txt
-          grep -q "缺少 bubblewrap" status.txt
-          grep -q "sudo apt-get install -y bubblewrap" status.txt
+          grep -qF "sandbox userns install" status.txt
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          "$bin" sandbox status
