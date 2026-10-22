@@ -97,10 +97,28 @@ fn tampered_npm() -> String {
 }
 
 fn tampered_uv() -> String {
-    let text = fixture("git/requirements.txt");
-    // The first hash in the file is a dependency's (annotated-types), never the pinned package's.
-    let at = text.find("--hash=sha256:").unwrap() + "--hash=sha256:".len();
-    format!("{}{}{}", &text[..at], "0".repeat(64), &text[at + 64..])
+    // Every hash of the first requirement (annotated-types, never the pinned package): uv accepts any listed hash, so
+    // all of them change (its wheel's and its source file's).
+    let mut first = None;
+    fixture("git/requirements.txt")
+        .lines()
+        .map(|line| {
+            if !line.starts_with(' ') && line.contains("==") && first.is_none() {
+                first = Some(true);
+            } else if !line.starts_with(' ') && line.contains("==") {
+                first = Some(false);
+            }
+            match line.find("--hash=sha256:") {
+                Some(at) if first == Some(true) => {
+                    let end = at + "--hash=sha256:".len();
+                    format!("{}{}{}", &line[..end], "0".repeat(64), &line[end + 64..])
+                }
+                _ => line.to_string(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
 }
 
 fn lock_of(args: &Value) -> Lock {
