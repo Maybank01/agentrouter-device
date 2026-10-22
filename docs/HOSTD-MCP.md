@@ -200,6 +200,9 @@ the id.
   per two cores and 4 GiB of memory, at least one.
 - `labels` = `{os, arch, tools, runtimes, custom}`. `tools` and `runtimes` are the names a task's `requires` uses,
   found on PATH. `custom` holds the owner's own labels from `config.json` `labels` (`gpu`, `rack-2`, 「我的渲染机」).
+- `pool` (Cloud VISION §4 D2, #2576): the pool the owner puts this host in, `config.json` `pool` (「渲染机」, `rack-2`),
+  sent in `hello.link` only when set (1–40 characters). Control records it with the host; a definition admits it as
+  `pool:<name>` in `reach.environment.allow`. Unset = the person's default pool.
 
 The `load` frame goes with every heartbeat. An environment is a conversation with an open MCP session on this
 host. `load1` is null on Windows. `free_slots` = `environments` capacity minus running ones.

@@ -82,11 +82,14 @@ pub struct LinkInfo {
     pub capacity: Value,
     /// `{os, arch, tools, runtimes, custom}` (the owner's own labels in `custom`); null when not measured.
     pub labels: Value,
+    /// The pool the host's owner put it in (`config.json` `pool`, Cloud VISION §4 D2, #2576); none = the person's
+    /// default pool. Sent only when set.
+    pub pool: Option<String>,
 }
 
 impl LinkInfo {
     fn to_json(&self) -> Value {
-        json!({
+        let mut v = json!({
             "id": self.id,
             "folder": self.folder,
             "os": self.os,
@@ -100,7 +103,11 @@ impl LinkInfo {
             "placement": self.placement,
             "capacity": self.capacity,
             "labels": self.labels,
-        })
+        });
+        if let Some(pool) = &self.pool {
+            v["pool"] = json!(pool);
+        }
+        v
     }
 }
 

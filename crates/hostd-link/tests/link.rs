@@ -30,6 +30,7 @@ fn info() -> LinkInfo {
         placement: "pc".into(),
         capacity: serde_json::Value::Null,
         labels: serde_json::Value::Null,
+        pool: Some("渲染机".into()),
     }
 }
 
@@ -90,6 +91,8 @@ async fn hello_frames_heartbeat_reconnect_and_ends() {
     assert_eq!(hello["link"]["app"], "cli");
     assert_eq!(hello["link"]["sandbox"], "srt@0.0.81");
     assert_eq!(hello["link"]["placement"], "pc");
+    // The owner's pool (Cloud VISION D2, #2576).
+    assert_eq!(hello["link"]["pool"], "渲染机");
     assert!(
         hello["link"].get("path").is_none(),
         "no absolute path leaves the device"

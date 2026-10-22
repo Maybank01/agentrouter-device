@@ -194,6 +194,7 @@ mod tests {
             placement: "pc".into(),
             capacity: serde_json::Value::Null,
             labels: serde_json::Value::Null,
+            pool: None,
         };
         assert!(!allowed(&info));
         info.full = true;

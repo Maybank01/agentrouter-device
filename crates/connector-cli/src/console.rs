@@ -599,6 +599,7 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
         placement: "pc".into(),
         capacity: agentrouter_device::capacity::capacity(&first, cfg.max_environments),
         labels: agentrouter_device::capacity::labels(&cfg.labels),
+        pool: cfg.pool_name(),
     };
     let meter = Arc::new(agentrouter_device::capacity::LoadMeter::new(
         cfg.max_environments,

@@ -230,6 +230,7 @@ pub fn link(opts: CloudOptions, interrupted: &'static AtomicBool) -> i32 {
         placement: "cloud".into(),
         capacity: agentrouter_device::capacity::capacity(&first, None),
         labels: agentrouter_device::capacity::labels(&[]),
+        pool: None,
     };
     let meter = Arc::new(agentrouter_device::capacity::LoadMeter::new(None));
     let load_home = first.clone();
