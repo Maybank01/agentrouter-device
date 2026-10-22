@@ -260,6 +260,7 @@ pub fn link(opts: CloudOptions, interrupted: &'static AtomicBool) -> i32 {
                 yes_servers: false,
                 cloud: true,
                 limits: Default::default(),
+                device_program: std::env::current_exe().ok(),
             },
             Arc::new(CloudHooks),
             Arc::new(move |s: &str, m: Value| {

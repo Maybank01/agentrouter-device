@@ -193,6 +193,19 @@ pub struct Launch<'a> {
     /// caller decides). Loopback, link-local, multicast, cloud metadata, [`PRIVATE_RANGES`] and this computer's own
     /// addresses stay closed, by name and by IP literal.
     pub open_web: bool,
+    /// Windows (device #129): the named Job object the sandbox entry joins before it starts the program, so the
+    /// environment's limits hold on the confined tree. The caller made the job (and holds its limits); the entry
+    /// joins it with `<program> sandbox job-join` and refuses to start the program when that fails. Ignored
+    /// elsewhere (Linux scopes and macOS sampling work from outside).
+    pub job: Option<JobJoin<'a>>,
+}
+
+/// [`Launch::job`]: the job's name and the device program that joins it (`agentrouter`, which the sandbox account
+/// already runs as the link's `host` server).
+#[derive(Debug, Clone, Copy)]
+pub struct JobJoin<'a> {
+    pub name: &'a str,
+    pub program: &'a Path,
 }
 
 /// What `agentrouter sandbox status` shows and `hello` reports.
@@ -646,6 +659,12 @@ impl Runtime {
         Ok(())
     }
 
+    /// The sandbox account's SID (Windows): what a Job object or pipe made for a confined server grants (#112, #129).
+    #[cfg(windows)]
+    pub fn windows_sid(&self) -> Result<String, Unavailable> {
+        Ok(self.ready()?.sid)
+    }
+
     #[cfg(windows)]
     fn windows_read_grant(&self, dir: &Path, sid: &str) -> Result<(), String> {
         static DONE: std::sync::Mutex<Vec<(PathBuf, String)>> = std::sync::Mutex::new(Vec::new());
@@ -1019,6 +1038,10 @@ impl Runtime {
                 "cwd": shown(launch.cwd),
             });
             #[cfg(windows)]
+            if let Some(job) = &launch.job {
+                spec["job"] = windows_job_spec(job)?;
+            }
+            #[cfg(windows)]
             if stdio_pipe {
                 let (name, handle) = windows_stdio_pipe(&ready.sid).map_err(|e| {
                     Unavailable::new(
@@ -1059,6 +1082,30 @@ impl Runtime {
         }
         Ok(Confined { command: cmd, pipe })
     }
+}
+
+/// `{name, exe}` of the launch file's `job` (device #129): the job's name and the device program, which the entry runs
+/// as `<exe> sandbox job-join <name> <its pid>` (it must answer `joined`).
+#[cfg(windows)]
+fn windows_job_spec(job: &JobJoin) -> Result<Value, Unavailable> {
+    let fail = |e: String| {
+        Unavailable::new(
+            format!("资源上限的作业对象接不上隔离环境：{e}"),
+            "请重新运行 agentrouter；仍然不行就在 agentrouter-device 仓库报告这一行（device #129）。",
+        )
+    };
+    let name = job.name;
+    if !name.starts_with("Local\\")
+        || !name[6..]
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    {
+        return Err(fail(format!("作业对象的名字不对：{name}")));
+    }
+    if !job.program.is_file() {
+        return Err(fail(format!("找不到 {}", shown(job.program))));
+    }
+    Ok(json!({"name": name, "exe": shown(job.program)}))
 }
 
 /// A new [`StdioPipe`] for one server: its name and the server end. The DACL is protected (nothing inherited) and has
@@ -1482,6 +1529,7 @@ mod tests {
             readable: &[],
             read_only: false,
             open_web: false,
+            job: None,
         };
         let p = rt.policy(&launch).unwrap();
         let writes: Vec<&str> = p["filesystem"]["allowWrite"]
@@ -1574,6 +1622,7 @@ mod tests {
             readable: &[],
             read_only: true,
             open_web: false,
+            job: None,
         };
         let p = rt.policy(&launch).unwrap();
         assert_eq!(
@@ -1600,6 +1649,7 @@ mod tests {
             readable: &[],
             read_only: false,
             open_web: false,
+            job: None,
         };
         for open_web in [false, true] {
             launch.open_web = open_web;
@@ -1647,6 +1697,7 @@ mod tests {
                 readable: &[],
                 read_only: false,
                 open_web: false,
+                job: None,
             };
             assert!(
                 rt.policy(&launch).is_err(),

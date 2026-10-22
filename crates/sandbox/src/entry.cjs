@@ -10,11 +10,16 @@
 // `pipe` (a stdio server, #112): srt-win gives this process an empty stdin by design, so the server's stdin and stdout
 // travel over the device's named pipe instead. This side only connects (a client end, as with srt's own pipes); the
 // pipe takes one client, so a second connect fails. The server's stderr stays on srt's stderr.
+//
+// `job` (device #129, {name, exe}): the environment's limits. srt-win runs this process in a job of its own, out of the
+// device's reach; the device made a named job with the limits, and this process joins it (`<exe> sandbox job-join
+// <name> <pid>`, the device's own program: Node.js cannot) before it starts the server, so the server and everything
+// it starts stay inside. When joining fails the server does not start: it must not run without its limits.
 'use strict';
 const fs = require('fs');
 const net = require('net');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 
 const file = process.argv[2];
 let spec;
@@ -42,6 +47,19 @@ function escapeArgument(arg, doubleEscape) {
   arg = arg.replace(meta, '^$1');
   if (doubleEscape) arg = arg.replace(meta, '^$1');
   return arg;
+}
+
+if (spec.job) {
+  const joined = spawnSync(spec.job.exe, ['sandbox', 'job-join', spec.job.name, String(process.pid)], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    encoding: 'utf8',
+  });
+  // Only this exact answer is a join (another program exiting 0 is not).
+  if (joined.status !== 0 || (joined.stdout || '').trim() !== 'joined') {
+    const why = joined.error ? joined.error.message : `${(joined.stderr || '').trim()} (exit ${joined.status})`;
+    process.stderr.write(`agentrouter sandbox: 没能进入资源上限的作业对象，所以没有启动（device #129）：${why}\n`);
+    process.exit(124);
+  }
 }
 
 const env = Object.assign({}, process.env, spec.env || {});

@@ -88,6 +88,8 @@ impl Harness {
                 yes_servers,
                 cloud: false,
                 limits: Default::default(),
+                // CI builds the CLI first (Sandbox jobs): Windows folder mode joins the limits' job with it (#129).
+                device_program: std::env::var_os("AGENTROUTER_DEVICE_EXE").map(PathBuf::from),
             },
             hooks.clone(),
             Arc::new(move |s: &str, m: Value| {
@@ -467,8 +469,8 @@ async fn a_confined_server_end_to_end() {
         "read-only tools take no checkpoint"
     );
 
-    // The environment's limits (device #127): set live on the running server, no restart; bad values are named.
-    // Windows folder mode refuses them with the reason until device #129 (the confined tree is outside hostd's job).
+    // The environment's limits (device #127): set live on the running server, no restart; bad values are named. On
+    // Windows the confined server's entry joined the named job hostd made before the start (device #129).
     let set = h
         .call(
             "mcs_1",
@@ -479,42 +481,21 @@ async fn a_confined_server_end_to_end() {
         )
         .await;
     eprintln!("link__limits: {set}");
-    if cfg!(windows) {
-        let text = set.to_string();
-        assert!(
-            text.contains("LIMITS_NOT_APPLIED") && text.contains("#129"),
-            "{set}"
-        );
-        let cleared = h
-            .call("mcs_1", 34, "ags_a", "link__limits", json!({}))
-            .await;
-        assert_eq!(
-            cleared["result"]["structuredContent"]["limits"]["memoryMb"],
-            Value::Null,
-            "{cleared}"
-        );
-        assert_eq!(
-            cleared["result"]["structuredContent"]["unenforced"]
-                .as_array()
-                .map(Vec::len),
-            Some(3),
-            "{cleared}"
-        );
+    let view = &set["result"]["structuredContent"];
+    assert_eq!(
+        view["limits"],
+        json!({"memoryMb": 1024, "processes": 256, "cpuPercent": null}),
+        "{set}"
+    );
+    let by = view["enforcedBy"].as_str().unwrap_or("");
+    let expected: &[&str] = if cfg!(windows) {
+        &["job-object"]
+    } else if cfg!(target_os = "macos") {
+        &["sampled"]
     } else {
-        let view = &set["result"]["structuredContent"];
-        assert_eq!(
-            view["limits"],
-            json!({"memoryMb": 1024, "processes": 256, "cpuPercent": null}),
-            "{set}"
-        );
-        let by = view["enforcedBy"].as_str().unwrap_or("");
-        let expected: &[&str] = if cfg!(target_os = "macos") {
-            &["sampled"]
-        } else {
-            &["systemd-scope", "sampled"]
-        };
-        assert!(expected.contains(&by), "{set}");
-    }
+        &["systemd-scope", "sampled"]
+    };
+    assert!(expected.contains(&by), "{set}");
     let bad = h
         .call("mcs_1", 31, "ags_a", "link__limits", json!({"memoryMb": 1}))
         .await;

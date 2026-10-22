@@ -1,8 +1,8 @@
 //! The environment's resource limits hold on a server's tree (device #127): a command that keeps allocating memory is
 //! stopped near the limit, a process that keeps starting processes gets no more than the limit, and the limit is
-//! reported. On Linux and macOS through the real sandbox launcher (srt). On Windows the confined tree is outside hostd's
-//! Job object (srt-win starts it through Secondary Logon), so folder mode refuses limits with the reason (device #129)
-//! and the limits are proven on 完全访问, where the tree is hostd's own child.
+//! reported, on the confined tree through the real sandbox launcher (srt) on all three OSes. On Windows srt-win starts
+//! that tree through Secondary Logon, out of hostd's reach, so the Job object is made named before the start and the
+//! sandbox entry joins it from inside (device #129).
 //!
 //! Runs only with `AGENTROUTER_SANDBOX_TESTS=1` (the `Sandbox (…)` CI jobs on GitHub-hosted runners): it provisions the
 //! sandbox and starts hungry processes. Never run it on a person's computer.
@@ -101,6 +101,19 @@ fn run(rt: &Runtime, node: &Path, folder: &Path, mode: &str, l: Limits, confined
     )];
     let folders = vec![folder.to_path_buf()];
     let key = format!("limits-{mode}");
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = events.clone();
+    let on_limit: limits::OnLimit = Arc::new(move |line: String| sink.lock().unwrap().push(line));
+    // Windows folder mode: the named job, limits set, before the start; the entry joins it (#129).
+    #[cfg(windows)]
+    let named = confined.then(|| {
+        let sid = rt.windows_sid().expect("the sandbox account");
+        Enforced::named(&sid, l, on_limit.clone()).expect("the named job")
+    });
+    #[cfg(not(windows))]
+    let named: Option<(Enforced, String)> = None;
+    // The device program that joins it (CI builds the CLI first and names it).
+    let joiner = std::env::var_os("AGENTROUTER_DEVICE_EXE").map(PathBuf::from);
     let launch = Launch {
         key: &key,
         program: node,
@@ -112,6 +125,12 @@ fn run(rt: &Runtime, node: &Path, folder: &Path, mode: &str, l: Limits, confined
         readable: &[],
         read_only: false,
         open_web: false,
+        job: named
+            .as_ref()
+            .map(|(_, name)| agentrouter_sandbox::JobJoin {
+                name,
+                program: joiner.as_deref().expect("AGENTROUTER_DEVICE_EXE"),
+            }),
     };
     let unit = format!("agentrouter-test-{mode}-{}", std::process::id());
     #[cfg_attr(not(unix), allow(unused_mut))]
@@ -131,16 +150,10 @@ fn run(rt: &Runtime, node: &Path, folder: &Path, mode: &str, l: Limits, confined
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn");
-    let events = Arc::new(Mutex::new(Vec::new()));
-    let sink = events.clone();
-    let enforced = Enforced::start(
-        child.id(),
-        &unit,
-        l,
-        Arc::new(move |line: String| sink.lock().unwrap().push(line)),
-        confined,
-    )
-    .expect("limits enforced");
+    let enforced = match named {
+        Some((enforced, _)) => enforced,
+        None => Enforced::start(child.id(), &unit, l, on_limit).expect("limits enforced"),
+    };
     let out = child.wait_with_output().expect("wait");
     // The watcher reports within one sample.
     std::thread::sleep(limits::SAMPLE + Duration::from_millis(500));
@@ -179,26 +192,8 @@ fn limits_hold_on_a_confined_tree() {
     let node = rt.node().expect("the device's node");
     let folder = base.join("work");
 
-    // Windows folder mode: refused with the reason, never claimed (device #129); proven below on 完全访问.
-    let confined = !cfg!(windows);
-    if cfg!(windows) {
-        let refused = Enforced::start(
-            std::process::id(),
-            "unused",
-            Limits {
-                memory_mb: Some(512),
-                ..Limits::default()
-            },
-            Arc::new(|_| {}),
-            true,
-        );
-        let why = refused.err().expect("Windows folder mode refuses limits");
-        assert!(why.contains("#129"), "{why}");
-        assert_eq!(
-            limits::view(true)["unenforced"].as_array().unwrap().len(),
-            3
-        );
-    }
+    // Inside the folder sandbox on every OS (Windows through the named job, #129).
+    let confined = true;
 
     let memory = Limits {
         memory_mb: Some(512),

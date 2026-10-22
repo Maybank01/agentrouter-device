@@ -531,6 +531,18 @@ async fn start_once(
         ));
     }
     let readable = vec![agg.sandbox.packages_dir()];
+    // The environment's limits, from outside the sandbox (device #127): on Linux the command runs in its own systemd
+    // scope; on Windows a Job object holds the tree (in folder mode one made before the start, which the sandbox entry
+    // joins from inside, #129); on macOS the sampler takes it right after the spawn.
+    let limits = agg.limits();
+    #[cfg(windows)]
+    let prepared = if agg.cfg.full {
+        None
+    } else {
+        named_job(agg, server, limits)?
+    };
+    #[cfg(not(windows))]
+    let prepared: Option<(agentrouter_device::limits::Enforced, String)> = None;
     let launch = agentrouter_sandbox::Launch {
         key: &format!("{}\u{1}{}", def.name, agg.cfg.link),
         program: &program,
@@ -542,6 +554,10 @@ async fn start_once(
         readable: &readable,
         read_only: agg.cfg.read_only,
         open_web: def.open_web(),
+        job: prepared
+            .as_ref()
+            .zip(agg.cfg.device_program.as_deref())
+            .map(|((_, name), program)| agentrouter_sandbox::JobJoin { name, program }),
     };
     let (policy, std_cmd, pipe) = if agg.cfg.full {
         // 完全访问 (§6.4): the person's own rights and environment, no sandbox.
@@ -563,12 +579,10 @@ async fn start_once(
         (policy, confined.command, confined.pipe)
     };
     agg.audit_server_start(def, &program, &args, &policy);
-    // The environment's limits, from outside the sandbox (device #127): on Linux the command runs in its own systemd
-    // scope; the Job object (Windows) or the sampler (macOS) takes it right after the spawn.
-    let limits = agg.limits();
     let unit = unit_name(&def.name);
     let std_cmd = agentrouter_device::limits::command(std_cmd, &unit, &limits);
-    let limit_it = |pid: Option<u32>| enforce(agg, server, pid, &unit, limits);
+    let prepared = prepared.map(|(enforced, _)| enforced);
+    let limit_it = move |pid: Option<u32>| enforce(agg, server, pid, &unit, limits, prepared);
     let mut cmd = tokio::process::Command::from(std_cmd);
     #[cfg(unix)]
     cmd.process_group(0);
@@ -603,21 +617,45 @@ fn unit_name(server: &str) -> String {
     )
 }
 
-/// Put the just-spawned server under the environment's limits. Without limits a failure is only logged (nothing to
-/// enforce yet; later limits then need a restart); with limits the start fails, so it never runs unlimited.
-fn enforce(
+/// Windows folder mode (device #129): the named Job object the confined entry joins before it starts the server, its
+/// limits already set. Without limits a failure is only logged (the server starts; later limits need a restart); with
+/// limits the start fails, so it never runs unlimited.
+#[cfg(windows)]
+fn named_job(
     agg: &Arc<Inner>,
     server: &Arc<Server>,
-    pid: Option<u32>,
-    unit: &str,
     limits: agentrouter_device::limits::Limits,
-) -> Result<(), StartError> {
-    let Some(pid) = pid else {
-        return Ok(());
+) -> Result<Option<(agentrouter_device::limits::Enforced, String)>, StartError> {
+    let made = match &agg.cfg.device_program {
+        None => Err("没有 agentrouter 程序来加入作业对象".to_string()),
+        Some(_) => agg
+            .sandbox
+            .windows_sid()
+            .map_err(|u| u.to_string())
+            .and_then(|sid| {
+                agentrouter_device::limits::Enforced::named(&sid, limits, on_limit(agg, server))
+            }),
     };
+    match made {
+        Ok(named) => Ok(Some(named)),
+        Err(e) if limits.is_empty() => {
+            server.log(&format!(
+                "[agentrouter] 资源上限的管控没装上（现在不限，之后设的上限要重启才生效）：{e}"
+            ));
+            Ok(None)
+        }
+        Err(e) => Err(StartError::Failed(format!(
+            "资源上限（{}）没能生效，所以没有启动：{e}",
+            limits.describe()
+        ))),
+    }
+}
+
+/// Where a reached limit goes: the server's log, its recent limit events, and the console/audit event.
+fn on_limit(agg: &Arc<Inner>, server: &Arc<Server>) -> agentrouter_device::limits::OnLimit {
     let weak_agg = Arc::downgrade(agg);
     let weak_server = Arc::downgrade(server);
-    let on_limit: agentrouter_device::limits::OnLimit = Arc::new(move |line: String| {
+    Arc::new(move |line: String| {
         let (Some(agg), Some(server)) = (weak_agg.upgrade(), weak_server.upgrade()) else {
             return;
         };
@@ -630,8 +668,28 @@ fn enforce(
             events.push_back((Instant::now(), line.clone()));
         }
         agg.server_event(&server, "limit", Some(line));
-    });
-    match agentrouter_device::limits::Enforced::start(pid, unit, limits, on_limit, !agg.cfg.full) {
+    })
+}
+
+/// Put the just-spawned server under the environment's limits (`prepared`: Windows folder mode's named job, which the
+/// server's entry joined itself). Without limits a failure is only logged (nothing to enforce yet; later limits then
+/// need a restart); with limits the start fails, so it never runs unlimited.
+fn enforce(
+    agg: &Arc<Inner>,
+    server: &Arc<Server>,
+    pid: Option<u32>,
+    unit: &str,
+    limits: agentrouter_device::limits::Limits,
+    prepared: Option<agentrouter_device::limits::Enforced>,
+) -> Result<(), StartError> {
+    if let Some(enforced) = prepared {
+        *server.enforced.lock().unwrap() = Some(enforced);
+        return Ok(());
+    }
+    let Some(pid) = pid else {
+        return Ok(());
+    };
+    match agentrouter_device::limits::Enforced::start(pid, unit, limits, on_limit(agg, server)) {
         Ok(enforced) => {
             *server.enforced.lock().unwrap() = Some(enforced);
             Ok(())
