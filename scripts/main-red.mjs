@@ -14,11 +14,19 @@
 //   refused the revert
 //   green                                                    close the open `main-red` issues
 //
+// The owner's email (Cloud #2623): the one CI alert path, the ops-mail Cloudflare Worker's `POST /alert` (send_email to
+// the owner's verified address; agentteam-deployments infrastructure/ops-messaging/cf-mail-worker). Key `main-red/main`:
+// one email when main is confirmed red (revert or report, never the first red that is only re-run), none while it stays
+// red, one when main is green again; the Worker keeps the streak and a storm guard. Skipped without OPS_MAIL_ALERT_KEY.
+//
 // Environment: GITHUB_REPOSITORY, RUN_ID (the CI run), GH_TOKEN (the workflow token: actions, issues, pull requests),
 // APP_TOKEN (optional: the merge bot App's installation token; without it the issue asks for the revert by hand),
+// OPS_MAIL_ALERT_KEY (optional: this repository's key for the ops-mail Worker's /alert),
 // DRY_RUN=1 (print the decision, change nothing), DRILL_RERUN=1 (see below). Never prints a token.
 
 export const LABEL = "main-red";
+export const ALERT_URL = "https://ops-mail.z1316296346.workers.dev/alert";
+export const ALERT_KEY = "main-red/main";
 export const INFRA_ATTEMPTS = 3;
 const TRAILER = "Reverted-Commit:";
 // This guard's trailer, git's `git revert` line and GitHub's revert-button line.
@@ -63,6 +71,35 @@ export function decide({ run, jobs, parent, message, pr }) {
 
 export function describeFailures(failed) {
   return failed.map((job) => `- [${job.name}](${job.url}) ${job.conclusion}${job.steps.length ? `: ${job.steps.map((s) => `\`${s}\``).join(", ")}` : ""}`).join("\n");
+}
+
+/**
+ * One condition to the ops-mail Worker's /alert (it dedupes: one email per red streak, one on recovery). Never throws and
+ * never fails the guard: an undelivered alert is a log line naming the cause and whether the next call retries it.
+ */
+export async function ownerAlert(alert, { env, fetchImpl, out }) {
+  const key = env.OPS_MAIL_ALERT_KEY?.trim();
+  if (!key) { out(`owner alert ${alert.state}: skipped (OPS_MAIL_ALERT_KEY is not set)`); return "skipped"; }
+  try {
+    const response = await fetchImpl(env.OPS_MAIL_ALERT_URL?.trim() || ALERT_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
+      body: JSON.stringify({ key: ALERT_KEY, ...alert, ...(alert.title ? { title: alert.title.replace(/\s+/gu, " ").trim().slice(0, 160) } : {}) }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    const text = await response.text();
+    let data = null;
+    try { data = JSON.parse(text); } catch { data = null; }
+    if (!response.ok) {
+      out(`owner alert ${alert.state}: ops-mail /alert answered HTTP ${response.status} (${String(data?.error ?? text).slice(0, 200)}); not delivered${response.status >= 500 ? ", the next call of this condition sends again" : ""}`);
+      return "failed";
+    }
+    out(`owner alert ${alert.state}: ${data?.action ?? "sent"}${data?.reason ? ` (${data.reason})` : ""}`);
+    return data?.action ?? "sent";
+  } catch (error) {
+    out(`owner alert ${alert.state}: ops-mail /alert unreachable (${String(error?.message ?? error).slice(0, 160)}); not delivered, the next call of this condition sends again`);
+    return "failed";
+  }
 }
 
 function client(token, fetchImpl) {
@@ -142,6 +179,7 @@ export async function main(env = process.env, fetchImpl = fetch, out = console.l
       await gh("PATCH", `/repos/${repo}/issues/${issue.number}`, { state: "closed", state_reason: "completed" });
       out(`closed #${issue.number}`);
     }
+    await ownerAlert({ state: "resolved", url: run.html_url, text: `main 在 ${short} 转绿（${run.html_url}）。` }, { env, fetchImpl, out });
     return "green";
   }
   const failures = describeFailures(decision.failed ?? []);
@@ -180,6 +218,9 @@ export async function main(env = process.env, fetchImpl = fetch, out = console.l
       await gh("POST", `/repos/${repo}/issues/${pr.number}/comments`, { body: `main went red after this merge and stayed red on a re-run (${decision.reason}). Revert: #${revertPr.number}. ${autoNote} To keep this change, close the revert and fix forward.\n\n${failures}` });
       const issue = await report(`main red at ${short}: ${decision.broken.map((job) => job.name).join(", ")} (reverting #${pr.number})`, `${where}\n\n${failures}\n\n${parentLine}\n\n**Revert:** #${revertPr.number}. ${autoNote} The next green run of main closes this issue.`);
       out(`revert PR #${revertPr.number}${auto ? " (auto-merge on)" : ""}; issue #${issue}`);
+      await ownerAlert({ state: "firing", url: `https://github.com/${repo}/issues/${issue}`,
+        title: `main 红灯：已开回滚 PR #${revertPr.number}（撤下 #${pr.number} ${pr.title}）`,
+        text: `${decision.broken.map((job) => job.name).join(", ")} 在 #${pr.number} 合并后失败，重跑仍失败，而父提交是绿的。已开回滚 PR #${revertPr.number}，${auto ? "检查通过后自动合并" : "自动合并被拒绝，需要手动合并"}。CI：${run.html_url}；issue #${issue}。` }, { env, fetchImpl, out });
       return "revert";
     }
     decision.reason = `${decision.reason}; GitHub refused the revert PR (${JSON.stringify(reverted.data?.errors ?? reverted.data ?? reverted.status)?.slice(0, 300)}), e.g. it conflicts with a later merge`;
@@ -190,6 +231,9 @@ export async function main(env = process.env, fetchImpl = fetch, out = console.l
   const issue = await report(`main red at ${short}: ${(decision.failed ?? []).map((job) => job.name).join(", ") || "the CI run"}`, `${where}\n\n${failures || "No job failed; see the run."}\n\n${parentLine}\n\n**Not reverted:** ${decision.reason}. Fix forward; the next green run of main closes this issue.`);
   if (pr && decision.action !== "rerun") await gh("POST", `/repos/${repo}/issues/${pr.number}/comments`, { body: `main is red after this merge; not reverted (${decision.reason}). Issue #${issue}.` });
   out(`issue #${issue}`);
+  await ownerAlert({ state: "firing", url: `https://github.com/${repo}/issues/${issue}`,
+    title: `main 红灯：${(decision.failed ?? []).map((job) => job.name).join(", ") || "CI"} 失败，没有自动回滚`,
+    text: `CI ${run.html_url}（第 ${run.run_attempt} 次）在 ${short}${pr ? `（#${pr.number} ${pr.title}）` : ""} 上失败。没有回滚：${decision.reason}。需要修复（fix forward），下一次 main 转绿会关闭 issue #${issue}。` }, { env, fetchImpl, out });
   return "report";
 }
 
