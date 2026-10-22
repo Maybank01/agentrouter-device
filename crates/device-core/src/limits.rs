@@ -632,6 +632,8 @@ mod windows {
     pub struct Job {
         job: Handle,
         port: HANDLE,
+        /// CPU rate control was turned on once (Windows refuses to "turn off" what was never on: error 87).
+        cpu_on: std::sync::atomic::AtomicBool,
     }
 
     const QUIT: usize = 1;
@@ -684,7 +686,11 @@ mod windows {
                     &assoc as *const _ as *const _,
                     std::mem::size_of::<JOBOBJECT_ASSOCIATE_COMPLETION_PORT>() as u32,
                 );
-                let this = Job { job, port: port.0 };
+                let this = Job {
+                    job,
+                    port: port.0,
+                    cpu_on: std::sync::atomic::AtomicBool::new(false),
+                };
                 this.set(&l)?;
                 let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
                 if process.is_null() {
@@ -763,12 +769,15 @@ mod windows {
                         std::io::Error::last_os_error()
                     ));
                 }
-                let mut cpu: JOBOBJECT_CPU_RATE_CONTROL_INFORMATION = std::mem::zeroed();
-                if let Some(c) = l.cpu_percent {
-                    cpu.ControlFlags =
-                        JOB_OBJECT_CPU_RATE_CONTROL_ENABLE | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP;
-                    cpu.Anonymous.CpuRate = c * 100;
+                // No CPU limit: nothing to set, or (once one was set) a cap at 100% of the machine.
+                if l.cpu_percent.is_none() && !self.cpu_on.load(Ordering::SeqCst) {
+                    return Ok(());
                 }
+                let mut cpu: JOBOBJECT_CPU_RATE_CONTROL_INFORMATION = std::mem::zeroed();
+                cpu.ControlFlags =
+                    JOB_OBJECT_CPU_RATE_CONTROL_ENABLE | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP;
+                cpu.Anonymous.CpuRate = l.cpu_percent.unwrap_or(100) * 100;
+                self.cpu_on.store(true, Ordering::SeqCst);
                 if SetInformationJobObject(
                     self.job.0,
                     JobObjectCpuRateControlInformation,
