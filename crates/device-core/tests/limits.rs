@@ -1,7 +1,8 @@
-//! The environment's resource limits hold on a confined process tree (device #127): a process that keeps allocating
-//! memory is stopped near the limit, a process that keeps starting processes gets no more than the limit, and the limit
-//! is reported. Through the real sandbox launcher (srt), so on Windows this also proves the sandbox account's process
-//! (started through Secondary Logon) is inside the Job object.
+//! The environment's resource limits hold on a server's tree (device #127): a command that keeps allocating memory is
+//! stopped near the limit, a process that keeps starting processes gets no more than the limit, and the limit is
+//! reported. On Linux and macOS through the real sandbox launcher (srt). On Windows the confined tree is outside hostd's
+//! Job object (srt-win starts it through Secondary Logon), so folder mode refuses limits with the reason (device #129)
+//! and the limits are proven on 完全访问, where the tree is hostd's own child.
 //!
 //! Runs only with `AGENTROUTER_SANDBOX_TESTS=1` (the `Sandbox (…)` CI jobs on GitHub-hosted runners): it provisions the
 //! sandbox and starts hungry processes. Never run it on a person's computer.
@@ -10,8 +11,6 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-#[cfg(windows)]
-use std::time::Instant;
 
 use agentrouter_device::limits::{self, Enforced, Limits};
 use agentrouter_sandbox::{Launch, Runtime};
@@ -90,11 +89,9 @@ struct Run {
     stdout: String,
     stderr: String,
     events: Vec<String>,
-    #[allow(dead_code)]
-    job_pids: Vec<u32>,
 }
 
-fn run(rt: &Runtime, node: &Path, folder: &Path, mode: &str, l: Limits) -> Run {
+fn run(rt: &Runtime, node: &Path, folder: &Path, mode: &str, l: Limits, confined: bool) -> Run {
     let probe = folder.join("limits-probe.js");
     std::fs::write(&probe, PROBE).unwrap();
     let args = vec![probe.to_string_lossy().into_owned(), mode.to_string()];
@@ -118,7 +115,14 @@ fn run(rt: &Runtime, node: &Path, folder: &Path, mode: &str, l: Limits) -> Run {
     };
     let unit = format!("agentrouter-test-{mode}-{}", std::process::id());
     #[cfg_attr(not(unix), allow(unused_mut))]
-    let mut cmd = limits::command(rt.command(&launch).expect("confined command"), &unit, &l);
+    let base = if confined {
+        rt.command(&launch).expect("confined command")
+    } else {
+        let mut c = std::process::Command::new(node);
+        c.args(&args).current_dir(folder);
+        c
+    };
+    let mut cmd = limits::command(base, &unit, &l);
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
     let child = cmd
@@ -134,21 +138,9 @@ fn run(rt: &Runtime, node: &Path, folder: &Path, mode: &str, l: Limits) -> Run {
         &unit,
         l,
         Arc::new(move |line: String| sink.lock().unwrap().push(line)),
+        confined,
     )
     .expect("limits enforced");
-    // The sandboxed process starts a few seconds after the launcher (srt's setup); look while it waits.
-    #[cfg(windows)]
-    let job_pids = {
-        let started = Instant::now();
-        let mut seen = Vec::new();
-        while started.elapsed() < Duration::from_secs(25) && seen.len() < 3 {
-            std::thread::sleep(Duration::from_millis(500));
-            seen = enforced.job_pids();
-        }
-        seen
-    };
-    #[cfg(not(windows))]
-    let job_pids = Vec::new();
     let out = child.wait_with_output().expect("wait");
     // The watcher reports within one sample.
     std::thread::sleep(limits::SAMPLE + Duration::from_millis(500));
@@ -157,17 +149,15 @@ fn run(rt: &Runtime, node: &Path, folder: &Path, mode: &str, l: Limits) -> Run {
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
         events: events.lock().unwrap().clone(),
-        job_pids,
     };
     eprintln!(
-        "== {mode} under {} ({}): exit {:?}\nstdout: {}\nstderr: {}\nevents: {:?}\njob pids: {:?}",
+        "== {mode} under {} ({}, confined {confined}): exit {:?}\nstdout: {}\nstderr: {}\nevents: {:?}",
         l.describe(),
         limits::mechanism().name(),
         out.status,
         r.stdout.trim(),
         r.stderr.trim(),
-        r.events,
-        r.job_pids
+        r.events
     );
     r
 }
@@ -189,22 +179,24 @@ fn limits_hold_on_a_confined_tree() {
     let node = rt.node().expect("the device's node");
     let folder = base.join("work");
 
-    // Windows: the sandbox account's process is in the job (else nothing below could hold).
-    #[cfg(windows)]
-    {
-        let r = run(&rt, &node, &folder, "pid", Limits::default());
-        let line = r
-            .stdout
-            .lines()
-            .find(|l| l.starts_with('{'))
-            .expect("the probe printed its pid");
-        let pid = serde_json::from_str::<serde_json::Value>(line).unwrap()["pid"]
-            .as_u64()
-            .unwrap() as u32;
-        assert!(
-            r.job_pids.contains(&pid),
-            "the confined process {pid} is not in the Job object {:?}",
-            r.job_pids
+    // Windows folder mode: refused with the reason, never claimed (device #129); proven below on 完全访问.
+    let confined = !cfg!(windows);
+    if cfg!(windows) {
+        let refused = Enforced::start(
+            std::process::id(),
+            "unused",
+            Limits {
+                memory_mb: Some(512),
+                ..Limits::default()
+            },
+            Arc::new(|_| {}),
+            true,
+        );
+        let why = refused.err().expect("Windows folder mode refuses limits");
+        assert!(why.contains("#129"), "{why}");
+        assert_eq!(
+            limits::view(true)["unenforced"].as_array().unwrap().len(),
+            3
         );
     }
 
@@ -212,7 +204,7 @@ fn limits_hold_on_a_confined_tree() {
         memory_mb: Some(512),
         ..Limits::default()
     };
-    let r = run(&rt, &node, &folder, "memory", memory);
+    let r = run(&rt, &node, &folder, "memory", memory, confined);
     let reached = r
         .stdout
         .lines()
@@ -237,7 +229,7 @@ fn limits_hold_on_a_confined_tree() {
         processes: Some(12),
         ..Limits::default()
     };
-    let r = run(&rt, &node, &folder, "processes", processes);
+    let r = run(&rt, &node, &folder, "processes", processes, confined);
     let line = r.stdout.lines().find(|l| l.starts_with('{'));
     if let Some(line) = line {
         let v: serde_json::Value = serde_json::from_str(line).unwrap();

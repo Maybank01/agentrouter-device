@@ -6,8 +6,8 @@
 //!
 //! | OS | How | Memory | Processes | CPU |
 //! | --- | --- | --- | --- | --- |
-//! | Linux with a user systemd and cgroup v2 | a transient scope per server (`systemd-run --user --scope`) | `MemoryMax` + `MemorySwapMax=0`: the kernel's OOM killer ends the largest process in the scope | `TasksMax` = processes × [`TASKS_PER_PROCESS`] (the kernel counts threads) | `CPUQuota` |
-//! | Windows | a kill-on-close Job object per server | job committed memory: allocations beyond it fail | active processes: a start beyond it fails | hard CPU-rate cap |
+//! | Linux with a user systemd and cgroup v2 | a transient scope per server (`systemd-run --user --scope`, `OOMPolicy=continue`) | `MemoryMax` + `MemorySwapMax=0`: the kernel's OOM killer ends the largest process in the scope, the rest go on | `TasksMax` = processes × [`TASKS_PER_PROCESS`] (the kernel counts threads) | `CPUQuota` |
+//! | Windows | a kill-on-close Job object per server (完全访问; folder mode waits for device #129: [`WINDOWS_CONFINED`]) | job committed memory: allocations beyond it fail | active processes: a start beyond it fails | hard CPU-rate cap |
 //! | macOS, Linux without them | sampling every [`SAMPLE`] (sysinfo) | over it, the largest process ends | over it, the newest processes end | not capped |
 //!
 //! The values are the platform's (`link__limits`, from the environment record) capped field by field by the owner's
@@ -171,6 +171,26 @@ impl Mechanism {
     }
 }
 
+/// Windows folder mode (device #129): srt-win starts the confined server as the sandbox account through Secondary
+/// Logon and puts it in a job of its own, so hostd's Job object holds only srt's launcher. Until the inner named job
+/// lands, limits there are refused with this reason, never claimed.
+pub const WINDOWS_CONFINED: &str = "Windows 文件夹模式下资源上限还不能生效：沙箱账户的进程由系统的二次登录服务启动，不在 hostd 的作业对象里（device #129）";
+
+/// Whether limits can hold on a server started this way (`confined`: inside the folder sandbox).
+pub fn enforceable(confined: bool) -> bool {
+    !(cfg!(windows) && confined)
+}
+
+/// [`Mechanism::view`] for servers started this way: on Windows folder mode every field is unenforced, with why.
+pub fn view(confined: bool) -> Value {
+    let mut v = mechanism().view();
+    if !enforceable(confined) {
+        v["unenforced"] = json!(["memoryMb", "processes", "cpuPercent"]);
+        v["why"] = json!(WINDOWS_CONFINED);
+    }
+    v
+}
+
 /// This computer's mechanism, found once.
 pub fn mechanism() -> &'static Mechanism {
     static MECHANISM: OnceLock<Mechanism> = OnceLock::new();
@@ -215,6 +235,8 @@ pub struct Enforced {
     limits: Arc<Mutex<Limits>>,
     stop: Arc<AtomicBool>,
     kind: Kind,
+    /// Limits cannot hold on this tree ([`enforceable`]): any non-empty limits are refused.
+    refuse: bool,
 }
 
 enum Kind {
@@ -230,13 +252,19 @@ enum Kind {
 }
 
 impl Enforced {
-    /// Start enforcing `limits` on the server `pid` (just spawned by [`command`] with the same `unit`).
+    /// Start enforcing `limits` on the server `pid` (just spawned by [`command`] with the same `unit`; `confined`:
+    /// inside the folder sandbox).
     pub fn start(
         pid: u32,
         unit: &str,
         limits: Limits,
         on_limit: OnLimit,
+        confined: bool,
     ) -> Result<Enforced, String> {
+        let refuse = !enforceable(confined);
+        if refuse && !limits.is_empty() {
+            return Err(WINDOWS_CONFINED.to_string());
+        }
         let shared = Arc::new(Mutex::new(limits));
         let stop = Arc::new(AtomicBool::new(false));
         let kind = match mechanism() {
@@ -264,6 +292,7 @@ impl Enforced {
             limits: shared,
             stop,
             kind,
+            refuse,
         })
     }
 
@@ -273,6 +302,9 @@ impl Enforced {
 
     /// New limits on the running tree (no restart).
     pub fn update(&self, limits: Limits) -> Result<(), String> {
+        if self.refuse && !limits.is_empty() {
+            return Err(WINDOWS_CONFINED.to_string());
+        }
         match &self.kind {
             #[cfg(all(unix, not(target_os = "macos")))]
             Kind::Scope { unit, ctl, cpu } => linux::set(ctl, unit, &limits, *cpu)?,
@@ -491,8 +523,11 @@ mod linux {
 
     pub fn scoped(cmd: Command, run: &Path, unit: &str, l: &Limits, cpu: bool) -> Command {
         let mut s = Command::new(run);
+        // OOMPolicy=continue: the kernel ends the largest process in the scope and that is all; systemd's default
+        // (stop) would then end the whole scope, the server with it.
         s.args(["--user", "--scope", "--quiet", "--collect"])
-            .arg(format!("--unit={unit}"));
+            .arg(format!("--unit={unit}"))
+            .args(["-p", "OOMPolicy=continue"]);
         for p in properties(l, cpu) {
             s.arg("-p").arg(p);
         }

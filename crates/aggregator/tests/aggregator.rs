@@ -468,6 +468,7 @@ async fn a_confined_server_end_to_end() {
     );
 
     // The environment's limits (device #127): set live on the running server, no restart; bad values are named.
+    // Windows folder mode refuses them with the reason until device #129 (the confined tree is outside hostd's job).
     let set = h
         .call(
             "mcs_1",
@@ -477,22 +478,43 @@ async fn a_confined_server_end_to_end() {
             json!({"memoryMb": 1024, "processes": 256, "cpuPercent": null}),
         )
         .await;
-    let view = &set["result"]["structuredContent"];
     eprintln!("link__limits: {set}");
-    assert_eq!(
-        view["limits"],
-        json!({"memoryMb": 1024, "processes": 256, "cpuPercent": null}),
-        "{set}"
-    );
-    let by = view["enforcedBy"].as_str().unwrap_or("");
-    let expected: &[&str] = if cfg!(windows) {
-        &["job-object"]
-    } else if cfg!(target_os = "macos") {
-        &["sampled"]
+    if cfg!(windows) {
+        let text = set.to_string();
+        assert!(
+            text.contains("LIMITS_NOT_APPLIED") && text.contains("#129"),
+            "{set}"
+        );
+        let cleared = h
+            .call("mcs_1", 34, "ags_a", "link__limits", json!({}))
+            .await;
+        assert_eq!(
+            cleared["result"]["structuredContent"]["limits"]["memoryMb"],
+            Value::Null,
+            "{cleared}"
+        );
+        assert_eq!(
+            cleared["result"]["structuredContent"]["unenforced"]
+                .as_array()
+                .map(Vec::len),
+            Some(3),
+            "{cleared}"
+        );
     } else {
-        &["systemd-scope", "sampled"]
-    };
-    assert!(expected.contains(&by), "{set}");
+        let view = &set["result"]["structuredContent"];
+        assert_eq!(
+            view["limits"],
+            json!({"memoryMb": 1024, "processes": 256, "cpuPercent": null}),
+            "{set}"
+        );
+        let by = view["enforcedBy"].as_str().unwrap_or("");
+        let expected: &[&str] = if cfg!(target_os = "macos") {
+            &["sampled"]
+        } else {
+            &["systemd-scope", "sampled"]
+        };
+        assert!(expected.contains(&by), "{set}");
+    }
     let bad = h
         .call("mcs_1", 31, "ags_a", "link__limits", json!({"memoryMb": 1}))
         .await;
@@ -510,10 +532,6 @@ async fn a_confined_server_end_to_end() {
     assert_eq!(
         fake_view["restarts"], 0,
         "limits change without a restart: {servers}"
-    );
-    assert_eq!(
-        servers["result"]["structuredContent"]["limits"]["limits"]["memoryMb"],
-        1024
     );
     let again = h
         .call(

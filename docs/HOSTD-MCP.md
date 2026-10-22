@@ -577,8 +577,9 @@ them from **outside** the sandbox, around each server it starts (`agentrouter_de
 
 | OS | How | Memory | Processes | CPU |
 | --- | --- | --- | --- | --- |
-| Linux with a user systemd and cgroup v2 (desktops) | a transient scope per server: `systemd-run --user --scope`, which executes the server in place (same pid, process group, stdio) | `MemoryMax`, `MemorySwapMax=0`: the kernel's OOM killer ends the largest process in the scope | `TasksMax` = processes × 32 (the kernel counts threads) | `CPUQuota` (when the user manager has the cpu controller) |
-| Windows | a kill-on-close Job object per server, around srt's launcher; the sandbox account's process is inside it (CI proves it) | job committed memory: an allocation beyond it fails | active processes: a start beyond it fails | hard CPU-rate cap |
+| Linux with a user systemd and cgroup v2 (desktops) | a transient scope per server: `systemd-run --user --scope`, which executes the server in place (same pid, process group, stdio); `OOMPolicy=continue` | `MemoryMax`, `MemorySwapMax=0`: the kernel's OOM killer ends the largest process in the scope; the server and the rest go on | `TasksMax` = processes × 32 (the kernel counts threads) | `CPUQuota` (when the user manager has the cpu controller) |
+| Windows 完全访问 | a kill-on-close Job object per server (the tree is hostd's own child) | job committed memory: an allocation beyond it fails | active processes: a start beyond it fails | hard CPU-rate cap |
+| Windows folder mode | **not yet** (device #129): srt-win starts the confined server as the sandbox account through Secondary Logon, in a job of its own, so hostd's job holds only srt's launcher (CI on #128). Non-empty limits are refused with that reason (`LIMITS_NOT_APPLIED`, or the start fails); all three fields are reported `unenforced`. #129: a named inner job created from inside, set from outside | — | — | — |
 | macOS; Linux without a user systemd | sampling every 2 s (sysinfo) | over it, the largest process ends | over it, the newest processes end | not capped |
 
 - **Values.** The platform's (`link__limits {memoryMb, processes, cpuPercent}`, from the environment record), capped

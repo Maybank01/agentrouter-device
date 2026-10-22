@@ -877,7 +877,7 @@ impl Inner {
     }
 
     fn limits_view(&self) -> Value {
-        let mut v = agentrouter_device::limits::mechanism().view();
+        let mut v = agentrouter_device::limits::view(!self.cfg.full);
         v["limits"] = self.limits().view();
         v["platform"] = self.platform_limits.lock().unwrap().view();
         v["ceiling"] = self.cfg.limits.view();

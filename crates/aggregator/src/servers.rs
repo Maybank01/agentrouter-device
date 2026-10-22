@@ -631,7 +631,7 @@ fn enforce(
         }
         agg.server_event(&server, "limit", Some(line));
     });
-    match agentrouter_device::limits::Enforced::start(pid, unit, limits, on_limit) {
+    match agentrouter_device::limits::Enforced::start(pid, unit, limits, on_limit, !agg.cfg.full) {
         Ok(enforced) => {
             *server.enforced.lock().unwrap() = Some(enforced);
             Ok(())
