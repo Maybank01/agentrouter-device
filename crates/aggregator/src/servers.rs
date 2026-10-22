@@ -102,11 +102,43 @@ pub struct ServerDef {
     pub login: Option<LoginSpec>,
 }
 
-/// [`ServerDef::credentials`]: `{"name": "cookie", "fileEnv": <the variable the server reads the file path from>}`.
+/// [`ServerDef::credentials`]: `{"name": "cookie", "fileEnv": <the variable the server reads the file path from>}`, or
+/// `fileHome` for a server that reads a fixed path under its home; optional `fields` and `secret` (a space's runtime
+/// secret, Cloud PROJECT-SERVICE §9.8.5).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CredentialFile {
     pub name: String,
-    pub env: String,
+    /// `fileEnv`: the variable the server reads the file's path from.
+    pub env: Option<String>,
+    /// `fileHome`: the file's path under the server's home (`.tool/config.json`); hostd gives the server a home of its
+    /// own (`HOME`, `USERPROFILE`) in its scratch folder, with only this file in it.
+    pub home: Option<String>,
+    /// `fields`: the file's field → the account's field. When set, this computer keeps the account (those fields) and
+    /// writes each server its own file shape, so a cookie one server's login wrote is read by another server whose
+    /// file names the same account fields differently.
+    pub fields: Vec<(String, String)>,
+    /// `secret`: the name this computer keeps the value under when it is a space's runtime secret
+    /// (`space:<id>/<credential>`), shared by every server of that space that reads it; else `<server>/<credential>`.
+    pub secret: Option<String>,
+}
+
+fn valid_home_path(p: &str) -> bool {
+    let parts: Vec<&str> = p.split('/').collect();
+    (1..=8).contains(&parts.len())
+        && parts.iter().all(|s| {
+            !s.is_empty()
+                && *s != "."
+                && *s != ".."
+                && s.len() <= 64
+                && s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+        })
+}
+
+fn valid_field(f: &str) -> bool {
+    (1..=64).contains(&f.len())
+        && f.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
 }
 
 /// [`ServerDef::login`]: the server's own login tools, run by `hostd` on this computer. `start` answers with a text
@@ -172,13 +204,23 @@ fn parse_credentials(
     for c in list {
         let name = str_of(&c, "name").trim().to_string();
         let file_env = str_of(&c, "fileEnv").trim().to_string();
+        let file_home = str_of(&c, "fileHome").trim().to_string();
         if !valid_credential(&name) || out.iter().any(|o| o.name == name) {
             return Err(Failure::new(
                 "HOSTD_ARGS_INVALID",
                 format!("credentials.name {name:?} 要是不重复的小写字母、数字、_ 或 -"),
             ));
         }
-        if !valid_env_name(&file_env)
+        if !file_home.is_empty() {
+            if !file_env.is_empty() || !valid_home_path(&file_home) {
+                return Err(Failure::new(
+                    "HOSTD_ARGS_INVALID",
+                    format!(
+                        "credentials.{name}.fileHome {file_home:?} 要是家目录下的相对路径（最多 8 段，字母、数字、_ . -，不能有 ..），且不能和 fileEnv 同时写"
+                    ),
+                ));
+            }
+        } else if !valid_env_name(&file_env)
             || reserved_env(&file_env)
             || env.iter().any(|(k, _)| k == &file_env)
         {
@@ -189,9 +231,48 @@ fn parse_credentials(
                 ),
             ));
         }
+        let mut fields = Vec::new();
+        if let Some(map) = c.get("fields") {
+            let Some(map) = map.as_object().filter(|m| (1..=16).contains(&m.len())) else {
+                return Err(Failure::new(
+                    "HOSTD_ARGS_INVALID",
+                    format!("credentials.{name}.fields 要是 1–16 个「文件里的字段: 账号的字段」"),
+                ));
+            };
+            for (file_field, account_field) in map {
+                let account_field = account_field.as_str().unwrap_or("");
+                if !valid_field(file_field) || !valid_field(account_field) {
+                    return Err(Failure::new(
+                        "HOSTD_ARGS_INVALID",
+                        format!(
+                            "credentials.{name}.fields.{file_field} 要把文件里的字段对应到账号的字段名（1–64 个字母、数字、_ . -）"
+                        ),
+                    ));
+                }
+                fields.push((file_field.clone(), account_field.to_string()));
+            }
+        }
+        let secret = match str_of(&c, "secret").trim() {
+            "" => None,
+            s if s.starts_with("space:")
+                && s.ends_with(&format!("/{name}"))
+                && agentrouter_device::local_secrets::valid_name(s) =>
+            {
+                Some(s.to_string())
+            }
+            s => {
+                return Err(Failure::new(
+                    "HOSTD_ARGS_INVALID",
+                    format!("credentials.{name}.secret {s:?} 要是 space:<空间 id>/{name}"),
+                ));
+            }
+        };
         out.push(CredentialFile {
             name,
-            env: file_env,
+            env: Some(file_env).filter(|e| !e.is_empty()),
+            home: Some(file_home).filter(|h| !h.is_empty()),
+            fields,
+            secret,
         });
     }
     Ok(out)
@@ -599,9 +680,15 @@ impl Server {
         all
     }
 
-    /// The local secret name of one of its credentials (one account per server name on this computer).
+    /// The local secret name of one of its credentials: a space's runtime secret (`space:<id>/<name>`, shared by that
+    /// space's servers) or else one account per server name on this computer.
     pub fn local_name(&self, credential: &str) -> String {
-        format!("{}/{}", self.def.name, credential)
+        self.def
+            .credentials
+            .iter()
+            .find(|c| c.name == credential)
+            .and_then(|c| c.secret.clone())
+            .unwrap_or_else(|| format!("{}/{}", self.def.name, credential))
     }
 
     /// Per credential: `ok` (this computer keeps one), `missing`, or `waiting_login`; never a value.
@@ -1408,9 +1495,49 @@ fn credential_values(bytes: &[u8]) -> Vec<String> {
     out
 }
 
+/// The file a server reads, from the value this computer keeps: the value itself, or with `fields` the server's own
+/// shape of the account (`{<file field>: <account field's value>}`).
+fn file_of(c: &CredentialFile, kept: &[u8]) -> Vec<u8> {
+    if c.fields.is_empty() {
+        return kept.to_vec();
+    }
+    let account: serde_json::Map<String, Value> = serde_json::from_slice(kept).unwrap_or_default();
+    let file: serde_json::Map<String, Value> = c
+        .fields
+        .iter()
+        .filter_map(|(f, a)| account.get(a).map(|v| (f.clone(), v.clone())))
+        .collect();
+    serde_json::to_vec(&file).unwrap_or_default()
+}
+
+/// The value to keep from a file the server wrote: the file itself, or with `fields` the account with the file's fields
+/// laid over what is kept (`None`: the file is not a JSON object, so nothing can be taken from it).
+fn kept_of(c: &CredentialFile, file: &[u8], before: Option<&[u8]>) -> Option<Vec<u8>> {
+    if c.fields.is_empty() {
+        return Some(file.to_vec());
+    }
+    let file: serde_json::Map<String, Value> = serde_json::from_slice(file).ok()?;
+    let mut account: serde_json::Map<String, Value> = before
+        .and_then(|b| serde_json::from_slice(b).ok())
+        .unwrap_or_default();
+    for (f, a) in &c.fields {
+        match file.get(f) {
+            Some(v @ Value::String(_)) => {
+                account.insert(a.clone(), v.clone());
+            }
+            Some(Value::Number(n)) => {
+                account.insert(a.clone(), Value::String(n.to_string()));
+            }
+            _ => {}
+        }
+    }
+    serde_json::to_vec(&account).ok()
+}
+
 /// Before a start: write each credential this computer keeps into the server's own scratch folder (owner-only) and
-/// put the file's path — never the value — in its environment. A credential not kept yet gets the path only, so
-/// the server's own login writes it there.
+/// put the file's path — never the value — in its environment (`fileEnv`), or give the server a home of its own there
+/// with the file at its fixed path (`fileHome`). A credential not kept yet gets the place only, so the server's own
+/// login writes it there.
 fn prepare_credentials(
     agg: &Inner,
     server: &Server,
@@ -1423,14 +1550,23 @@ fn prepare_credentials(
         .sandbox
         .scratch(&sandbox_key(&server.def, &agg.cfg.link))
         .join("credentials");
+    let home = dir.join("home");
     let mut cred = server.cred.lock().unwrap();
     cred.files.clear();
     for c in &server.def.credentials {
-        let file = dir.join(&c.name);
+        let file = match &c.home {
+            Some(rel) => rel.split('/').fold(home.clone(), |p, s| p.join(s)),
+            None => dir.join(&c.name),
+        };
+        if let Some(parent) = file.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("credential folder {}: {e}", parent.display()))?;
+        }
         let name = server.local_name(&c.name);
         match agentrouter_device::local_secrets::get(&agg.cfg.data_dir, &name) {
             Ok(Some(value)) => {
-                agentrouter_device::local_secrets::write_owner_only(&file, &value).map_err(
+                let bytes = file_of(c, &value);
+                agentrouter_device::local_secrets::write_owner_only(&file, &bytes).map_err(
                     |e| {
                         format!(
                             "credential {} could not be handed to the server: {e}",
@@ -1439,8 +1575,11 @@ fn prepare_credentials(
                     },
                 )?;
                 cred.kept
-                    .insert(c.name.clone(), sha2::Sha256::digest(&value).to_vec());
-                for v in credential_values(&value) {
+                    .insert(c.name.clone(), sha2::Sha256::digest(&bytes).to_vec());
+                for v in credential_values(&value)
+                    .into_iter()
+                    .chain(credential_values(&bytes))
+                {
                     if !cred.values.contains(&v) {
                         cred.values.push(v);
                     }
@@ -1449,8 +1588,6 @@ fn prepare_credentials(
             Ok(None) => {
                 cred.kept.remove(&c.name);
                 let _ = std::fs::remove_file(&file);
-                std::fs::create_dir_all(&dir)
-                    .map_err(|e| format!("credential folder {}: {e}", dir.display()))?;
             }
             Err(e) => {
                 return Err(format!(
@@ -1459,50 +1596,103 @@ fn prepare_credentials(
                 ));
             }
         }
-        env.push((c.env.clone(), file.to_string_lossy().into_owned()));
+        match &c.env {
+            Some(var) => env.push((var.clone(), file.to_string_lossy().into_owned())),
+            None => {
+                let shown_home = home.to_string_lossy().into_owned();
+                env.retain(|(k, _)| {
+                    !k.eq_ignore_ascii_case("HOME") && !k.eq_ignore_ascii_case("USERPROFILE")
+                });
+                env.push(("HOME".into(), shown_home.clone()));
+                env.push(("USERPROFILE".into(), shown_home));
+            }
+        }
         cred.files.push((c.name.clone(), file));
     }
     Ok(())
 }
 
 /// After a call, a login or an exit: a credential file the server wrote or rewrote (a login, a cookie refresh) is
-/// kept on this computer; the cloud hears only its name. Returns the credentials that changed.
-pub fn sync_credentials(agg: &Inner, server: &Server) -> Vec<String> {
+/// kept on this computer; the cloud hears only its name. The other running servers that read the same space secret are
+/// started again so they read the new value. Returns the credentials that changed.
+pub fn sync_credentials(agg: &Arc<Inner>, server: &Server) -> Vec<String> {
     let files = server.cred.lock().unwrap().files.clone();
     let mut changed = Vec::new();
     for (name, file) in files {
-        let Ok(value) = std::fs::read(&file) else {
+        let Some(c) = server.def.credentials.iter().find(|c| c.name == name) else {
             continue;
         };
-        if value.iter().all(u8::is_ascii_whitespace) {
+        let Ok(bytes) = std::fs::read(&file) else {
+            continue;
+        };
+        if bytes.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
-        let hash = sha2::Sha256::digest(&value).to_vec();
+        let hash = sha2::Sha256::digest(&bytes).to_vec();
         if server.cred.lock().unwrap().kept.get(&name) == Some(&hash) {
             continue;
         }
-        match agentrouter_device::local_secrets::put(
-            &agg.cfg.data_dir,
-            &server.local_name(&name),
-            &value,
-        ) {
-            Ok(()) => {
+        let local = server.local_name(&name);
+        let before = agentrouter_device::local_secrets::get(&agg.cfg.data_dir, &local)
+            .ok()
+            .flatten();
+        let Some(value) = kept_of(c, &bytes, before.as_deref()) else {
+            server.log(&format!(
+                "[agentrouter] credential {name}: the file the server wrote is not a JSON object, so its fields could not be kept"
+            ));
+            continue;
+        };
+        let result = if before.as_deref() == Some(value.as_slice()) {
+            Ok(false)
+        } else {
+            agentrouter_device::local_secrets::put(&agg.cfg.data_dir, &local, &value).map(|()| true)
+        };
+        match result {
+            Ok(saved) => {
                 let mut cred = server.cred.lock().unwrap();
                 cred.kept.insert(name.clone(), hash);
                 if cred.waiting.as_ref().is_some_and(|(w, _)| w == &name) {
                     cred.waiting = None;
                     cred.last_error = None;
                 }
-                for v in credential_values(&value) {
+                for v in credential_values(&value)
+                    .into_iter()
+                    .chain(credential_values(&bytes))
+                {
                     if !cred.values.contains(&v) {
                         cred.values.push(v);
                     }
                 }
                 drop(cred);
+                if !saved {
+                    continue;
+                }
                 server.log(&format!(
                     "[agentrouter] credential {name} kept on this computer"
                 ));
                 agg.server_event(server, "credential_saved", Some(name.clone()));
+                if let Some(secret) = &c.secret {
+                    let readers: Vec<Arc<Server>> = agg
+                        .servers
+                        .lock()
+                        .unwrap()
+                        .values()
+                        .filter(|s| {
+                            s.def.name != server.def.name
+                                && s.def
+                                    .credentials
+                                    .iter()
+                                    .any(|o| o.secret.as_ref() == Some(secret))
+                        })
+                        .cloned()
+                        .collect();
+                    for reader in readers {
+                        reader.log(&format!(
+                            "[agentrouter] starting again: credential {name} changed on this computer"
+                        ));
+                        agg.restart_server(reader);
+                    }
+                }
                 changed.push(name);
             }
             Err(e) => server.log(&format!(
@@ -1569,7 +1759,10 @@ mod tests {
             d.credentials,
             vec![CredentialFile {
                 name: "cookie".into(),
-                env: "SITE_COOKIE_FILE".into()
+                env: Some("SITE_COOKIE_FILE".into()),
+                home: None,
+                fields: Vec::new(),
+                secret: None,
             }]
         );
         let login = d.login.clone().unwrap();
@@ -1592,6 +1785,87 @@ mod tests {
                 && !server.host_only("video_info")
         );
         assert_eq!(server.local_name("cookie"), "browser/cookie");
+    }
+
+    /// Two programs of one space share its account (Cloud PROJECT-SERVICE §9.8.5): the login program's file and the
+    /// reader's fixed config path name the same cookie fields differently; this computer keeps the account once.
+    #[test]
+    fn a_space_secret_is_kept_once_and_written_in_each_servers_shape() {
+        let login = def(
+            json!({"credentials": [{"name": "site", "fileEnv": "SITE_COOKIE_FILE",
+            "fields": {"sessdata": "SESSDATA", "dede_user_id": "DedeUserID"}, "secret": "space:wrk_a1/site"}]}),
+        );
+        let reader = def(
+            json!({"credentials": [{"name": "site", "fileHome": ".site-mcp/config.json",
+            "fields": {"sessdata": "SESSDATA", "dedeuserid": "DedeUserID"}, "secret": "space:wrk_a1/site"}]}),
+        );
+        let (l, r) = (&login.credentials[0], &reader.credentials[0]);
+        assert_eq!(r.home.as_deref(), Some(".site-mcp/config.json"));
+        assert_eq!(r.env, None);
+        assert_eq!(l.secret.as_deref(), Some("space:wrk_a1/site"));
+
+        // The login program wrote its file (with a field the account does not name): the account keeps the named ones.
+        let written = br#"{"sessdata":"sess-0123456789","dede_user_id":42,"lastRefresh":1}"#;
+        let account = kept_of(l, written, None).unwrap();
+        let account_json: Value = serde_json::from_slice(&account).unwrap();
+        assert_eq!(
+            account_json,
+            json!({"SESSDATA": "sess-0123456789", "DedeUserID": "42"})
+        );
+        // The reader gets its own shape; a rewrite lays its fields over what is kept.
+        let file: Value = serde_json::from_slice(&file_of(r, &account)).unwrap();
+        assert_eq!(
+            file,
+            json!({"sessdata": "sess-0123456789", "dedeuserid": "42"})
+        );
+        let again = kept_of(l, br#"{"sessdata":"sess-new-0123456789"}"#, Some(&account)).unwrap();
+        let again: Value = serde_json::from_slice(&again).unwrap();
+        assert_eq!(
+            again,
+            json!({"SESSDATA": "sess-new-0123456789", "DedeUserID": "42"})
+        );
+        // Not JSON: nothing can be taken from it; without fields the file is the value.
+        assert_eq!(kept_of(l, b"SESSDATA=x", None), None);
+        let plain = def(login_args());
+        assert_eq!(
+            kept_of(&plain.credentials[0], b"SESSDATA=x", None).unwrap(),
+            b"SESSDATA=x"
+        );
+    }
+
+    #[test]
+    fn bad_space_secret_declarations_are_refused_by_field() {
+        for (credential, field) in [
+            (
+                json!({"name": "site", "fileHome": "../.ssh/id_rsa"}),
+                "fileHome",
+            ),
+            (
+                json!({"name": "site", "fileHome": "a.json", "fileEnv": "SITE_FILE"}),
+                "fileHome",
+            ),
+            (
+                json!({"name": "site", "fileEnv": "SITE_FILE", "fields": {}}),
+                "fields",
+            ),
+            (
+                json!({"name": "site", "fileEnv": "SITE_FILE", "fields": {"a b": "X"}}),
+                "fields",
+            ),
+            (
+                json!({"name": "site", "fileEnv": "SITE_FILE", "secret": "space:wrk_a1/other"}),
+                "secret",
+            ),
+            (
+                json!({"name": "site", "fileEnv": "SITE_FILE", "secret": "browser/site"}),
+                "secret",
+            ),
+        ] {
+            let mut args = json!({"name": "site_reader", "command": "node", "args": ["s.js"]});
+            args["credentials"] = json!([credential]);
+            let err = ServerDef::parse(&args).unwrap_err();
+            assert!(err.message.contains(field), "{field}: {}", err.message);
+        }
     }
 
     #[test]

@@ -1647,6 +1647,13 @@ impl Inner {
             })?;
         }
         // Restart it so no process holds the old value.
+        self.restart_server(server);
+        Ok(json!({"name": name, "forgotten": names}))
+    }
+
+    /// Stops a server and starts it again with the same definition, in the background (a credential it reads changed
+    /// on this computer, or was forgotten).
+    pub(crate) fn restart_server(self: &Arc<Self>, server: Arc<Server>) {
         let def = server.def.clone();
         let this = self.clone();
         tokio::spawn(async move {
@@ -1655,7 +1662,6 @@ impl Inner {
             this.servers.lock().unwrap().remove(&def.name);
             let _ = Inner::add(&this, def, Duration::from_secs(5), Origin::Cloud).await;
         });
-        Ok(json!({"name": name, "forgotten": names}))
     }
 
     /// The checkpoint before a non-read-only call (once per turn and session).
