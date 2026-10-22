@@ -45,7 +45,7 @@ mod tests {
     }
 
     /// Upper-case literals in the crates that are not error codes: environment variable names, git refs, Windows
-    /// names, Node's module error codes we read, and the audit label of an MCP error that carried no code.
+    /// names, Node's module error codes and npm's integrity code we read, and the audit label of an MCP error that carried no code.
     const NOT_CODES: &[&str] = &[
         "APPDATA",
         "BUN_INSTALL_CACHE_DIR",
@@ -56,6 +56,7 @@ mod tests {
         "COREPACK_HOME",
         "CSV",
         "DENO_DIR",
+        "EINTEGRITY",
         "ERROR",
         "ERR_MODULE_NOT_FOUND",
         "GOCACHE",

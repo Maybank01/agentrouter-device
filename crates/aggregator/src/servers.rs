@@ -20,6 +20,7 @@ use tokio::io::AsyncBufReadExt;
 use tokio_util::sync::CancellationToken;
 
 use agentrouter_device::mcp_pkg::{PACKAGE_ARG, Pin};
+use agentrouter_sandbox::locks::{self, Lock};
 
 use crate::{Failure, Inner};
 
@@ -66,6 +67,9 @@ pub struct ServerDef {
     pub keep_out: Vec<String>,
     /// A catalog package: runs only as this checked file (`{{package}}`).
     pub pin: Option<Pin>,
+    /// The lock of everything below the pinned package (Cloud #2740): installed once from it, then the installed
+    /// program runs instead of `npx`/`uvx` (an older cloud sends none: the launch command runs as before).
+    pub lock: Option<Lock>,
     /// Domains its sandbox may reach beside the package mirrors (the catalog's list).
     pub network: Vec<String>,
     /// The catalog preset it comes from.
@@ -168,6 +172,31 @@ impl ServerDef {
             ));
         }
         let pin = Pin::parse(args).map_err(Failure::from)?;
+        let lock = Lock::parse(args)
+            .map_err(|m| Failure::new(agentrouter_device::errors::HOSTD_ARGS_INVALID, m))?;
+        if let Some(lock) = &lock {
+            // A lock only ever installs the pinned package it came with.
+            let Some(pin) = &pin else {
+                return Err(Failure::new(
+                    agentrouter_device::errors::HOSTD_ARGS_INVALID,
+                    "lock 要和 pin 一起给",
+                ));
+            };
+            let same = lock.package == pin.package && lock.version == pin.version;
+            if let Err(why) = lock.pins(&pin.digest).and_then(|()| {
+                same.then_some(()).ok_or_else(|| {
+                    format!(
+                        "lock 是 {} {}，pin 是 {} {}",
+                        lock.package, lock.version, pin.package, pin.version
+                    )
+                })
+            }) {
+                return Err(Failure::new(
+                    agentrouter_device::errors::HOSTD_ARGS_INVALID,
+                    format!("lock 和 pin 对不上：{why}"),
+                ));
+            }
+        }
         let title = match str_of(args, "title").trim() {
             "" => name.clone(),
             t => agentrouter_device::util::clip(t, 20),
@@ -182,6 +211,7 @@ impl ServerDef {
             secret_env: strings(args, "secretEnv", 64, 128)?,
             keep_out,
             pin,
+            lock,
             network: strings(args, "network", 32, 253)?,
             preset,
             display: args
@@ -284,6 +314,12 @@ impl State {
             State::Restarting => "restarting",
             State::Crashed(_) => "crashed",
             State::Stopped => "stopped",
+            // A lock that could not be installed (Cloud #2740), or a sandbox that cannot run it.
+            State::Unavailable(u)
+                if [locks::DIGEST_MISMATCH, locks::INSTALL_FAILED].contains(&u.code) =>
+            {
+                "install_failed"
+            }
             State::Unavailable(_) => "sandbox_unavailable",
         }
     }
@@ -427,6 +463,11 @@ impl Server {
             "display": self.def.display,
             "state": state.label(),
             "error": error,
+            // The catalog code of a server that cannot run (a sandbox or install failure), for the cloud's error.
+            "code": match &state {
+                State::Unavailable(u) => Some(u.code),
+                _ => None,
+            },
             "tools": self.tools.lock().unwrap().len(),
             "restarts": self.restarts.load(Ordering::SeqCst),
             "limitEvents": self.limit_events.lock().unwrap().iter().rev().take(5).map(|(_, l)| l.clone()).collect::<Vec<_>>(),
@@ -630,8 +671,38 @@ async fn start_once(
     let shown = |p: &std::path::Path| p.to_string_lossy().into_owned();
     // `{{folders}}` alone is every linked folder, one argument each (the filesystem server's allowed directories);
     // inside a longer argument, and `{{folder}}`, it is the first.
-    let mut args = Vec::with_capacity(def.args.len() + folders.len());
-    for a in &def.args {
+    // A catalog lock (Cloud #2740): installed once outside the sandbox, no package code run; then its program runs.
+    let lock = def.lock.as_ref().filter(|_| !def.is_custom());
+    let (program, raw_args) = match lock {
+        Some(lock) => {
+            let sandbox = agg.sandbox.clone();
+            let wanted = lock.clone();
+            let installed = tokio::task::spawn_blocking(move || sandbox.install_lock(&wanted))
+                .await
+                .map_err(|e| StartError::Failed(format!("安装没做完：{e}")))?
+                .map_err(StartError::Unavailable)?;
+            if let Some(from) = &installed.from {
+                let line = format!(
+                    "installed {}@{} from its lock ({from}) in {:.1}s",
+                    lock.package,
+                    lock.version,
+                    installed.took.as_secs_f64()
+                );
+                server.log(&format!("[agentrouter] {line}"));
+                agg.server_event(server, "installed", Some(line));
+            }
+            let mut args = installed.args;
+            args.extend(lock.args.iter().cloned());
+            (installed.program, args)
+        }
+        None => {
+            let program = resolve(&agg.sandbox, &def.command)
+                .ok_or_else(|| StartError::Failed(format!("这台电脑上找不到 {}", def.command)))?;
+            (program, def.args.clone())
+        }
+    };
+    let mut args = Vec::with_capacity(raw_args.len() + folders.len());
+    for a in &raw_args {
         if a == "{{folders}}" {
             args.extend(folders.iter().map(|f| shown(f)));
         } else if a.contains("{{folder") {
@@ -643,11 +714,11 @@ async fn start_once(
             args.push(a.clone());
         }
     }
-    agg.packages
-        .apply(def.pin.as_ref(), &mut args)
-        .map_err(|e| StartError::Failed(format!("{}: {}", e.code, e.message)))?;
-    let program = resolve(&agg.sandbox, &def.command)
-        .ok_or_else(|| StartError::Failed(format!("这台电脑上找不到 {}", def.command)))?;
+    if lock.is_none() {
+        agg.packages
+            .apply(def.pin.as_ref(), &mut args)
+            .map_err(|e| StartError::Failed(format!("{}: {}", e.code, e.message)))?;
+    }
     for name in &def.keep_out {
         agentrouter_device::mcp_pkg::keep_out(&home, name);
     }

@@ -41,6 +41,7 @@ use std::sync::OnceLock;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+pub mod locks;
 pub mod runtimes;
 pub mod userns;
 

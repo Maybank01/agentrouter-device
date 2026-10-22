@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      mirror_timing:
+        description: Also time first installs of the catalog locks with the mirrors first (Cloud #2740)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -132,6 +137,7 @@ jobs:
     # other two.
     env:
       AGENTROUTER_SANDBOX_TESTS: "1"
+      AGENTROUTER_MIRROR_TIMING: ${{ inputs.mirror_timing && '1' || '' }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable

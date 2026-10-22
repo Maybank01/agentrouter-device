@@ -3,7 +3,8 @@
 set -u
 fail=0
 src=(crates app/src-tauri .github Cargo.toml)
-exclude=(--exclude-dir=target --exclude-dir=gen --exclude=av-hygiene.sh)
+# fixtures: registry lockfiles copied from Cloud (their base64 checksums can spell anything, e.g. "UPX").
+exclude=(--exclude-dir=target --exclude-dir=gen --exclude-dir=fixtures --exclude=av-hygiene.sh)
 
 check() { # <description> <extended regex> [extra grep args]
   local what=$1 pattern=$2; shift 2
