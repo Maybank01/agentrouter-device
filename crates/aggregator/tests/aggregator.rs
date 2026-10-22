@@ -225,6 +225,8 @@ async fn the_protocol_gate_audit_and_no_unconfined_fallback() {
         [
             "link__servers",
             "link__server_add",
+            "link__login",
+            "link__logout",
             "link__server_remove",
             "link__server_logs",
             "link__folder_add",

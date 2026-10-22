@@ -134,7 +134,9 @@ mod tests {
 
     #[test]
     fn round_trip_and_remove() {
-        let home = std::env::temp_dir().join(format!("ar-local-secrets-{}", std::process::id()));
+        let home = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target")
+            .join(format!("ar-local-secrets-{}", std::process::id()));
         assert_eq!(get_in(&home, "s/c").unwrap(), None);
         put_in(&home, "s/c", b"one").unwrap();
         put_in(&home, "s/c", b"two").unwrap();
