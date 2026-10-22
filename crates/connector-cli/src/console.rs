@@ -260,6 +260,10 @@ impl Hooks for Console {
                         detail.unwrap_or_default()
                     ),
                     "stopped" => format!("本机工具「{title}」已停止"),
+                    "limit" => format!(
+                        "本机工具「{title}」碰到了资源上限：{}",
+                        detail.unwrap_or_default()
+                    ),
                     _ => return,
                 };
                 line(&format!("{t}  {text}"));
@@ -592,7 +596,14 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
         folders: folders.iter().map(|f| shown(f)).collect(),
         full: opts.full,
         placement: "pc".into(),
-        capacity: agentrouter_device::capacity::capacity(&first, cfg.max_environments),
+        capacity: {
+            // The owner's ceiling and how this computer enforces limits (device #127).
+            let mut c = agentrouter_device::capacity::capacity(&first, cfg.max_environments);
+            let mut l = agentrouter_device::limits::view(!opts.full);
+            l["ceiling"] = cfg.limits.sane().view();
+            c["limits"] = l;
+            c
+        },
         labels: agentrouter_device::capacity::labels(&cfg.labels),
         pool: cfg.pool_name(),
     };
@@ -628,6 +639,7 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
                 control: identity.control.clone(),
                 yes_servers: opts.yes_servers,
                 cloud: false,
+                limits: cfg.limits.sane(),
             },
             console.clone(),
             Arc::new(move |s: &str, m: Value| {

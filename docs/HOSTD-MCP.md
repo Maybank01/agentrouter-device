@@ -200,6 +200,8 @@ the id.
   per two cores and 4 GiB of memory, at least one.
 - `labels` = `{os, arch, tools, runtimes, custom}`. `tools` and `runtimes` are the names a task's `requires` uses,
   found on PATH. `custom` holds the owner's own labels from `config.json` `labels` (`gpu`, `rack-2`, 「我的渲染机」).
+- `capacity.limits` (device #127): the owner's ceiling (`ceiling`) and how this computer enforces limits
+  (`enforcedBy`, `unenforced`, `why`), §6.6.
 - `pool` (Cloud VISION §4 D2, #2576): the pool the owner puts this host in, `config.json` `pool` (「渲染机」, `rack-2`),
   sent in `hello.link` only when set (1–40 characters). Control records it with the host; a definition admits it as
   `pool:<name>` in `reach.environment.allow`. Unset = the person's default pool.
@@ -244,6 +246,7 @@ Unsigned (harmless, read-only shape): `tools/list`, `ping`, notifications. Failu
   or a custom definition — custom ones need the local `y` in §5), `link__server_remove`,
   `link__server_logs`, `link__package_put` (pinned package bytes, digest-checked; replaces
   `mcp_package`). These manage *which* servers run; they are not capabilities.
+- `link__limits {memoryMb?, processes?, cpuPercent?}`: the environment's resource limits, applied live (§6.6).
 - `link__folder_add {path, reason?}`: the Agent asks for another folder; the person answers `y/N` on the computer
   (§5). On `y` the folder joins the writable set, every running server restarts with the new policy, `info` goes
   out and the answer lists the folders. Refused: `DENIED_BY_USER`, `FOLDER_INVALID` (missing, a file, the home
@@ -564,6 +567,33 @@ start and the first `link` run), and `--full` provisions them too:
   `bwrap.yml` and published with that source, because upstream has no maintained static build. They come from GitHub,
   in `sandbox setup` only (`--full` does not need them). srt gets their paths; they are not put on a server's PATH.
   Where Ubuntu restricts user namespaces, the bubblewrap that runs is the root-owned copy of the same pin (§6.3).
+
+### 6.6 Resource limits per environment (Cloud VISION §4 D10, device #127)
+
+An environment may carry limits on **memory**, **processes** and **CPU** for everything a local server runs. The `host`
+server is where the Agent's commands, jobs and terminals run, so its tree is the environment's work. `hostd` enforces
+them from **outside** the sandbox, around each server it starts (`agentrouter_device::limits`). Inside, seccomp refuses
+`AF_UNIX`, so there is no systemd bus there, and the Agent's own processes could reach whatever enforces them.
+
+| OS | How | Memory | Processes | CPU |
+| --- | --- | --- | --- | --- |
+| Linux with a user systemd and cgroup v2 (desktops) | a transient scope per server: `systemd-run --user --scope`, which executes the server in place (same pid, process group, stdio); `OOMPolicy=continue` | `MemoryMax`, `MemorySwapMax=0`: the kernel's OOM killer ends the largest process in the scope; the server and the rest go on | `TasksMax` = processes × 32 (the kernel counts threads) | `CPUQuota` (when the user manager has the cpu controller) |
+| Windows 完全访问 | a kill-on-close Job object per server (the tree is hostd's own child) | job committed memory: an allocation beyond it fails | active processes: a start beyond it fails | hard CPU-rate cap |
+| Windows folder mode | **not yet** (device #129): srt-win starts the confined server as the sandbox account through Secondary Logon, in a job of its own, so hostd's job holds only srt's launcher (CI on #128). Non-empty limits are refused with that reason (`LIMITS_NOT_APPLIED`, or the start fails); all three fields are reported `unenforced`. #129: a named inner job created from inside, set from outside | — | — | — |
+| macOS; Linux without a user systemd | sampling every 2 s (sysinfo) | over it, the largest process ends | over it, the newest processes end | not capped |
+
+- **Values.** The platform's (`link__limits {memoryMb, processes, cpuPercent}`, from the environment record), capped
+  field by field by the owner's ceiling (`config.json` `limits: {memory_mb, processes, cpu_percent}`). Neither set: no
+  limit, as in the person's own terminal. Out of range → `LIMITS_INVALID` naming the field and the range, never clipped.
+- **Live.** `link__limits` applies at once to every running server (`systemctl --user set-property --runtime`, the Job
+  object's information, the sampler's values): no restart, background jobs keep running. A start whose limits cannot be
+  enforced fails with the reason instead of running unlimited.
+- **Said.** A limit reached is a line in the server's log, the audit (`server` `limit`), the console feed and
+  `link__servers` (`limitEvents`). A call that was running when it happened gets the line in its answer (or in its
+  `SERVER_CRASHED` message). `link__servers` and `hello.link` `capacity.limits` show the limits, `enforcedBy`
+  (`systemd-scope`, `job-object`, `sampled`), what this OS does not enforce (`unenforced`) and why sampling.
+- **Disk** is not limited per folder (a PC has no per-folder quota without an administrator); the output folder's
+  `storage_low` event covers it. Wall time is each call's own timeout.
 
 ## 7. Audit and undo
 
