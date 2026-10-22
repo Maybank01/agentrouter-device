@@ -1,5 +1,5 @@
 {
-  "source": "agentrouter-cloud@a3047ef179620f1609c7dd656b3eb9d107c5d2ab",
+  "source": "agentrouter-cloud@a15b54c2d8eaa7405212280e2e44a8ec40229a07",
   "schema": "agentrouter.errors/v1",
   "about": "The one error catalog (#2449; owner 2026-10-21 「还有，错误那一块，是不是应该有一种统一的方式？我不想错误都散落在各处」). Adding an error = adding an entry here, then `node scripts/sync-error-catalog.mjs`. README.md has the rules.",
   "errors": [
@@ -701,6 +701,26 @@
       "agent": "{operation}: this Agent's definition does not allow working on {target}",
       "next": "Move only to a host its reach.environment.allow admits (env_list lists them), or keep working where you are; tell the person if the work needs that host.",
       "user": "这个 Agent 不能在那台机器上工作。"
+    },
+    {
+      "code": "ENV_TOOL_UNAVAILABLE",
+      "component": "environment",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: you are in the default environment, which has no tools of its own, so {target} did not run (an environment's own tools work only while you are in it)",
+      "next": "Enter the environment the tool belongs to again (env_enter with that host; this error names it when it is known), then call env_tool again: its notice lists the tools there. Or keep working without it.",
+      "user": "这个工具要先进入对应的环境才能用。"
+    },
+    {
+      "code": "ENV_TOOL_UNKNOWN",
+      "component": "environment",
+      "status": 404,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: the environment you are in has no tool {target}",
+      "next": "Call env_tool with one of the names this error lists in tools (env_enter's notice lists them with their arguments). A server installed a moment ago may still be starting: mcp_catalog {op: \"installed\"} (folder_tools) shows its state.",
+      "user": "当前环境里没有这个工具。"
     },
     {
       "code": "SANDBOX_OUTPUT_GONE",
@@ -2895,6 +2915,16 @@
       "user": "这个对话属于另一个 Agent，请新开一个对话。"
     },
     {
+      "code": "LAUNCH_CREDENTIAL_MISMATCH",
+      "component": "agent-sessions",
+      "status": 403,
+      "retry": "never",
+      "log": "warn",
+      "agent": "{operation}: the platform call credential of another conversation tree cannot start a turn in {target}",
+      "next": "Start the turn with the credential of the conversation tree {target} belongs to (platform-access forConversation of its root), or let the person's next message continue it.",
+      "user": "这个后台任务没有权限继续这个对话。"
+    },
+    {
       "code": "LAUNCH_CONVERSATION_UNKNOWN",
       "component": "agent-sessions",
       "status": 404,
@@ -2993,6 +3023,98 @@
       "agent": "{operation}: the person's plan does not cover this start ({target}); the cause says which allowance is used up",
       "next": "Nothing started and nothing is charged. Tell the person their allowance is used up; they continue after buying a card or when the cycle renews.",
       "user": "本期额度已用完，购买月卡后继续使用。"
+    },
+    {
+      "code": "DEVICE_NOT_ALLOWED",
+      "component": "control",
+      "status": 403,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: the device's owner does not admit {target} there; the cause says which rule (a personal device is used only by instances launched under its owner's account, and only by the owner's Agents its rules list)",
+      "next": "Nothing was started. Place it on a device of the account it runs under, or in the cloud (env_list lists what this Agent may use); if it is the owner's own Agent, ask the owner to add it to that device's list. Calling again unchanged will not help.",
+      "user": "这台设备不允许这个 Agent 使用。"
+    },
+    {
+      "code": "DEVICE_RULES_INVALID",
+      "component": "control",
+      "status": 400,
+      "retry": "never",
+      "log": "info",
+      "agent": "The usage rules given to {operation}{on_target} are not valid (the cause names the field)",
+      "next": "Send {agents: \"own\" | [recipe refs], localData?: {name: [recipe refs]}} as DEVICES §3.1 describes, then set them again.",
+      "user": "设备的使用规则填得不对。"
+    },
+    {
+      "code": "LOCAL_DATA_NOT_ALLOWED",
+      "component": "control",
+      "status": 403,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: {target} needs local data that the device's owner opened only to other Agents; the cause names the data and the device",
+      "next": "Nothing was started. Ask the person to open that local data to this Agent on the device page, or work without it; calling again unchanged will not help.",
+      "user": "这份本地资料没有开放给这个 Agent。"
+    },
+    {
+      "code": "LOCAL_DATA_MISSING",
+      "component": "control",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: no allowed device has the local data {target} needs; the cause names the missing name and every device checked",
+      "next": "Nothing was started. Ask the person to register that folder on a device (`agentrouter data add <name> <folder>` or the device page), or change the space's requires; calling again unchanged will not help.",
+      "user": "没有设备登记了它需要的本地资料。"
+    },
+    {
+      "code": "LOCAL_DATA_REVOKED",
+      "component": "host-link",
+      "status": 410,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: the person removed local data that {target} required; the instance was stopped",
+      "next": "Tell the person what stopped and why; start it again only after the data is registered again, or change its requires.",
+      "user": "这份本地资料已被移除，用到它的任务已停止。"
+    },
+    {
+      "code": "DEPENDENCY_MISSING",
+      "component": "control",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: no allowed device has the software {target} requires; the cause names the program, the wanted version and what each device has instead (another version, a build id without a version, or none)",
+      "next": "Nothing was started. Ask the person to install or update it on one of their devices, or to add it by hand if it is installed but not found (`agentrouter software add <name> --path <folder>`); or change the version the space requires. Calling again unchanged will not help.",
+      "user": "没有设备装了它需要的软件（或版本不对）。"
+    },
+    {
+      "code": "HOST_NO_ROOM",
+      "component": "control",
+      "status": 409,
+      "retry": "transient",
+      "retryAfterSeconds": 60,
+      "log": "info",
+      "agent": "{operation}: the device that fits {target} already runs as many environments as its owner set; the cause names it",
+      "next": "Wait for one of its environments to end, end one you no longer need, or place this on another device; the platform does not queue it.",
+      "user": "这台设备同时运行的任务已满，稍后再试。"
+    },
+    {
+      "code": "CLOUD_HOST_LIMIT",
+      "component": "control",
+      "status": 429,
+      "retry": "transient",
+      "retryAfterSeconds": 60,
+      "log": "info",
+      "agent": "{operation}: the payer's cloud sandboxes are all in use ({target}); an idle one goes back first, none was idle; the person's own computers do not count",
+      "next": "Finish or close a conversation that holds a cloud sandbox, use one of the person's own computers (env_list), or wait; calling again at once will not help.",
+      "user": "同时使用的云端沙箱已达上限，先结束一个再试。"
+    },
+    {
+      "code": "DEVICE_UNKNOWN",
+      "component": "control",
+      "status": 404,
+      "retry": "never",
+      "log": "warn",
+      "agent": "{operation}: there is no linked device {target} (it was removed, or the link gateway named a device it no longer has)",
+      "next": "Nothing was recorded. The host sends its whole profile again with its next hello; if it keeps happening, the device must be linked again.",
+      "user": "找不到这台设备，请重新链接。"
     }
   ]
 }

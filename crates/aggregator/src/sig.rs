@@ -44,6 +44,47 @@ pub fn params_digest(params: &Value) -> String {
     args_digest(&Value::Object(map))
 }
 
+/// The `initialize` param that names the account the session's calls are launched under (DEVICES §3.4). It is a
+/// top-level param, so the v3 digest signs it.
+pub const ACCOUNT_PARAM: &str = "agentrouter.top/account";
+
+/// The string the control plane signs to tell a link whose it is (the gateway's `welcome` carries it as `owner`):
+///
+/// ```text
+/// {"v": 1, "kid", "link", "account", "sig"}
+/// signed string: agentrouter-link-owner/v1\n<link>\n<account>
+/// ```
+pub fn owner_string(link: &str, account: &str) -> String {
+    format!("agentrouter-link-owner/v1\n{link}\n{account}")
+}
+
+/// The account a link belongs to, from the control plane's signed owner statement: checked against the key pinned at
+/// pairing and this link's id.
+pub fn check_owner(statement: &Value, link: &str, key: &ControlKey) -> Result<String, Refused> {
+    let field = |name: &str| statement.get(name).and_then(Value::as_str).unwrap_or("");
+    if statement.get("v").and_then(Value::as_i64) != Some(1) {
+        return Err(refused("SIGNATURE_INVALID", "主人声明的版本不对"));
+    }
+    if field("kid") != key.kid {
+        return Err(refused("SIGNATURE_INVALID", "主人声明用的是不认识的密钥"));
+    }
+    let (signed_link, account) = (field("link"), field("account"));
+    if !verify(
+        &key.public_key,
+        &owner_string(signed_link, account),
+        field("sig"),
+    ) {
+        return Err(refused("SIGNATURE_INVALID", "主人声明的签名不对"));
+    }
+    if signed_link != link {
+        return Err(refused("WRONG_LINK", "主人声明是签给另一个链接的"));
+    }
+    if account.is_empty() || account.len() > 64 {
+        return Err(refused("SIGNATURE_INVALID", "主人声明没有账号"));
+    }
+    Ok(account.to_string())
+}
+
 /// What a valid signature says.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Signed {

@@ -177,7 +177,7 @@ messages unchanged inside a two-field envelope.
 ```text
 data     {"s": "<mcp session id>", "m": <JSON-RPC 2.0 message, unchanged>}
 control  device → gateway  {"op": "hello", "v": 2, "token": "ldt_…", "link": {…}}       (first frame, ≤10 s)
-         gateway → device  {"op": "welcome", "link": "lnk_…"} | {"op": "error", "code"} | {"op": "revoked", "reason"}
+         gateway → device  {"op": "welcome", "link": "lnk_…", "owner"?: {…} (§3.3)} | {"op": "error", "code"} | {"op": "revoked", "reason"}
          either way        {"op": "close", "s": "<session>"}                              (session ended)
          device → gateway  {"op": "audit_head", "seq": n, "hash": "<sha256>"}            (§7, every heartbeat)
          device → gateway  {"op": "load", cpu_percent, load1, free_memory_mb, free_disk_mb,
@@ -275,6 +275,15 @@ Canonical JSON, key format, expiry window (60 s + 5 s skew) and the replay cache
 `protocol.rs`. Signed: `initialize` (binds the MCP session to the conversation) and every `tools/call`.
 Unsigned (harmless, read-only shape): `tools/list`, `ping`, notifications. Failure → JSON-RPC error
 `-32001` with `data.code` `SIGNATURE_INVALID` / `REQUEST_EXPIRED` / `REPLAYED` / `WRONG_LINK`.
+
+**The owner and the launching account** (Cloud DEVICES §3.4, #2836): a personal device runs only what is launched
+under its owner's account. The gateway's `welcome` carries the control plane's owner statement
+`"owner": {"v": 1, "kid", "link", "account", "sig"}`, signed string `agentrouter-link-owner/v1\n<link>\n<account>`,
+checked with the key pinned at pairing and this link's id (a statement that does not verify is audited and ignored; a
+welcome without one keeps the owner known). `initialize` names the account its session is launched under as the
+top-level param `"agentrouter.top/account": "<id>"`, so the v3 digest signs it. Once the owner is known, an
+`initialize` with another account or none is refused with `DEVICE_NOT_ALLOWED`; every call on a session runs under
+the account its `initialize` named.
 
 ### 3.4 Tools the aggregator exposes
 

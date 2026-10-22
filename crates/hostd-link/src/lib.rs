@@ -220,8 +220,9 @@ pub struct Options {
 /// What the link reports to its consumer.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
-    /// Welcomed by the gateway (every successful (re)connect).
-    Up { link: String },
+    /// Welcomed by the gateway (every successful (re)connect), with the control plane's signed owner statement when it
+    /// sent one (`{v, kid, link, account, sig}`, DEVICES §3.4; the aggregator verifies it).
+    Up { link: String, owner: Option<Value> },
     /// The link is down; the link layer tries again after `retry_in`.
     Down { reason: String, retry_in: Duration },
     /// One MCP message of a session.
@@ -529,12 +530,12 @@ async fn connection(
                     Some(Ok(Message::Text(text))) => {
                         match on_text(text.as_str(), events) {
                             Inbound::None => {}
-                            Inbound::Welcome(link) => {
+                            Inbound::Welcome(link, owner) => {
                                 // Anything queued before this welcome answers a request of an earlier connection:
                                 // the gateway already answered it LINK_LOST, so it is never replayed.
                                 while out_rx.try_recv().is_ok() {}
                                 *welcomed = true;
-                                let _ = events.send(Event::Up { link });
+                                let _ = events.send(Event::Up { link, owner });
                                 if ws.send(Message::text(head(options).to_string())).await.is_err() {
                                     break Conn::Lost("心跳没发出去".into());
                                 }
@@ -692,7 +693,7 @@ struct EventsAck {
 enum Inbound {
     None,
     EventsAck(EventsAck),
-    Welcome(String),
+    Welcome(String, Option<Value>),
     End(End),
     Lost(String),
     PortOpen(port::Open),
@@ -730,7 +731,10 @@ fn on_text(text: &str, events: &mpsc::UnboundedSender<Event>) -> Inbound {
         return Inbound::None;
     }
     match field("op").as_str() {
-        "welcome" => Inbound::Welcome(field("link")),
+        "welcome" => Inbound::Welcome(
+            field("link"),
+            frame.get("owner").filter(|o| o.is_object()).cloned(),
+        ),
         "close" => {
             let s = field("s");
             if !s.is_empty() {
@@ -849,7 +853,7 @@ mod tests {
         assert_eq!(rx.try_recv().unwrap(), Event::Close { s: "mcs_1".into() });
         assert!(matches!(
             on_text(r#"{"op":"welcome","link":"lnk_x"}"#, &tx),
-            Inbound::Welcome(l) if l == "lnk_x"
+            Inbound::Welcome(l, None) if l == "lnk_x"
         ));
         assert!(matches!(
             on_text(
