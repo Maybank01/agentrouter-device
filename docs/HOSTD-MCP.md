@@ -274,11 +274,13 @@ Unsigned (harmless, read-only shape): `tools/list`, `ping`, notifications. Failu
 - `link__feeds {instance, space, server, feeds}` (platform only, Cloud #2739 step 2): the feeds of a space's runtime
   instance on this host (Cloud PROJECT-SERVICE §9.8.5), as the Space Server describes them plus the columns of the
   feed's table (`{name, tool, args?, everyMs, key, items?, extract?: {json}, into: <table>, columns: {column: type},
-  backoff?: {on, waitMs}}`); `feeds: []` stops them, an unchanged set keeps its timers. The generic feed runner
+  map?: {column: item field}, backoff?: {on, waitMs}}`); `feeds: []` stops them, an unchanged set keeps its timers. The generic feed runner
   (`agentrouter_aggregator::feeds`) calls the tool of the local server `server` on its timer (±20 % jitter); takes the
   items from `structuredContent` (at `items`, else the result must be the list) or JSON inside a text result at
   `extract.json` — anything else is `FEED_OUTPUT_UNSTRUCTURED` / `FEED_ITEMS_NOT_A_LIST`, prose is never parsed; keeps
-  of each item the table's columns (a number for a `text` column becomes text); and writes each item whose key the feed
+  of each item the table's columns, each from the item field that fills it — the one the feed's `map` names (a tool's
+  `entityType` into the column `entity_type`, Cloud #2739), else the field of the column's own name; nothing is
+  renamed otherwise — (a number for a `text` column becomes text); and writes each item whose key the feed
   has not seen into the outbox (§3.2) as a **row** of `into` (`table` instead of `event`) with key `<feed>:<item key>`
   and cause `feed:<instance>/<feed>@<ms>`. The platform upserts rows by the table's key; the space raises
   `<table>.inserted|updated` once per row when it lands — a feed raises no event of its own. The seen-set lives in the outbox database (`seen`, newest 20,000 keys per feed),
