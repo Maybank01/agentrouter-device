@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -56,7 +56,24 @@ pub trait Source: Send + Sync {
     fn list(&self, ticket: &Ticket, path: &str) -> Result<Vec<Entry>, LowerError>;
     /// The whole file at `path`, with the digest the source says it has.
     fn read(&self, ticket: &Ticket, path: &str) -> Result<(Vec<u8>, String), LowerError>;
+    /// The files a task's declared `inputs` select below the folder at `path` (`POST /v1/content/select`: the Space
+    /// Server's own selection, the one a stored version's task inputs use), as paths below it with their sizes, and
+    /// whether the source cut the list short.
+    fn select(
+        &self,
+        _ticket: &Ticket,
+        path: &str,
+        _inputs: &[String],
+    ) -> Result<(Vec<(String, u64)>, bool), LowerError> {
+        Err(LowerError::Failed {
+            code: "CHECKOUT_SOURCE_FAILED".into(),
+            message: format!("select {path}: this source cannot select task inputs"),
+        })
+    }
 }
+
+/// A part file's name is unique per fetch (several threads may fetch at once: FUSE workers, a prefetch).
+static PART: AtomicUsize = AtomicUsize::new(0);
 
 /// Counters of this layer (the T0 tier of §5.1, per environment instance) for the sync's answer.
 #[derive(Default)]
@@ -222,9 +239,11 @@ impl Lower {
             self.note(&error);
             return Err(error);
         }
-        let part = self
-            .objects
-            .join(format!("{digest}.{}.part", std::process::id()));
+        let part = self.objects.join(format!(
+            "{digest}.{}.{}.part",
+            std::process::id(),
+            PART.fetch_add(1, Ordering::Relaxed)
+        ));
         let written = std::fs::File::create(&part)
             .and_then(|mut f| f.write_all(&bytes))
             .and_then(|_| std::fs::rename(&part, &path));
@@ -241,6 +260,18 @@ impl Lower {
             return Err(error);
         }
         Ok(path)
+    }
+
+    /// The files `inputs` select below the folder at `rel` (relative to the mount's top), paths relative to that folder.
+    pub fn select(
+        &self,
+        rel: &str,
+        inputs: &[String],
+    ) -> Result<(Vec<(String, u64)>, bool), LowerError> {
+        let ticket = self.ticket();
+        self.source
+            .select(&ticket, &Self::snapshot_path(&ticket, rel), inputs)
+            .inspect_err(|e| self.note(e))
     }
 
     pub fn stats_json(&self) -> Value {
@@ -315,7 +346,73 @@ impl HttpSource {
     }
 }
 
+impl HttpSource {
+    fn failed(route: &str, path: &str, origin: &str, status: u16, text: &str) -> LowerError {
+        let code = serde_json::from_str::<Value>(text)
+            .ok()
+            .and_then(|v| v["error"]["code"].as_str().map(str::to_string))
+            .unwrap_or_else(|| format!("HTTP_{status}"));
+        LowerError::Failed {
+            code,
+            message: format!(
+                "{route} {path} at {origin}: {status} {}",
+                text.chars().take(300).collect::<String>()
+            ),
+        }
+    }
+}
+
 impl Source for HttpSource {
+    fn select(
+        &self,
+        ticket: &Ticket,
+        path: &str,
+        inputs: &[String],
+    ) -> Result<(Vec<(String, u64)>, bool), LowerError> {
+        let url = format!("{}/v1/content/select", ticket.origin.trim_end_matches('/'));
+        let unreachable = |e: String| LowerError::Failed {
+            code: "CHECKOUT_SOURCE_UNREACHABLE".into(),
+            message: format!("select {path} at {}: {e}", ticket.origin),
+        };
+        let response = self
+            .agent
+            .post(&url)
+            .header("content-type", "application/json")
+            .send(
+                json!({"root": ticket.root, "exp": ticket.exp, "t": ticket.t, "path": path, "inputs": inputs})
+                    .to_string(),
+            )
+            .map_err(|e| unreachable(e.to_string()))?;
+        let status = response.status().as_u16();
+        let text = response
+            .into_body()
+            .read_to_string()
+            .map_err(|e| unreachable(e.to_string()))?;
+        match status {
+            200 => {}
+            404 => return Err(LowerError::NotFound),
+            _ => return Err(Self::failed("select", path, &ticket.origin, status, &text)),
+        }
+        let body: Value = serde_json::from_str(&text).map_err(|_| LowerError::Failed {
+            code: "CHECKOUT_SOURCE_INVALID".into(),
+            message: format!("select {path}: not a selection"),
+        })?;
+        let files = body["files"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|f| {
+                        Some((
+                            f["path"].as_str()?.to_string(),
+                            f["size"].as_u64().unwrap_or(0),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok((files, body["more"].as_bool().unwrap_or(false)))
+    }
+
     fn list(&self, ticket: &Ticket, path: &str) -> Result<Vec<Entry>, LowerError> {
         let mut body = self.get(ticket, "list", path)?.into_body();
         let text = body.read_to_string().map_err(|e| LowerError::Failed {
