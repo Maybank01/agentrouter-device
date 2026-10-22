@@ -1,0 +1,59 @@
+# A red main is never silent (issue #125). `Sandbox (Windows)` takes ~4–7 min, too long for the merge path (p90 ≤ 5 min,
+# AGENTS.md "Merge path in minutes"), so it runs on the PR without blocking and gates here, after the merge, like every
+# post-merge step of CI: red once → the failed jobs run again; red again and green on the parent → GitHub's revert PR of
+# the merge, with auto-merge; otherwise a `main-red` issue. Logic and decision table: scripts/main-red.mjs.
+# Holds the merge bot App key (agentrouter-cloud-agent-dev, as Cloud's merge bot): only the default branch's copy of this
+# file and script run, and they never check out or run pull request code.
+name: main red
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  # Re-check one CI run by hand; dry_run prints the decision and changes nothing. drill_rerun re-runs a green CI run of
+  # main with the workflow token, as the flake check does, to prove its completion starts this guard again.
+  workflow_dispatch:
+    inputs:
+      run_id: { description: "CI run id (a push to main)", required: true, type: string }
+      dry_run: { description: "print the decision only", required: false, type: boolean, default: true }
+      drill_rerun: { description: "re-run this green CI run with the workflow token", required: false, type: boolean, default: false }
+
+permissions:
+  contents: read
+  actions: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: main-red-${{ github.event.workflow_run.head_sha || inputs.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    name: main red guard
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      HAS_APP: ${{ secrets.MERGE_BOT_APP_ID != '' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Merge bot App token (revert PRs start their own checks; the workflow token's would not)
+        id: app
+        if: env.HAS_APP == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.MERGE_BOT_APP_ID }}
+          private-key: ${{ secrets.MERGE_BOT_APP_PRIVATE_KEY }}
+      - name: Re-run, revert or report
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APP_TOKEN: ${{ steps.app.outputs.token }}
+          RUN_ID: ${{ github.event.workflow_run.id || inputs.run_id }}
+          DRY_RUN: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '1' || '' }}
+          DRILL_RERUN: ${{ (github.event_name == 'workflow_dispatch' && inputs.drill_rerun) && '1' || '' }}
+        run: node scripts/main-red.mjs
