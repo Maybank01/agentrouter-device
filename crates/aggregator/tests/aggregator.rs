@@ -296,6 +296,21 @@ async fn the_protocol_gate_audit_and_no_unconfined_fallback() {
         )
         .await;
     assert_eq!(code_of(&reserved), "ENV_RESERVED", "{reserved}");
+    // The screen (device #97): a catalog preset that asks for the display is asked too; the cloud cannot grant it.
+    let display = h
+        .call("mcs_1", 13, "ags_a", "link__server_add", json!({
+            "name": "screen", "command": "npx", "args": ["-y", "-p", "{{package}}", "screen-mcp"], "display": true,
+            "preset": "screen", "pin": {"file": "screen-1.0.0.tgz", "digest": "sha512-2fN6qhpsiPSBAe0ev1qDPk4sCWdULCZQTuYc4ZY7+BDWQ1XCxLB+7dqStF2ZflgG4G/9vTwQsjxh7pjFqrrpcg==", "package": "screen-mcp", "version": "1.0.0"},
+        }))
+        .await;
+    assert_eq!(code_of(&display), "DENIED_BY_USER", "{display}");
+    assert!(
+        display["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("屏幕"),
+        "{display}"
+    );
     let preset = h
         .call("mcs_1", 12, "ags_a", "link__server_add", json!({
             "name": "files", "command": "npx", "args": ["-y", "-p", "{{package}}", "mcp-server-filesystem", "{{folder}}"],

@@ -440,9 +440,11 @@ needs in place rather than deciding its fate.
 - **完全访问 is chosen on the computer only:** `agentrouter link --full`. There is no tool, frame, flag or env var
   through which the cloud can turn it on or off; ending it means Ctrl+C and running `link` again without `--full`.
 - **The only local question** is adding a server that is not a pinned catalog entry
-  (`link__server_add` with a custom command): the terminal shows the command line and asks `y/N`;
-  no answer in 120 s = no. `--yes-servers` on the command line pre-answers it for unattended machines
-  (a local flag, never an environment variable a child or the cloud can set).
+  (`link__server_add` with a custom command), or any server that asks for the display (§6.7): the terminal
+  shows the command line and asks `y/N`; no answer in 120 s = no. `--yes-servers` on the command line
+  pre-answers it for unattended machines (a local flag, never an environment variable a child or the cloud can
+  set). A yes is recorded as a **grant** for that exact definition (§6.7), so the same server is not asked
+  about again; a changed definition is.
 - **Deleted:** `AGENTROUTER_CONSENT`, every consent decision stored or asserted in the cloud for device
   calls (§9). The cloud keeps a **binding** ("this conversation uses `desk:my-mod`"), which is a routing
   choice the person makes in the web UI, not a permission.
@@ -611,6 +613,38 @@ them from **outside** the sandbox, around each server it starts (`agentrouter_de
   (`systemd-scope`, `job-object`, `sampled`), what this OS does not enforce (`unenforced`) and why sampling.
 - **Disk** is not limited per folder (a PC has no per-folder quota without an administrator); the output folder's
   `storage_low` event covers it. Wall time is each call's own timeout.
+
+### 6.7 Grants and the display (device #97, Cloud #2396; coordinator decision 2026-10-22)
+
+Owner 2026-10-21: 「就对标你的能力吧。就是普通的电脑操控，可以让用户自己装MCP解决」 — GUI control is the person's own
+choice: they add a GUI MCP (e.g. Windows-MCP) on their computer and cloud Agents use it through `hostd`. The platform
+builds no screen feature (#51 stays: no screen preset in the catalog).
+
+- **A grant is what the person allowed one tool**, recorded on this computer only (`<data>/grants.json`, read by no
+  sandbox): keyed by the tool's name and the hash of its definition (command, arguments, environment, network hosts,
+  display, pinned package); environment values are hashed, never stored. The record carries what was granted (the
+  display, the network hosts), so a yes covers exactly what the person was shown; a changed definition asks again.
+  The cloud can ask for a grant (`link__server_add` with `display: true`), never make one.
+- **Display is a per-tool grant, never a folder-mode setting.** Folder mode has no display (Linux: no X11/Wayland/
+  D-Bus sockets, seccomp refuses `AF_UNIX`; Windows: the sandbox account; macOS: Seatbelt), and the Agent's own
+  commands keep none. A tool granted the display **runs with the person's own rights, outside the folder sandbox**:
+  any display access drives every other window (X11 and the D-Bus session bus on Linux — D-Bus can even start units
+  outside a sandbox; `SendInput`/UI Automation on the same desktop on Windows; Screen Recording/Accessibility on
+  macOS), so a sandbox around such a tool would be nominal. It still runs under the environment's limits (§6.6), the
+  argument audit (§7) and the link's lifetime.
+- **Asked in plain words** (owner draft 2026-10-22): 「<名称> 要能看到并操作你的屏幕，所以它以你自己的权限运行，不受文件夹
+  限制。允许？[y/N]」. A catalog preset that asks for the display is asked too.
+- **The person's own tools: `agentrouter mcp add <name> [--display [--yes]] [--title t] [--network a,b] -- <command…>`**
+  (#2396 gap 1). Adding a tool is the person's yes for it (a display grant is asked once more in the words above;
+  `--yes`, typed on this computer like `--yes-servers`, answers it in advance for an unattended machine); the
+  definition is kept in `<data>/tools.json` and started by every `agentrouter link` on this computer, like the
+  project's `.agentrouter/mcp.json`, until `agentrouter mcp remove <name>` (which also forgets the grant). `agentrouter
+  mcp list` shows them. Environment values are not taken on the command line (workspace rule: no data through command
+  lines).
+- **Shown:** `link__servers` answers `display: true` for a granted tool (「以你的权限运行」); the audit's server start
+  records the policy `{display: true, unconfined: true}`.
+- **Parity bench T4** (a screenshot) runs through such a tool: the bench, as the person, adds a screenshot MCP with
+  the grant, and T4 asks for the screenshot through it.
 
 ## 7. Audit and undo
 

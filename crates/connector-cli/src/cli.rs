@@ -32,6 +32,12 @@ link 启动 hostd（宿主守护进程）；agentrouter hostd 是同一条命令
                                 --journal 放回完全访问时 Agent 改过的文件的旧版
   agentrouter audit [verify] [条数]
                                 这个文件夹的审计记录（每次调用连参数一起记，密钥不记）；verify 检查有没有被改过
+  agentrouter mcp add <名字> [--display [--yes]] [--title <标题>] [--network <域名,…>] -- <命令> [参数…]
+                                自己加一个本机工具（MCP 服务器）：之后每次 agentrouter link 都启动它，云端 Agent 就能用它的工具。
+                                它在文件夹的沙箱里运行；--display 让它能看到并操作屏幕（比如 Windows-MCP）：
+                                这要你在这里同意（--yes 是事先同意，给无人值守的电脑），它会以你自己的权限运行，不受文件夹限制
+  agentrouter mcp list          自己加的本机工具
+  agentrouter mcp remove <名字> 去掉一个自己加的本机工具（连同给它的权限）
   agentrouter sandbox setup|status|remove
                                 本机工具的隔离环境（Windows 会弹一次管理员确认）
   sudo agentrouter sandbox userns install|remove
@@ -98,6 +104,10 @@ pub fn main() {
         println!("{USAGE}");
         std::process::exit(0);
     };
+    // `mcp add … -- <command…>`: everything after `--` is the tool's own command line, not our flags.
+    if command == "mcp" {
+        std::process::exit(cmd_mcp(&args[1..]));
+    }
     let flags = match parse(&args[1..]) {
         Ok(f) => f,
         Err(e) => {
@@ -175,6 +185,148 @@ pub fn main() {
         }
     };
     std::process::exit(code);
+}
+
+/// `agentrouter mcp add|list|remove` (device #97, Cloud #2396 gap 1): the person's own local tools. Adding one is the
+/// person's yes for it; a display grant is asked here once more in plain words (`console::server_question`).
+fn cmd_mcp(args: &[String]) -> i32 {
+    use agentrouter_aggregator::grants;
+    let data = data_dir();
+    match args.first().map(String::as_str) {
+        Some("add") => mcp_add(&data, &args[1..]),
+        None | Some("list") => {
+            let own = grants::own(&data);
+            if own.is_empty() {
+                println!(
+                    "还没有自己加的本机工具。用 agentrouter mcp add <名字> -- <命令> 加一个。"
+                );
+                return 0;
+            }
+            println!("自己加的本机工具（每次 agentrouter link 都会启动）：");
+            for t in own {
+                let Ok(def) = agentrouter_aggregator::servers::ServerDef::parse(&t) else {
+                    continue;
+                };
+                let how = if def.display {
+                    "能看到并操作屏幕，以你的权限运行"
+                } else {
+                    "在文件夹的沙箱里运行"
+                };
+                let granted = if grants::granted(&data, &def) {
+                    ""
+                } else {
+                    "（下次启动时会再问你）"
+                };
+                println!(
+                    "  {}（{}）：{} · {how}{granted}",
+                    def.name,
+                    def.title,
+                    def.shown()
+                );
+            }
+            0
+        }
+        Some("remove") => match args.get(1) {
+            Some(name) => match grants::own_remove(&data, name) {
+                Ok(true) => {
+                    println!("去掉了 {name}；正在运行的链接里它会在下次 agentrouter link 时消失。");
+                    0
+                }
+                Ok(false) => {
+                    eprintln!("没有叫 {name} 的本机工具（agentrouter mcp list 看看有哪些）。");
+                    1
+                }
+                Err(e) => {
+                    eprintln!("没去掉：{e}");
+                    1
+                }
+            },
+            None => {
+                eprintln!("要写名字：agentrouter mcp remove <名字>");
+                2
+            }
+        },
+        Some(other) => {
+            eprintln!("不认识的 mcp 命令：{other}\n\n{USAGE}");
+            2
+        }
+    }
+}
+
+fn mcp_add(data: &std::path::Path, args: &[String]) -> i32 {
+    use agentrouter_aggregator::grants;
+    let Some(split) = args.iter().position(|a| a == "--") else {
+        eprintln!(
+            "要在 -- 后面写启动它的命令，比如：agentrouter mcp add screen --display -- uvx windows-mcp"
+        );
+        return 2;
+    };
+    let (ours, command) = (&args[..split], &args[split + 1..]);
+    let (mut name, mut title, mut network, mut display, mut yes) =
+        (None, None, Vec::new(), false, false);
+    let mut it = ours.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--display" => display = true,
+            // Typed by the person on this computer, like `link --yes-servers`: the answer given in advance.
+            "--yes" => yes = true,
+            "--title" => title = it.next().cloned(),
+            "--network" => {
+                network = it
+                    .next()
+                    .map(|v| {
+                        v.split(',')
+                            .map(|d| d.trim().to_string())
+                            .filter(|d| !d.is_empty())
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            }
+            other if other.starts_with("--") => {
+                eprintln!("不认识的选项：{other}\n\n{USAGE}");
+                return 2;
+            }
+            other if name.is_none() => name = Some(other.to_string()),
+            other => {
+                eprintln!("多了一个参数：{other}（命令写在 -- 后面）");
+                return 2;
+            }
+        }
+    }
+    let (Some(name), Some(program)) = (name, command.first()) else {
+        eprintln!("要写名字和命令：agentrouter mcp add <名字> -- <命令> [参数…]");
+        return 2;
+    };
+    let def = match agentrouter_aggregator::servers::ServerDef::parse(&serde_json::json!({
+        "name": name, "title": title.unwrap_or_default(), "command": program, "args": &command[1..],
+        "network": network, "display": display,
+    })) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("{}", e.message);
+            return 2;
+        }
+    };
+    // The screen: asked in plain words even though the person typed the command (owner draft 2026-10-22).
+    if def.display && !yes && !crate::console::ask(&crate::console::server_question(&def)) {
+        println!("没有加。");
+        return 1;
+    }
+    if let Err(e) = grants::own_add(data, &def).and_then(|()| grants::record(data, &def)) {
+        eprintln!("没加上：{e}");
+        return 1;
+    }
+    let how = if def.display {
+        "它能看到并操作屏幕，以你的权限运行"
+    } else {
+        "它在文件夹的沙箱里运行"
+    };
+    println!(
+        "加好了：{}（{}）。{how}；下次 agentrouter link 时启动，云端 Agent 就能用它的工具。",
+        def.name,
+        def.shown()
+    );
+    0
 }
 
 /// `agentrouter sandbox setup|status|remove|userns` (docs/HOSTD-MCP.md §6, #42, #122).

@@ -14,6 +14,7 @@
 //! - Before the first call of a turn to a tool without `readOnlyHint: true`, [`Hooks::checkpoint`] snapshots the
 //!   folder (shadow git outside it, #47).
 
+pub mod grants;
 pub mod servers;
 pub mod sig;
 
@@ -210,6 +211,17 @@ pub fn check_folder(path: &std::path::Path, data_dir: &std::path::Path) -> Resul
         ));
     }
     Ok(real)
+}
+
+/// Where a server definition comes from: who may say yes to it ([`Inner::approve`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Origin {
+    /// The device's own (the link's terminal server).
+    Device,
+    /// Defined by the person on this computer: the project's `.agentrouter/mcp.json`, `agentrouter mcp add`.
+    Person,
+    /// Sent by the cloud (`link__server_add`).
+    Cloud,
 }
 
 /// Sends one MCP message of session `s` to the link.
@@ -573,9 +585,19 @@ impl Aggregator {
         Inner::add_folder(&self.inner, path).await
     }
 
-    /// Add a server from this computer (not from the cloud): the console's own default set.
+    /// Add a server of this device's own (the link's terminal server): nobody is asked.
     pub async fn add_server(&self, def: ServerDef, wait: Duration) -> Result<Value, Failure> {
-        Inner::add(&self.inner, def, wait, true).await
+        Inner::add(&self.inner, def, wait, Origin::Device).await
+    }
+
+    /// Add a server the person defined on this computer (the project's `.agentrouter/mcp.json`, their own
+    /// `agentrouter mcp add`): asked like a cloud one unless they granted this exact definition (device #97).
+    pub async fn add_person_server(
+        &self,
+        def: ServerDef,
+        wait: Duration,
+    ) -> Result<Value, Failure> {
+        Inner::add(&self.inner, def, wait, Origin::Person).await
     }
 
     /// Stop every server and end every session (Ctrl+C).
@@ -1160,15 +1182,52 @@ impl Inner {
         }
     }
 
+    /// The person's yes for a server that needs one ([`ServerDef::needs_yes`]: a custom command, or the display): a
+    /// grant recorded earlier for this exact definition, `--yes-servers`, or the y/N on this computer — recorded on yes
+    /// ([`grants`], device #97). The cloud can ask for a grant, never make one.
+    async fn approve(&self, def: &ServerDef) -> Result<(), Failure> {
+        if !def.needs_yes() || self.cfg.yes_servers || grants::granted(&self.cfg.data_dir, def) {
+            return Ok(());
+        }
+        self.hooks.feed(Feed::Server {
+            name: def.name.clone(),
+            title: def.title.clone(),
+            event: "asking".into(),
+            detail: Some(def.shown()),
+        });
+        let yes = self.hooks.confirm_server(def).await;
+        self.record(json!({"kind": "server", "event": if yes { "approved" } else { "declined" }, "link": self.cfg.link, "name": def.name, "command": def.shown(), "display": def.display}));
+        if !yes {
+            let what = if def.display {
+                "用户没有同意让这个本机工具看到并操作屏幕"
+            } else {
+                "用户没有同意在这台电脑上运行这个本机工具"
+            };
+            return Err(Failure::new("DENIED_BY_USER", what).next(
+                "告诉用户这个工具没装上；需要的话请他在电脑上同意，或换一个目录里有的工具。",
+            ));
+        }
+        if let Err(e) = grants::record(&self.cfg.data_dir, def) {
+            // The yes stands for this run; the next start asks again.
+            self.hooks.feed(Feed::Server {
+                name: def.name.clone(),
+                title: def.title.clone(),
+                event: "grant_not_recorded".into(),
+                detail: Some(e),
+            });
+        }
+        Ok(())
+    }
+
     async fn add(
         self: &Arc<Self>,
         mut def: ServerDef,
         wait: Duration,
-        local: bool,
+        origin: Origin,
     ) -> Result<Value, Failure> {
         // The open web comes only from the cloud catalog (owner 2026-10-20, browser presets): a definition from this
-        // computer (the project's `.agentrouter/mcp.json`, the console's own set) never widens a sandbox.
-        if local {
+        // computer (the project's `.agentrouter/mcp.json`, the person's own tools) never widens a sandbox.
+        if origin != Origin::Cloud {
             def.network.retain(|d| d != agentrouter_sandbox::OPEN_WEB);
         }
         let existing = self.servers.lock().unwrap().get(&def.name).cloned();
@@ -1189,28 +1248,13 @@ impl Inner {
             )
             .next("先用 link__server_remove 停掉不用的。"));
         }
-        if !local && def.is_custom() && !self.cfg.yes_servers {
-            self.hooks.feed(Feed::Server {
-                name: def.name.clone(),
-                title: def.title.clone(),
-                event: "asking".into(),
-                detail: Some(def.shown()),
-            });
-            let yes = self.hooks.confirm_server(&def).await;
-            self.record(json!({"kind": "server", "event": if yes { "approved" } else { "declined" }, "link": self.cfg.link, "name": def.name, "command": def.shown()}));
-            if !yes {
-                return Err(Failure::new(
-                    "DENIED_BY_USER",
-                    "用户没有同意在这台电脑上运行这个本机工具",
-                )
-                .next(
-                    "告诉用户这个工具没装上；需要的话请他在电脑上同意，或换一个目录里有的工具。",
-                ));
-            }
+        if origin != Origin::Device {
+            self.approve(&def).await?;
         }
-        // What would make every start fail: say so now instead of a crash loop.
+        // What would make every start fail: say so now instead of a crash loop (an unconfined server needs no sandbox).
         let status = self.sandbox.status();
         if !self.cfg.full
+            && !def.unconfined()
             && let Some(problem) = status.problems.first()
         {
             return Err(
@@ -1535,7 +1579,7 @@ impl Inner {
                     .map(Duration::from_millis)
                     .unwrap_or(Duration::from_secs(40))
                     .min(Duration::from_secs(120));
-                Inner::add(self, def, wait, false).await?
+                Inner::add(self, def, wait, Origin::Cloud).await?
             }
             "server_remove" => {
                 let name = args.get("name").and_then(Value::as_str).unwrap_or("");
@@ -1647,7 +1691,7 @@ pub fn link_tools() -> Vec<Tool> {
         ),
         tool(
             "link__server_add",
-            "Run a local MCP server in this folder's sandbox: a catalog preset (pinned package) or a custom command (the person answers y/N on the computer).",
+            "Run a local MCP server in this folder's sandbox: a catalog preset (pinned package) or a custom command (the person answers y/N on the computer). display: true asks to see and drive the screen (GUI tools such as Windows-MCP): only the person can grant it, on the computer; a granted server runs with the person's own rights, outside the folder sandbox.",
             json!({"type": "object", "properties": {
                 "name": {"type": "string"}, "title": {"type": "string"}, "command": {"type": "string"},
                 "args": {"type": "array", "items": {"type": "string"}},
@@ -1655,7 +1699,8 @@ pub fn link_tools() -> Vec<Tool> {
                 "secretEnv": {"type": "array", "items": {"type": "string"}},
                 "keepOut": {"type": "array", "items": {"type": "string"}},
                 "pin": {"type": "object"}, "network": {"type": "array", "items": {"type": "string"}},
-                "preset": {"type": "string"}, "hash": {"type": "string"}, "waitMs": {"type": "integer"}
+                "preset": {"type": "string"}, "hash": {"type": "string"}, "waitMs": {"type": "integer"},
+                "display": {"type": "boolean"}
             }, "required": ["name", "command"]}),
             false,
         ),
