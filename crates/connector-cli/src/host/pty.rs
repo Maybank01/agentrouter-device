@@ -17,7 +17,7 @@ use agentrouter_device::exec::Tree;
 use agentrouter_device::util::b64_decode;
 
 use super::jobs::Kept;
-use super::{Call, Host, arg_str, shell_name, shown, tool};
+use super::{Call, Fail, Host, arg_str, shell_name, shown, tool};
 
 const OPEN_MAX: usize = 16;
 const READ_DEFAULT: u64 = 256 << 10;
@@ -204,16 +204,10 @@ fn command_line(command: Option<&str>) -> Result<(CommandBuilder, Option<TextFil
 }
 
 impl Host {
-    pub(super) fn pty_open(&self, args: &Value) -> Result<Value, String> {
-        let cwd = match arg_str(args, "cwd") {
-            Some(c) if !c.trim().is_empty() => self.resolve(c)?,
-            _ => self.home(),
-        };
-        if !cwd.is_dir() {
-            return Err(format!("{} 不是一个文件夹", shown(&cwd)));
-        }
+    pub(super) fn pty_open(&self, args: &Value) -> Result<Value, Fail> {
+        let cwd = self.work_dir("pty_open", args)?;
         if self.ptys.all.lock().unwrap().len() >= OPEN_MAX {
-            return Err(format!("终端最多同时开 {OPEN_MAX} 个；先 pty_close 不用的"));
+            return Err(format!("终端最多同时开 {OPEN_MAX} 个；先 pty_close 不用的").into());
         }
         let command = arg_str(args, "command").filter(|c| !c.trim().is_empty());
         let pair = native_pty_system()

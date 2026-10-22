@@ -459,6 +459,54 @@ fn a_linked_folder_end_to_end_and_the_boundary_holds() {
         ran["result"]["structuredContent"]["cwd"],
         json!(folder.to_string_lossy())
     );
+    // Cloud #2246: a command writing into a missing folder answers the shell's own error first, with its exit status.
+    // Before, every command ran as a login shell inside the sandbox; a start-up file that logs to the journal (Ubuntu's
+    // im-config; the Linux job plants one) failed on the sandbox's seccomp and its "Failed to create stream fd:
+    // Operation not permitted" came ahead of the command's own error. host__write makes the folders it needs.
+    if !cfg!(windows) {
+        let missing = call(
+            &mut ws,
+            118,
+            "tools/call",
+            host(
+                "exec",
+                json!({"command": "echo x > work/wrk_missing/pc.txt"}),
+            ),
+            true,
+        );
+        assert!(ok(&missing), "{missing}");
+        let answer = &missing["result"]["structuredContent"];
+        assert_ne!(answer["exit_code"], json!(0), "{missing}");
+        let stderr = answer["stderr"].as_str().unwrap_or("");
+        let first = stderr.lines().next().unwrap_or("");
+        assert!(
+            first.contains("work/wrk_missing/pc.txt")
+                && ["nonexistent", "No such file"]
+                    .iter()
+                    .any(|w| first.contains(w)),
+            "the shell's own error comes first: {missing}"
+        );
+        assert!(!stderr.contains("stream fd"), "{missing}");
+    }
+    let made = call(
+        &mut ws,
+        119,
+        "tools/call",
+        host(
+            "write",
+            json!({"path": "work/wrk_missing/pc.txt", "data": "from-pc"}),
+        ),
+        true,
+    );
+    assert!(ok(&made), "{made}");
+    assert_eq!(
+        made["result"]["structuredContent"]["created"], true,
+        "{made}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(folder.join("work").join("wrk_missing").join("pc.txt")).unwrap(),
+        "from-pc"
+    );
     let wrote = call(
         &mut ws,
         120,
@@ -483,6 +531,15 @@ fn a_linked_folder_end_to_end_and_the_boundary_holds() {
         true,
     );
     assert!(!ok(&refused) && !host_escape.exists(), "{refused}");
+    // The refusal says what it is, where, and what to do (owner rule: specific errors, never a generic failure).
+    let why = &refused["result"]["structuredContent"];
+    assert_eq!(why["code"], "PERMISSION_DENIED", "{refused}");
+    assert_eq!(why["operation"], "write", "{refused}");
+    assert_eq!(why["retryable"], false, "{refused}");
+    assert!(
+        why["next"].as_str().is_some_and(|n| !n.is_empty()),
+        "{refused}"
+    );
 
     // The change feed in folder mode (Cloud #2383 / #2246, the space sync): the host server watches the folder from
     // inside the sandbox and reports, after a cursor, an Agent's write and the person's own edit (made outside it).

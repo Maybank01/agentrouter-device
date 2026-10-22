@@ -217,6 +217,26 @@ impl Host {
         })
     }
 
+    /// Where a command runs: `cwd` (default the first folder), an existing folder, or a coded failure that names the
+    /// path and what is wrong with it.
+    fn work_dir(&self, operation: &'static str, args: &Value) -> Result<PathBuf, Fail> {
+        let cwd = match arg_str(args, "cwd") {
+            Some(c) if !c.trim().is_empty() => self.resolve(c)?,
+            _ => self.home(),
+        };
+        match std::fs::metadata(&cwd) {
+            Ok(meta) if meta.is_dir() => Ok(cwd),
+            Ok(_) => Err(io_fail(
+                operation,
+                "cwd 不是文件夹：",
+                &cwd,
+                &std::io::Error::from(std::io::ErrorKind::NotADirectory),
+                &self.folders,
+            )),
+            Err(e) => Err(io_fail(operation, "cwd 用不了：", &cwd, &e, &self.folders)),
+        }
+    }
+
     fn call(&self, tool: &str, args: &Value, call: &Call) -> Result<Value, Fail> {
         // Reading output files is the scope's last use in the accounting (#102).
         if matches!(tool, "read" | "stat" | "list" | "search") {
@@ -277,6 +297,76 @@ impl Fail {
             data,
         }
     }
+}
+
+/// A file-system step that failed on this computer, in a shape the caller can act on (owner rule "specific errors,
+/// never a generic failure"): a stable `code` from the OS error, and as data the component, the operation, the target
+/// path, the OS's own words (`cause`), whether a retry can help and what to do next. The message keeps the OS's words
+/// whole (Control classifies by them). `folders` are the linked folders: in folder mode the sandbox refuses a write
+/// anywhere else (read-only file system / permission denied), and the next step says where writing works.
+pub(super) fn io_fail(
+    operation: &'static str,
+    step: &str,
+    path: &Path,
+    err: &std::io::Error,
+    folders: &[PathBuf],
+) -> Fail {
+    use std::io::ErrorKind as K;
+    let shown_folders = folders.iter().map(|f| shown(f)).collect::<Vec<_>>();
+    let (code, retryable, next) = match err.kind() {
+        K::NotFound => (
+            "NOT_FOUND",
+            false,
+            "路径里有一段不存在：先用 host__stat 或 host__list 看清楚，再用存在的路径；要连文件夹一起建，用 host__write（它会建好上级文件夹）".to_string(),
+        ),
+        // AlreadyExists: creating a folder where a file of that name is.
+        K::NotADirectory | K::AlreadyExists => (
+            "NOT_A_DIRECTORY",
+            false,
+            "路径中间有一段是文件、不是文件夹：换个路径，或先处理那个文件".to_string(),
+        ),
+        K::IsADirectory => (
+            "IS_A_DIRECTORY",
+            false,
+            "这里是一个文件夹，不能当文件写：换一个文件名".to_string(),
+        ),
+        K::PermissionDenied | K::ReadOnlyFilesystem => (
+            "PERMISSION_DENIED",
+            false,
+            format!(
+                "不要原样重试：文件夹模式下只能写链接的文件夹（{}）；在那里面也被拒绝，就是这个文件本身的权限，请这台电脑的主人处理",
+                shown_folders.join("、")
+            ),
+        ),
+        K::StorageFull | K::QuotaExceeded | K::FileTooLarge => (
+            "NO_SPACE",
+            false,
+            "这台电脑的磁盘或配额满了：请电脑的主人腾出空间（host__out_status 看输出文件夹占了多少）".to_string(),
+        ),
+        K::Interrupted | K::TimedOut | K::WouldBlock | K::ResourceBusy => (
+            "IO_BUSY",
+            true,
+            "这台电脑上的文件一时忙不过来：稍后再试一次".to_string(),
+        ),
+        _ => (
+            "IO_ERROR",
+            false,
+            "重试没有用：把这句原文告诉这台电脑的主人".to_string(),
+        ),
+    };
+    Fail::coded(
+        code,
+        format!("{step} {}：{err}；{next}", shown(path)),
+        json!({
+            "component": "hostd",
+            "operation": operation,
+            "path": shown(path),
+            "cause": {"message": err.to_string(), "kind": format!("{:?}", err.kind()), "os_error": err.raw_os_error()},
+            "retryable": retryable,
+            "next": next,
+            "folders": shown_folders,
+        }),
+    )
 }
 
 impl From<String> for Fail {

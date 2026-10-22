@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use agentrouter_device::exec::{self, Event, Stream};
 
-use super::{Call, Host, arg_str, shell_name, shown, tool};
+use super::{Call, Fail, Host, arg_str, shell_name, shown, tool};
 
 const TIMEOUT_DEFAULT_S: u64 = 120;
 /// Output pushed as one progress notification once this much is waiting…
@@ -22,7 +22,7 @@ const PUSH_MAX: usize = 16 << 20;
 pub(super) fn tools() -> Vec<Value> {
     vec![tool(
         "exec",
-        "Run a command in this computer's shell (/bin/sh -lc on Linux/macOS, PowerShell on Windows) with the person's own terminal environment (PATH and variables from their shell start-up files), like over ssh. cwd defaults to the link's first folder; paths are real. With a progressToken, stdout/stderr stream as progress notifications (message = {\"stream\",\"data\"} JSON) while it runs; cancelling the call ends the command's whole process tree.",
+        "Run a command in this computer's shell (/bin/sh -c on Linux/macOS, PowerShell on Windows) with the person's own terminal environment (PATH and variables from their shell start-up files, resolved once), like over ssh. cwd defaults to the link's first folder; paths are real. With a progressToken, stdout/stderr stream as progress notifications (message = {\"stream\",\"data\"} JSON) while it runs; cancelling the call ends the command's whole process tree.",
         json!({"type": "object", "properties": {
             "command": {"type": "string"},
             "cwd": {"type": "string"},
@@ -106,18 +106,12 @@ impl<'a> Streamer<'a> {
 }
 
 impl Host {
-    pub(super) fn exec(&self, args: &Value, call: &Call) -> Result<Value, String> {
+    pub(super) fn exec(&self, args: &Value, call: &Call) -> Result<Value, Fail> {
         let command = arg_str(args, "command").unwrap_or("");
         if command.trim().is_empty() {
             return Err("command 不能是空的".into());
         }
-        let cwd = match arg_str(args, "cwd") {
-            Some(c) if !c.trim().is_empty() => self.resolve(c)?,
-            _ => self.home(),
-        };
-        if !cwd.is_dir() {
-            return Err(format!("{} 不是一个文件夹", shown(&cwd)));
-        }
+        let cwd = self.work_dir("exec", args)?;
         let timeout = args
             .get("timeout_s")
             .and_then(Value::as_u64)
@@ -170,6 +164,52 @@ mod tests {
         assert_eq!(out["exit_code"], json!(0));
         assert!(out["stdout"].as_str().unwrap().contains("marker.txt"));
         assert_eq!(out["cwd"], json!(shown(&dir)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Cloud #2246: a command that writes into a missing folder answers the shell's own error, first, with its exit
+    /// status — nothing a start-up file prints comes before it (commands are not login shells; `command_text`).
+    #[cfg(unix)]
+    #[test]
+    fn a_write_into_a_missing_folder_answers_the_shell_s_own_error() {
+        let dir = temp("missing-folder");
+        let host = host_in(&dir);
+        let out = host
+            .exec(
+                &json!({"command": "echo x > work/wrk_missing/pc.txt"}),
+                &Call::detached(),
+            )
+            .unwrap();
+        assert_ne!(out["exit_code"], json!(0), "{out}");
+        let stderr = out["stderr"].as_str().unwrap();
+        let first = stderr.lines().next().unwrap_or("");
+        assert!(first.contains("work/wrk_missing/pc.txt"), "{stderr}");
+        assert!(
+            ["nonexistent", "No such file"]
+                .iter()
+                .any(|w| first.contains(w)),
+            "{stderr}"
+        );
+        assert!(!dir.join("work").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_missing_cwd_is_a_coded_failure_naming_the_path() {
+        let dir = temp("missing-cwd");
+        let host = host_in(&dir);
+        let fail = host
+            .exec(
+                &json!({"command": "true", "cwd": "nope/deeper"}),
+                &Call::detached(),
+            )
+            .unwrap_err();
+        assert_eq!(fail.code, Some("NOT_FOUND"), "{fail:?}");
+        assert_eq!(fail.data["operation"], "exec");
+        assert_eq!(fail.data["path"], json!(shown(&dir.join("nope/deeper"))));
+        assert_eq!(fail.data["retryable"], false);
+        assert!(fail.message.contains("No such file"), "{fail:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

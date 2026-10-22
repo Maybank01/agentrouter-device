@@ -16,11 +16,18 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// The Unix one-shot runner (`/bin/sh -lc`): the command text read from stdin, then the command itself with stdin
+/// The Unix one-shot runner (`/bin/sh -c`): the command text read from stdin, then the command itself with stdin
 /// `/dev/null`. No file: a sandboxed host server may have no writable temp folder.
+///
+/// Not a login shell (`-l`): the person's start-up files run once, in [`crate::shell_env`]'s capture, whose output
+/// never reaches a command; the command starts with the environment they produced. A login shell per command ran
+/// `/etc/profile` and `/etc/profile.d/*` again before every command, inside the sandbox, with its stderr in the
+/// command's: Ubuntu's `im-config` logs through `systemd-cat`, whose journal socket the sandbox's seccomp refuses
+/// (`AF_UNIX`), so every command's stderr began with `Failed to create stream fd: Operation not permitted` ahead of the
+/// command's own error (Cloud #2246).
 pub const UNIX_STDIN_RUNNER: &str = r#"c=$(cat) && exec </dev/null && eval "$c""#;
 
-/// The Unix terminal runner (`/bin/sh -lc <runner> sh <file>`): the text read from the file, the file removed, then
+/// The Unix terminal runner (`/bin/sh -c <runner> sh <file>`; not a login shell, as [`UNIX_STDIN_RUNNER`]): the text read from the file, the file removed, then
 /// the command on the terminal.
 pub const UNIX_FILE_RUNNER: &str = r#"c=$(cat -- "$1") && rm -f -- "$1" && eval "$c""#;
 
@@ -212,8 +219,8 @@ pub struct ShellStart {
     pub windows_powershell: bool,
 }
 
-/// A one-shot run of `command`: the device's shell (PowerShell on Windows, `/bin/sh -l` elsewhere) with the text on
-/// stdin.
+/// A one-shot run of `command`: the device's shell (PowerShell on Windows, `/bin/sh` elsewhere, never a login shell:
+/// [`UNIX_STDIN_RUNNER`]) with the text on stdin.
 pub fn one_shot(command: &str) -> ShellStart {
     #[cfg(windows)]
     {
@@ -229,7 +236,7 @@ pub fn one_shot(command: &str) -> ShellStart {
     #[cfg(not(windows))]
     ShellStart {
         program: PathBuf::from("/bin/sh"),
-        args: vec!["-lc".into(), UNIX_STDIN_RUNNER.into()],
+        args: vec!["-c".into(), UNIX_STDIN_RUNNER.into()],
         stdin: Some(command.to_owned()),
         file: None,
         windows_powershell: false,
@@ -254,7 +261,7 @@ pub fn in_terminal(command: &str, dir: &Path) -> Result<ShellStart, String> {
     Ok(ShellStart {
         program: PathBuf::from("/bin/sh"),
         args: vec![
-            "-lc".into(),
+            "-c".into(),
             UNIX_FILE_RUNNER.into(),
             "sh".into(),
             file.path().to_string_lossy().into_owned(),
@@ -280,6 +287,9 @@ mod tests {
             "{start:?}"
         );
         assert_eq!(start.stdin.as_deref(), Some("echo secret-text"));
+        // Not a login shell: start-up files run once in shell_env's capture, never ahead of a command (Cloud #2246).
+        #[cfg(unix)]
+        assert_eq!(start.args.first().map(String::as_str), Some("-c"));
     }
 
     #[test]

@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 
 use agentrouter_device::util::{b64, b64_decode};
 
-use super::{CHUNK_MAX, Fail, Host, arg_bool, arg_paths, arg_str, shown, tool};
+use super::{CHUNK_MAX, Fail, Host, arg_bool, arg_paths, arg_str, io_fail, shown, tool};
 
 /// Paths in one `stat`.
 const STAT_MAX: usize = 1000;
@@ -344,9 +344,9 @@ impl Host {
         }
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
-                .map_err(|e| format!("建不了 {}：{e}", shown(parent)))?;
+                .map_err(|e| io_fail("write", "建不了上级文件夹", parent, &e, &self.folders))?;
         }
-        let fail = |e: std::io::Error| format!("写不了 {}：{e}", shown(&path));
+        let fail = |e: std::io::Error| io_fail("write", "写不了", &path, &e, &self.folders);
         let offset = args.get("offset").and_then(Value::as_u64);
         match offset {
             None => {
@@ -790,6 +790,51 @@ mod tests {
         );
         assert!(outside.join("target.txt").is_file());
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Cloud #2246: host__write creates the missing folders above the file; when it cannot, the failure is coded and
+    /// names the operation, the path, the OS's own words, whether a retry helps and what to do next.
+    #[test]
+    fn a_write_creates_missing_folders_and_a_blocked_one_says_why() {
+        let dir = temp("write-parents");
+        let host = host_in(&dir);
+        let out = host
+            .write(&json!({"path": "work/wrk_missing/pc.txt", "data": "from-pc"}))
+            .unwrap();
+        assert_eq!(out["created"], true, "{out}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("work/wrk_missing/pc.txt")).unwrap(),
+            "from-pc"
+        );
+        std::fs::write(dir.join("a-file"), "x").unwrap();
+        let fail = host
+            .write(&json!({"path": "a-file/inside/pc.txt", "data": "x"}))
+            .unwrap_err();
+        // Windows answers "path not found" for a folder under a file.
+        let codes: &[&str] = if cfg!(windows) {
+            &["NOT_A_DIRECTORY", "NOT_FOUND"]
+        } else {
+            &["NOT_A_DIRECTORY"]
+        };
+        assert!(fail.code.is_some_and(|c| codes.contains(&c)), "{fail:?}");
+        assert_eq!(fail.data["component"], "hostd");
+        assert_eq!(fail.data["operation"], "write");
+        assert_eq!(
+            fail.data["path"],
+            json!(shown(&dir.join("a-file").join("inside")))
+        );
+        assert_eq!(fail.data["retryable"], false);
+        assert!(
+            fail.data["cause"]["message"]
+                .as_str()
+                .is_some_and(|m| !m.is_empty())
+        );
+        assert!(fail.data["next"].as_str().is_some_and(|n| !n.is_empty()));
+        assert!(
+            fail.message.contains(&shown(&dir.join("a-file"))),
+            "{fail:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
