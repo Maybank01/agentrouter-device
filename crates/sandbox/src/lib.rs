@@ -4,8 +4,9 @@
 //! tries (2026-10-18: home dot-folders were deleted on the owner's PC by an unconfined process; #39).
 //!
 //! Backend: Anthropic `sandbox-runtime` (`srt`, Apache-2.0), pinned to [`SRT_VERSION`] with an npm lockfile that
-//! carries the integrity of every package (`runtime/`), installed with `npm ci` into the device data folder and used
-//! as a process wrapper (`node cli.js --settings <policy> -- <program> <args>`):
+//! carries the integrity of every package (`runtime/`), installed with `npm ci` beside the device data folder and used
+//! as a process wrapper (`node cli.js --settings <policy> -- <program> <args>`). Node (and uv, for `uvx` servers) are
+//! the device's own pinned copies ([`runtimes`], #116): the person installs nothing.
 //!
 //! - macOS: Seatbelt (`sandbox-exec`) profile; no setup.
 //! - Linux: bubblewrap + a network namespace (needs `bwrap`, `socat`, `rg` and unprivileged user namespaces).
@@ -29,10 +30,13 @@
 
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+#[cfg(not(windows))]
 use std::sync::OnceLock;
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+
+pub mod runtimes;
 
 /// The npm package and the exact version the device runs (re-vet licence, release notes and Windows status on each
 /// bump; the lockfile in `runtime/` pins every dependency's integrity).
@@ -45,8 +49,6 @@ pub const ENTRY_JS: &str = include_str!("entry.cjs");
 /// Started instead of srt's `cli.js` (same arguments) for an open-web launch: srt's own CLI, with an ask callback that
 /// allows public destinations only (see the file).
 pub const OPEN_WEB_JS: &str = include_str!("open-web.mjs");
-/// srt needs Node 22.12 or later.
-pub const NODE_MIN: (u32, u32) = (22, 12);
 /// The loopback ports srt's proxies may use on Windows (the WFP fence permits only these). srt's default is ten
 /// ports (two per server) and srt-win accepts at most 65; 64 ports cover far more servers than one link runs.
 pub const WINDOWS_PROXY_PORTS: (u16, u16) = (60080, 60143);
@@ -215,6 +217,85 @@ impl Runtime {
         format!("srt@{SRT_VERSION}")
     }
 
+    /// Where the device's own Node.js and uv live ([`runtimes`]; readable and runnable from every sandbox).
+    pub fn runtimes_dir(&self) -> PathBuf {
+        self.shared_root.join("runtimes")
+    }
+
+    /// The device's pinned Node.js (srt, the Windows sandbox entry and `npm ci` run on it).
+    pub fn node(&self) -> Result<PathBuf, String> {
+        runtimes::NODE
+            .program(&self.runtimes_dir(), "node")
+            .ok_or_else(|| "隔离环境要用的 Node.js 还没准备好".to_string())
+    }
+
+    /// The program folders of the installed runtimes: first on every local tool's PATH, so `npx` runs on the
+    /// device's Node and `uvx` is the device's uv.
+    pub fn runtime_bins(&self) -> Vec<PathBuf> {
+        let root = self.runtimes_dir();
+        runtimes::ALL
+            .iter()
+            .filter(|r| r.installed(&root))
+            .map(|r| r.bin_dir(&root))
+            .collect()
+    }
+
+    /// A local tool's program: `node`, `npm`, `npx`, `uv` and `uvx` from the device's runtimes when they are
+    /// installed; anything else (and those, where the device has none, e.g. a cloud sandbox image) from PATH.
+    pub fn find(&self, name: &str) -> Option<PathBuf> {
+        let root = self.runtimes_dir();
+        runtimes::ALL
+            .iter()
+            .find_map(|r| r.program(&root, name))
+            .or_else(|| find_program(name, None))
+    }
+
+    /// `path` (a PATH value) with [`Runtime::runtime_bins`] in front.
+    pub fn path_with_runtimes(&self, path: Option<&std::ffi::OsStr>) -> std::ffi::OsString {
+        let mut dirs = self.runtime_bins();
+        if let Some(path) = path {
+            dirs.extend(std::env::split_paths(path).filter(|p| !p.as_os_str().is_empty()));
+        }
+        std::env::join_paths(dirs)
+            .unwrap_or_else(|_| path.map(|p| p.to_os_string()).unwrap_or_default())
+    }
+
+    /// Download and unpack the pinned runtimes that are missing ([`runtimes`]; no elevation). Node is required (srt
+    /// runs on it); without uv only `uvx` tools are missing, so that is a line, not a failure.
+    pub fn provision(&self) -> Result<Vec<String>, String> {
+        let root = self.runtimes_dir();
+        let mut done = Vec::new();
+        for rt in runtimes::ALL {
+            match rt.ensure(&root) {
+                Ok(true) => done.push(format!(
+                    "准备好了 {} {}（AgentRouter 自己用，不改这台电脑上已有的）",
+                    rt.title, rt.version
+                )),
+                Ok(false) => {}
+                Err(e) if std::ptr::eq(rt, &runtimes::NODE) => return Err(e),
+                Err(e) => done.push(format!(
+                    "{} 没准备好，要用它的本机工具这次起不来；下次运行 agentrouter sandbox setup 会再试（{e}）",
+                    rt.title
+                )),
+            }
+        }
+        Ok(done)
+    }
+
+    /// npm's own entry in the device's Node (run as `node npm-cli.js …`: no `npm.cmd`, no cmd.exe).
+    fn npm_cli(&self) -> PathBuf {
+        let root = self.runtimes_dir();
+        let base = if cfg!(windows) {
+            runtimes::NODE.dir(&root)
+        } else {
+            runtimes::NODE.dir(&root).join("lib")
+        };
+        base.join("node_modules")
+            .join("npm")
+            .join("bin")
+            .join("npm-cli.js")
+    }
+
     fn root(&self) -> PathBuf {
         self.shared_root.join("sandbox")
     }
@@ -261,9 +342,11 @@ impl Runtime {
     /// Install the pinned runtime: `npm ci` from the pinned lockfile (npm checks every package's integrity
     /// against it), no install scripts. Older versions are removed.
     pub fn install(&self) -> Result<(), String> {
-        let node = node()?;
-        let npm = find_program("npm", Some(&node))
-            .ok_or_else(|| "找不到 npm（随 Node.js 一起装）".to_string())?;
+        let node = self.node()?;
+        let npm = self.npm_cli();
+        if !npm.is_file() {
+            return Err(format!("找不到 {}（随 Node.js 一起来）", shown(&npm)));
+        }
         let dir = self.dir();
         if dir.exists() {
             std::fs::remove_dir_all(&dir)
@@ -272,7 +355,8 @@ impl Runtime {
         std::fs::create_dir_all(&dir).map_err(|e| format!("建不了 {}：{e}", shown(&dir)))?;
         std::fs::write(dir.join("package.json"), PACKAGE_JSON).map_err(|e| e.to_string())?;
         std::fs::write(dir.join("package-lock.json"), PACKAGE_LOCK).map_err(|e| e.to_string())?;
-        let out = Command::new(&npm)
+        let out = Command::new(&node)
+            .arg(&npm)
             .args([
                 "ci",
                 "--ignore-scripts",
@@ -282,6 +366,10 @@ impl Runtime {
                 "--loglevel=error",
             ])
             .current_dir(&dir)
+            .env(
+                "PATH",
+                self.path_with_runtimes(std::env::var_os("PATH").as_deref()),
+            )
             .output()
             .map_err(|e| format!("npm 起不来：{e}"))?;
         if !out.status.success() {
@@ -307,10 +395,10 @@ impl Runtime {
         Ok(())
     }
 
-    /// `agentrouter sandbox setup`: install the runtime when it is missing and, on Windows, provision the sandbox
-    /// account and its network fence (one UAC prompt, owner Q4). Returns what was done.
+    /// `agentrouter sandbox setup`: the device's own Node.js and uv ([`Runtime::provision`]), srt when it is missing
+    /// and, on Windows, the sandbox account and its network fence (one UAC prompt, owner Q4). Returns what was done.
     pub fn setup(&self) -> Result<Vec<String>, String> {
-        let mut done = Vec::new();
+        let mut done = self.provision()?;
         if !self.installed() {
             self.install()?;
             done.push(format!("装好了 {SRT_PACKAGE}@{SRT_VERSION}"));
@@ -382,9 +470,11 @@ impl Runtime {
             }
             done.push("删掉了 Windows 隔离账户 srt-sandbox 和它的网络限制".into());
         }
-        if self.root().exists() {
-            std::fs::remove_dir_all(self.root()).map_err(|e| e.to_string())?;
-            done.push(format!("删掉了 {}", shown(&self.root())));
+        for dir in [self.root(), self.runtimes_dir()] {
+            if dir.exists() {
+                std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+                done.push(format!("删掉了 {}", shown(&dir)));
+            }
         }
         let _ = std::fs::remove_dir_all(self.data_dir.join("sandbox"));
         if self.scratch_root.exists() {
@@ -415,12 +505,7 @@ impl Runtime {
     }
 
     fn ready(&self) -> Result<Ready, Unavailable> {
-        let node = node().map_err(|m| {
-            Unavailable::new(
-                m,
-                "请用户从 https://nodejs.org 装上 Node.js 22.12 或更新的 LTS 版本，然后运行 agentrouter sandbox setup。",
-            )
-        })?;
+        let node = self.node().map_err(|m| Unavailable::new(m, NEXT_SETUP))?;
         if !self.installed() {
             return Err(Unavailable::new(
                 format!("隔离环境（{}）还没装", Runtime::backend()),
@@ -484,8 +569,19 @@ impl Runtime {
     /// rewrites the whole tree. The data folder above it stays unreadable to the account.
     #[cfg(windows)]
     fn windows_runtime_readable(&self, sid: &str) -> Result<(), String> {
+        // srt, and the device's Node.js and uv (the sandbox entry and `npx`/`uvx` servers run on them, #116).
+        for dir in [self.dir(), self.runtimes_dir()] {
+            if dir.exists() {
+                self.windows_read_grant(&dir, sid)?;
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn windows_read_grant(&self, dir: &Path, sid: &str) -> Result<(), String> {
         static DONE: std::sync::Mutex<Vec<(PathBuf, String)>> = std::sync::Mutex::new(Vec::new());
-        let dir = self.dir();
+        let dir = dir.to_path_buf();
         let key = (dir.clone(), sid.to_string());
         let mut done = DONE.lock().unwrap_or_else(|e| e.into_inner());
         if done.contains(&key) {
@@ -686,7 +782,7 @@ impl Runtime {
         let mut allow_read: Vec<String> = launch
             .readable
             .iter()
-            .chain(std::iter::once(&self.package_dir()))
+            .chain([&self.package_dir(), &self.runtimes_dir()])
             .filter(|p| p.exists())
             .map(|p| shown(&plain(p)))
             .collect();
@@ -694,9 +790,6 @@ impl Runtime {
             // Per-user runtimes (nvm/fnm Node, npm's global folder, uv) created after the last profile read grant are
             // not readable through it yet: read+execute grants for this session, removed again when the server ends.
             let mut extra = vec![launch.program.parent().map(Path::to_path_buf)];
-            if let Ok(n) = node() {
-                extra.push(n.parent().map(Path::to_path_buf));
-            }
             for var in ["APPDATA", "LOCALAPPDATA"] {
                 if let Some(base) = std::env::var_os(var).map(PathBuf::from) {
                     extra.push(Some(base.join("npm")));
@@ -852,7 +945,7 @@ impl Runtime {
                 if s.contains(['"', '%', '!', '^', '\r', '\n']) {
                     return Err(Unavailable::new(
                         format!("路径里有 Windows 命令行不能安全传递的字符：{s}"),
-                        "请把 Node.js 和 AgentRouter 的数据文件夹放在不含 \" % ! ^ 的路径下。",
+                        "请把 AgentRouter 的数据文件夹（AGENTROUTER_DEVICE_HOME）放在不含 \" % ! ^ 的路径下。",
                     ));
                 }
             }
@@ -1086,9 +1179,7 @@ pub fn find_program(name: &str, near: Option<&Path>) -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("PATH") {
         dirs.extend(std::env::split_paths(&path));
     }
-    if cfg!(windows) {
-        dirs.push(PathBuf::from(r"C:\Program Files\nodejs"));
-    } else {
+    if !cfg!(windows) {
         dirs.push(PathBuf::from("/usr/local/bin"));
         dirs.push(PathBuf::from("/opt/homebrew/bin"));
         dirs.push(PathBuf::from("/usr/bin"));
@@ -1098,32 +1189,6 @@ pub fn find_program(name: &str, near: Option<&Path>) -> Option<PathBuf> {
             .map(|e| d.join(format!("{name}{e}")))
             .find(|c| c.is_file())
     })
-}
-
-/// Node 22.12+ (checked once per process).
-fn node() -> Result<PathBuf, String> {
-    static NODE: OnceLock<Result<PathBuf, String>> = OnceLock::new();
-    NODE.get_or_init(|| {
-        let node = find_program("node", None).ok_or("这台电脑没有装 Node.js（隔离环境要用）")?;
-        let out = Command::new(&node)
-            .arg("--version")
-            .output()
-            .map_err(|e| format!("Node.js 起不来：{e}"))?;
-        let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        let mut parts = text
-            .trim_start_matches('v')
-            .split('.')
-            .map(|p| p.parse::<u32>().unwrap_or(0));
-        let version = (parts.next().unwrap_or(0), parts.next().unwrap_or(0));
-        if version < NODE_MIN {
-            return Err(format!(
-                "Node.js 是 {text}，隔离环境要 {}.{} 或更新",
-                NODE_MIN.0, NODE_MIN.1
-            ));
-        }
-        Ok(node)
-    })
-    .clone()
 }
 
 /// What `srt-win status` says about this machine's sandbox install (no elevation needed).

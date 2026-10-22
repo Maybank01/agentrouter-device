@@ -14,6 +14,20 @@ name = "agentrouter_sandbox"
 getrandom = "0.4"
 serde_json.workspace = true
 sha2 = "0.11"
+# The pinned runtimes (Node.js, uv; `runtimes.rs`, #116): downloaded in-process and unpacked here. ureq is the device's
+# HTTP client already; tar-rs (MIT/Apache-2.0) and flate2 (rust-lang, MIT/Apache-2.0) for .tar.gz, zip2 (MIT) for .zip,
+# decompression only.
+ureq = { version = "3", default-features = false }
+flate2 = "1.1"
+tar = { version = "0.4.46", default-features = false }
+zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Pipes"] }
+
+# TLS for the runtime downloads, chosen by the binary like device-core's: the system's by default, rustls in the static
+# Linux build.
+[features]
+default = ["native-tls"]
+native-tls = ["ureq/native-tls"]
+rustls = ["ureq/rustls"]

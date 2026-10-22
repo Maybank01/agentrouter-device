@@ -12,7 +12,7 @@
 | 文件信息齐全 | 版本资源（公司、产品名、版本、版权、说明）、图标、清单（`asInvoker`，不要求管理员权限） | 清单是 `asInvoker`；CI 读取 exe 的版本信息，缺了就失败 |
 | 不加壳、不混淆 | 不用 UPX 等加壳；release 只做普通的符号剥离（`strip = true`） | 是 |
 | 二进制对得上源码 | 只在公开的 GitHub 托管 runner 上构建发布产物（`--locked`），日志里打印 SHA-256 | 工作流本身 |
-| 网络只连网关域名 | 只连配置的网关域名，走 TLS；不连裸 IP（本机 127.0.0.1/localhost 只用于本地测试） | 单元测试（`net::gateway_allowed`） |
+| 网络只连网关域名 | 只连配置的网关域名，走 TLS；不连裸 IP（本机 127.0.0.1/localhost 只用于本地测试）。**唯一例外**（#116，产品要求本人什么都不用装）：第一次准备隔离环境时，下载钉死版本的 Node.js 和 uv 的官方便携包——只从项目自己的发布地址和一个公认镜像（nodejs.org / npmmirror，releases.astral.sh / github.com），只走 https；SHA-256 写在源码里（Node 的取自其发布签名过的 SHASUMS256.txt），对不上就删掉、不解开；在程序自己的进程里下载（不调用 curl、PowerShell 或安装程序），直接放进数据文件夹旁边的 `-shared\runtimes`，不经过 %TEMP%。Node.js 的 Windows 程序带 OpenJS Foundation 的签名 | 单元测试（`net::gateway_allowed`；`runtimes::downloads_come_from_the_official_hosts_only`、校验值格式） |
 | 不开机自启 | 没有 Run 键、启动文件夹或自启插件；以后要加，也只能由用户在界面里打开 | 是 |
 | 自动更新 | 还没有。以后加时：下载内容用 Ed25519 签名校验，下载并替换在安装目录里完成，不经过 %TEMP% | 加的时候补检查 |
 

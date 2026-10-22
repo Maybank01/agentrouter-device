@@ -2,8 +2,9 @@
 //! they run, a broken npx cache entry is cleared, and a server's own data folder is kept out of the person's git.
 //!
 //! - Pinned packages: the cloud's catalog records each package's registry digest (npm `integrity`, PyPI wheel
-//!   sha256). The device never downloads anything itself (it talks only to its gateway, docs/AV-HYGIENE.md): the
-//!   cloud sends the package file with `mcp_package`, the device checks its digest and keeps it in its data folder,
+//!   sha256). The device never downloads a package itself (it talks only to its gateway, docs/AV-HYGIENE.md; the one
+//!   exception is its own pinned Node.js and uv, `agentrouter_sandbox::runtimes`, #116): the cloud sends the package
+//!   file with `mcp_package`, the device checks its digest and keeps it in its data folder,
 //!   and `mcp_start` runs exactly that file (`{{package}}` in the arguments). A file that does not match is refused.
 //! - npx cache: an install killed midway (a crash, a stop during the first download) leaves `_npx/<hash>` half
 //!   written, and every later start fails on a missing module. The host clears only that entry and starts once more.
