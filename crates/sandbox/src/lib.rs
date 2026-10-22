@@ -373,11 +373,11 @@ impl Runtime {
         };
         for rt in runtimes::TOOLS.iter().chain(sandbox) {
             match rt.ensure(&root) {
-                Ok(true) => done.push(format!(
-                    "准备好了 {} {}（AgentRouter 自己用，不改这台电脑上已有的）",
+                Ok(Some(host)) => done.push(format!(
+                    "准备好了 {} {}（从 {host} 下载并校验；AgentRouter 自己用，不改这台电脑上已有的）",
                     rt.title, rt.version
                 )),
-                Ok(false) => {}
+                Ok(None) => {}
                 Err(e) if rt.required => return Err(e),
                 Err(e) => done.push(format!(
                     "{} 没准备好，要用它的本机工具这次起不来；下次运行 agentrouter sandbox setup 会再试（{e}）",
@@ -461,27 +461,51 @@ impl Runtime {
         std::fs::create_dir_all(&dir).map_err(|e| format!("建不了 {}：{e}", shown(&dir)))?;
         std::fs::write(dir.join("package.json"), PACKAGE_JSON).map_err(|e| e.to_string())?;
         std::fs::write(dir.join("package-lock.json"), PACKAGE_LOCK).map_err(|e| e.to_string())?;
-        let out = Command::new(&node)
-            .arg(&npm)
-            .args([
-                "ci",
-                "--ignore-scripts",
-                "--omit=dev",
-                "--no-audit",
-                "--no-fund",
-                "--loglevel=error",
-            ])
-            .current_dir(&dir)
-            .env(
-                "PATH",
-                self.path_with_runtimes(std::env::var_os("PATH").as_deref()),
-            )
-            .output()
-            .map_err(|e| format!("npm 起不来：{e}"))?;
-        if !out.status.success() {
-            return Err(format!(
-                "npm ci 没成功：{}",
+        // The registry (device #154): npm's own configuration (the person's .npmrc, else npmjs) first, the npm mirror
+        // when that fails; the mirror first where an official host already proved slow ([`runtimes::prefer_mirrors`]:
+        // srt's 4.8 MB from npmjs took minutes from mainland China). Every file is checked against the lockfile's
+        // integrity either way (the mirror serves the same tarballs). Through the environment, not the command line.
+        let mirror = format!("{}/", runtimes::NPM_MIRROR);
+        let registries: [Option<&str>; 2] = if runtimes::prefer_mirrors(&self.runtimes_dir()) {
+            [Some(&mirror), None]
+        } else {
+            [None, Some(&mirror)]
+        };
+        let mut failures = Vec::new();
+        for registry in registries {
+            let mut cmd = Command::new(&node);
+            cmd.arg(&npm)
+                .args([
+                    "ci",
+                    "--ignore-scripts",
+                    "--omit=dev",
+                    "--no-audit",
+                    "--no-fund",
+                    "--loglevel=error",
+                ])
+                .current_dir(&dir)
+                .env(
+                    "PATH",
+                    self.path_with_runtimes(std::env::var_os("PATH").as_deref()),
+                );
+            if let Some(registry) = registry {
+                cmd.env("npm_config_registry", registry);
+            }
+            let out = cmd.output().map_err(|e| format!("npm 起不来：{e}"))?;
+            if out.status.success() {
+                failures.clear();
+                break;
+            }
+            failures.push(format!(
+                "{}：{}",
+                registry.unwrap_or("npm 自己配置的源"),
                 String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        if !failures.is_empty() {
+            return Err(format!(
+                "npm ci 装 {SRT_PACKAGE}@{SRT_VERSION} 没成功（{}），网络通了以后运行 agentrouter sandbox setup 会再试",
+                failures.join("；")
             ));
         }
         if !self.installed() {

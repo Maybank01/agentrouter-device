@@ -205,7 +205,7 @@ pub fn install() -> Result<Vec<String>, String> {
     let root = Path::new(ROOT);
     std::fs::create_dir_all(root).map_err(|e| format!("建不了 {ROOT}：{e}"))?;
     set_mode(root, 0o755)?;
-    if runtimes::BWRAP.ensure(root)? {
+    if runtimes::BWRAP.ensure(root)?.is_some() {
         done.push(format!(
             "装好了 AgentRouter 自己的 bubblewrap {}：{}（root 所有，别的程序改不了）",
             runtimes::BWRAP.version,
