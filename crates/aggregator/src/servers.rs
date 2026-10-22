@@ -341,6 +341,15 @@ impl Server {
         }
     }
 
+    /// What the server listed, without hostd's own `_…` tools (the host server's `_port_bridge`, #136): the one
+    /// place for the first list and every `list_changed` refresh.
+    pub fn set_tools(&self, tools: Vec<Tool>) {
+        *self.tools.lock().unwrap() = tools
+            .into_iter()
+            .filter(|t| !t.name.starts_with('_'))
+            .collect();
+    }
+
     pub fn view(&self) -> Value {
         let state = self.state();
         let error = match &state {
@@ -396,6 +405,29 @@ impl ClientHandler for Downstream {
     }
 }
 
+/// `_meta` key on each tool of a display-granted server (device #147), for the platform's own views.
+pub const META_DISPLAY: &str = "agentrouter.top/display";
+
+/// Each tool of a display-granted server says so first (device #147). Its own description rarely does (a general
+/// tool such as DesktopCommander), and the Agent then looked for the screen in the folder-sandboxed shell, which has
+/// none, and never used the tool the person granted it.
+pub fn mark_display(tool: &mut Tool, full: bool) {
+    let note = if full {
+        "[Screen access granted by the person: this tool sees and drives their screen, with their own rights.]"
+    } else {
+        "[Screen access granted by the person: this tool runs with their own rights and their screen, outside the \
+         folder sandbox. Sandboxed commands on this computer have no screen; use this tool for anything that needs it.]"
+    };
+    tool.description = Some(match tool.description.take() {
+        Some(d) if !d.trim().is_empty() => format!("{note} {d}").into(),
+        _ => note.into(),
+    });
+    tool.meta
+        .get_or_insert_with(Default::default)
+        .0
+        .insert(META_DISPLAY.into(), Value::Bool(true));
+}
+
 /// Why one start did not work.
 pub enum StartError {
     Unavailable(agentrouter_sandbox::Unavailable),
@@ -427,13 +459,7 @@ pub async fn supervise(agg: Arc<Inner>, server: Arc<Server>) {
                 *server.pid.lock().unwrap() = pid;
                 *server.peer.lock().unwrap() = Some(running.peer().clone());
                 match running.peer().list_all_tools().await {
-                    // Tools named `_…` are hostd's own (the host server's `_port_bridge`, #136): never listed.
-                    Ok(tools) => {
-                        *server.tools.lock().unwrap() = tools
-                            .into_iter()
-                            .filter(|t| !t.name.starts_with('_'))
-                            .collect()
-                    }
+                    Ok(tools) => server.set_tools(tools),
                     Err(e) => server.log(&format!("[agentrouter] tools/list failed: {e}")),
                 }
                 server.set_state(State::Ready);
@@ -949,5 +975,29 @@ mod tests {
         assert!(!def(json!({"pin": null})).open_web());
         assert!(!def(json!({"args": ["-y", "@playwright/mcp@latest"]})).open_web());
         assert!(!def(json!({"command": "node"})).open_web());
+    }
+
+    #[test]
+    fn a_display_granted_tool_says_so_first() {
+        let tool = |description: Option<&str>| -> Tool {
+            serde_json::from_value(json!({"name": "start_process", "description": description, "inputSchema": {"type": "object"}}))
+                .unwrap()
+        };
+        let mut t = tool(Some("Start a terminal process."));
+        mark_display(&mut t, false);
+        let d = t.description.as_deref().unwrap();
+        assert!(d.starts_with("[Screen access granted by the person"), "{d}");
+        assert!(
+            d.contains("outside the folder sandbox") && d.ends_with("] Start a terminal process."),
+            "{d}"
+        );
+        assert_eq!(t.meta.as_ref().unwrap().0[META_DISPLAY], true);
+        let mut t = tool(None);
+        mark_display(&mut t, true);
+        let d = t.description.as_deref().unwrap();
+        assert!(
+            d.starts_with('[') && d.ends_with(']') && !d.contains("folder sandbox"),
+            "{d}"
+        );
     }
 }

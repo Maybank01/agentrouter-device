@@ -357,6 +357,55 @@ async fn the_protocol_gate_audit_and_no_unconfined_fallback() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Device #147: each tool of a display-granted server says so in the list the Agent sees (and in `_meta`); `_…`
+/// tools are never listed. A display grant runs unconfined (the person's own rights), so no sandbox setup is needed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_display_granted_server_says_so_in_the_tool_list() {
+    let dir = scratch("display");
+    let fake = dir.join("fake.cjs");
+    std::fs::write(&fake, FAKE).unwrap();
+    let mut h = Harness::new(&dir, &dir.join("work"), TestHooks::default(), true);
+    h.open("mcs_1", "ags_a").await;
+    let added = h
+        .call("mcs_1", 2, "ags_a", "link__server_add", json!({
+            "name": "screen", "command": "node", "args": [fake.to_string_lossy()], "display": true, "waitMs": 60000,
+        }))
+        .await;
+    assert_eq!(
+        added["result"]["structuredContent"]["state"], "ready",
+        "{added}"
+    );
+    let listed = h.request("mcs_1", 3, "tools/list", json!({})).await;
+    let tools = listed["result"]["tools"].as_array().unwrap();
+    let find = |name: &str| tools.iter().find(|t| t["name"] == name);
+    let write = find("screen__write").expect("the granted server's tools are listed");
+    let text = write["description"].as_str().unwrap();
+    assert!(
+        text.starts_with("[Screen access granted by the person")
+            && text.ends_with("] Write a file."),
+        "{text}"
+    );
+    assert_eq!(write["_meta"]["agentrouter.top/display"], true, "{write}");
+    let read = find("screen__read").unwrap()["description"]
+        .as_str()
+        .unwrap();
+    assert!(
+        read.starts_with('[') && read.ends_with(']'),
+        "a tool without its own description: {read}"
+    );
+    assert!(
+        find("screen___hidden").is_none(),
+        "`_…` tools are never listed"
+    );
+    let own = find("link__servers").unwrap();
+    assert!(
+        !own["description"].as_str().unwrap().starts_with('[') && own.get("_meta").is_none(),
+        "{own}"
+    );
+    h.agg.shutdown().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A minimal stdio MCP server (Node, no dependencies): read/write a file, and a read-only tool.
 const FAKE: &str = r#"
 const fs = require('fs');
@@ -372,7 +421,8 @@ process.stdin.on('data', (d) => {
     if (m.method === 'initialize') send({ jsonrpc: '2.0', id: m.id, result: { protocolVersion: m.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'fake', version: '1' } } });
     else if (m.method === 'tools/list') send({ jsonrpc: '2.0', id: m.id, result: { tools: [
       { name: 'read', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } },
-      { name: 'write', inputSchema: { type: 'object' } },
+      { name: 'write', description: 'Write a file.', inputSchema: { type: 'object' } },
+      { name: '_hidden', inputSchema: { type: 'object' } },
     ] } });
     else if (m.method === 'tools/call') {
       const a = m.params.arguments || {};
