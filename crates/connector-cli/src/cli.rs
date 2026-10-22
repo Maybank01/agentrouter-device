@@ -49,8 +49,6 @@ link 启动 hostd（宿主守护进程）；agentrouter hostd 是同一条命令
                                 给一个文件夹起名字（素材、游戏存档）：Agent 和空间按名字用它，不写路径；--read-only 只让读
   agentrouter data list | rename <旧名字> <新名字> | remove <名字>
                                 看、改名、拿掉命名文件夹（拿掉后 Agent 立刻用不到它）
-  agentrouter rules [show]      这台电脑的使用规则：你的哪些 Agent 能用它、每个命名文件夹开放给谁
-  agentrouter rules set <文件|-> | reset
                                 从 JSON 文件（- 为标准输入）设规则，比如 {\"agents\":[\"我的空间/agents/剪辑\"],\"localData\":{\"照片库\":[]}}；
                                 reset 回到默认（你账号的 Agent 都能用、命名文件夹都开放）。这台电脑自己再查一遍，平台弄错也越不过它
   agentrouter sandbox setup|status|remove
@@ -602,117 +600,15 @@ fn cmd_data(args: &[String]) -> i32 {
     }
 }
 
-/// `agentrouter rules show|set <file|->|reset` (Cloud `docs/development/DEVICES.md` §3.1): the owner's usage rules for
-/// this computer, in the Cloud rules API's shape. Saved in `config.json`; a running link enforces them from its next
-/// check (seconds) and reports them, so placement follows. The rules come from a file or stdin, never the command line.
-fn cmd_rules(args: &[String]) -> i32 {
-    use agentrouter_device::config::Config;
-    use agentrouter_device::rules::{Agents, Rules};
-    const USE: &str = "用法：agentrouter rules [show] | set <JSON 文件|-> | reset";
-    let save = |rules: Rules, done: &str| {
-        let mut cfg = match Config::try_load() {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("没保存：{e}（先修好它，或删掉它重新链接）");
-                return 1;
-            }
-        };
-        cfg.rules = rules;
-        match cfg.save() {
-            Ok(()) => {
-                println!("{done}");
-                0
-            }
-            Err(e) => {
-                eprintln!("没保存：{e}（{}）", Config::path().display());
-                1
-            }
-        }
-    };
-    match args.first().map(String::as_str) {
-        None | Some("show") => {
-            let cfg = match Config::try_load() {
-                Ok(c) => c,
-                Err(e) => {
-                    eprintln!("{e}");
-                    return 1;
-                }
-            };
-            let r = &cfg.rules;
-            match &r.agents {
-                Agents::Own => println!("能用这台电脑的 Agent：你账号下的全部"),
-                Agents::Only(list) if list.is_empty() => {
-                    println!("能用这台电脑的 Agent：没有（谁都不能用）")
-                }
-                Agents::Only(list) => println!("能用这台电脑的 Agent：只有 {}", list.join("、")),
-            }
-            for d in &cfg.local_data {
-                let open = r
-                    .local_data
-                    .iter()
-                    .find(|(k, _)| agentrouter_device::local_data::same_name(k, &d.name));
-                match open {
-                    None => println!("  命名文件夹 {}：开放给能用这台电脑的 Agent", d.name),
-                    Some((_, l)) if l.is_empty() => println!("  命名文件夹 {}：谁都不开放", d.name),
-                    Some((_, l)) => println!("  命名文件夹 {}：只开放给 {}", d.name, l.join("、")),
-                }
-            }
-            for name in r
-                .local_data
-                .keys()
-                .filter(|k| agentrouter_device::local_data::find(&cfg.local_data, k).is_none())
-            {
-                println!("  （规则里有 {name}，但这台电脑没有叫这个名字的命名文件夹）");
-            }
-            println!("JSON：{}", r.view());
-            0
-        }
-        Some("set") => {
-            let Some(from) = args.get(1) else {
-                eprintln!("{USE}");
-                return 2;
-            };
-            let text = if from == "-" {
-                let mut t = String::new();
-                if let Err(e) = std::io::Read::read_to_string(
-                    &mut std::io::Read::take(std::io::stdin(), 64 * 1024),
-                    &mut t,
-                ) {
-                    eprintln!("读不了标准输入：{e}");
-                    return 1;
-                }
-                t
-            } else {
-                match std::fs::read_to_string(from) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        eprintln!("读不了 {from}：{e}");
-                        return 1;
-                    }
-                }
-            };
-            match Rules::parse(&text) {
-                Ok(rules) => save(
-                    rules,
-                    "规则存好了：这台电脑几秒内按新规则检查，平台也跟着更新。",
-                ),
-                Err(e) => {
-                    eprintln!(
-                        "{e}\n规则的样子：{{\"agents\": \"own\" 或 [\"<空间>/<路径>\", …], \"localData\": {{\"<名字>\": [\"<空间>/<路径>\", …]}}}}"
-                    );
-                    2
-                }
-            }
-        }
-        Some("reset") => save(
-            Rules::default(),
-            "规则回到默认：你账号的 Agent 都能用，命名文件夹都开放给它们。",
-        ),
-        Some(other) => {
-            eprintln!("没有 rules {other}。{USE}");
-            2
-        }
-    }
+/// `agentrouter rules …` (gone, Cloud #2836): which of the person's Agents may use this computer is the grant of its
+/// device space, given on the website or by their Main Agent; this computer keeps the account check and the access level
+/// (folder mode or full access). The command stays only to say so; a `rules` an older version saved is ignored.
+fn cmd_rules(_args: &[String]) -> i32 {
+    eprintln!(
+        "agentrouter rules 已取消：哪些 Agent 能用这台电脑，改在网页上这台电脑的设备空间里授权（或让你的主 Agent 授权）。\n\
+         这台电脑仍只接受你账号的 Agent，能动的文件夹由链接时选的访问方式决定。"
+    );
+    2
 }
 
 /// `agentrouter software list|add|hide|unhide|source` (Cloud `docs/development/DEVICES.md` §2.3): the person stays in

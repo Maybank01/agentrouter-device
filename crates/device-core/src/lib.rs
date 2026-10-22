@@ -28,7 +28,6 @@ pub mod mcp_pkg;
 pub mod net;
 pub mod ports;
 pub mod protocol;
-pub mod rules;
 pub mod shell;
 pub mod shell_env;
 pub mod software;

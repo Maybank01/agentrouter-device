@@ -295,15 +295,11 @@ top-level param `"agentrouter.top/account": "<id>"`, so the v3 digest signs it. 
 `initialize` with another account or none is refused with `DEVICE_NOT_ALLOWED`; every call on a session runs under
 the account its `initialize` named.
 
-**The owner's rules** (Cloud DEVICES §3.1): set on this computer with `agentrouter rules show | set <file|-> | reset`
-(`config.json` `rules`, the Cloud rules API's shape `{"agents": "own" | [recipes], "localData": {name: [recipes]}}`),
-reported as `link.rules` so the cloud's placement follows, and enforced here whatever the cloud decided. `initialize`
-names the person's own recipe the session runs as the signed top-level param `"agentrouter.top/recipe"` (absent for
-the Main Agent). A recipe the `agents` list does not name (any version) is refused with `DEVICE_NOT_ALLOWED`, at
-`initialize` and again on every call (a rules change reaches running sessions within seconds); a call whose arguments
-name a folder of local data closed to the recipe is refused with `LOCAL_DATA_NOT_ALLOWED` before it runs (the link's
-OS sandbox stays the boundary for paths a call does not spell out). A `config.json` that does not read leaves the
-running rules as they were.
+**Which of the owner's Agents** (Cloud AGENT-FRAMEWORK §7.5, DEVICES §3.5, #2836): the grant of this computer's device
+space, decided in the cloud. This computer keeps no recipe lists: it checks the account above and the access level
+(folder mode or full access, chosen here). The former `agentrouter rules` command only says so; a `config.json` `rules`
+an older version saved still reads and is ignored, and an older cloud's signed `"agentrouter.top/recipe"` param is
+accepted and not read — both until the minimum device version moves past them.
 
 ### 3.4 Tools the aggregator exposes
 

@@ -34,7 +34,6 @@ fn info() -> LinkInfo {
         resources: serde_json::Value::Null,
         software: serde_json::Value::Null,
         local_data: serde_json::Value::Null,
-        rules: serde_json::Value::Null,
     }
 }
 

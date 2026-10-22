@@ -290,9 +290,6 @@ struct Pending {
 struct Session {
     conversation: String,
     title: String,
-    /// The person's own recipe this session runs (`initialize`'s signed `agentrouter.top/recipe`; None: the Main Agent
-    /// or a platform Agent), for the owner's rules (DEVICES §3.1).
-    recipe: Option<String>,
     tx: mpsc::UnboundedSender<RxJsonRpcMessage<RoleServer>>,
     ct: CancellationToken,
     peer: Mutex<Option<Peer<RoleServer>>>,
@@ -325,12 +322,6 @@ pub struct Inner {
     platform_limits: Mutex<agentrouter_device::limits::Limits>,
     /// The feeds of the space runtimes this host runs (`link__feeds`).
     feeds: feeds::Feeds,
-    /// The owner's usage rules and the named local data they speak of (`config.json`, DEVICES §3.1): enforced here on
-    /// every session and call, whatever the cloud decided ([`Aggregator::set_rules`]).
-    rules: Mutex<(
-        agentrouter_device::rules::Rules,
-        Vec<agentrouter_device::local_data::LocalData>,
-    )>,
 }
 
 /// The aggregator of one running link.
@@ -350,19 +341,6 @@ fn now_ms() -> i64 {
 
 fn id_key(id: &Value) -> String {
     id.to_string()
-}
-
-/// Every text in a call's arguments, at any depth (bounded: the first 256).
-fn strings_in(v: &Value, out: &mut Vec<String>) {
-    if out.len() >= 256 {
-        return;
-    }
-    match v {
-        Value::String(t) => out.push(t.clone()),
-        Value::Array(items) => items.iter().for_each(|i| strings_in(i, out)),
-        Value::Object(map) => map.values().for_each(|i| strings_in(i, out)),
-        _ => {}
-    }
 }
 
 /// `server__tool` → (`server`, `tool`).
@@ -547,7 +525,6 @@ impl Aggregator {
             closed: CancellationToken::new(),
             platform_limits: Mutex::new(Default::default()),
             feeds: Default::default(),
-            rules: Mutex::new(Default::default()),
         });
         let janitor = Arc::downgrade(&inner);
         let closed = inner.closed.clone();
@@ -626,16 +603,6 @@ impl Aggregator {
     }
 
     /// The account this link belongs to, once the control plane said so.
-    /// The owner's usage rules and the named local data now (`agentrouter rules`, `agentrouter data`): every later
-    /// call of every session is checked against them.
-    pub fn set_rules(
-        &self,
-        rules: agentrouter_device::rules::Rules,
-        local_data: Vec<agentrouter_device::local_data::LocalData>,
-    ) {
-        *self.inner.rules.lock().unwrap() = (rules, local_data);
-    }
-
     pub fn owner(&self) -> Option<String> {
         self.inner.owner.lock().unwrap().clone()
     }
@@ -985,12 +952,9 @@ impl Inner {
                     self.deny(s, id, method, params, None, &failure);
                     return;
                 }
-                // The owner's rules (DEVICES §3.1): only the recipes they list, when they list some.
-                let recipe = params.get(sig::RECIPE_PARAM).and_then(Value::as_str);
-                if let Some(failure) = self.agents_refusal(recipe) {
-                    self.deny(s, id, method, params, None, &failure);
-                    return;
-                }
+                // Which of the owner's Agents may use this computer is the cloud's grant of its device space (Cloud
+                // AGENT-FRAMEWORK §7.5, #2836); this host checks the account above and the access level (folder mode or
+                // full access). An older cloud's signed `agentrouter.top/recipe` param is accepted and not read.
                 self.open_session(s, &signed.session, params);
             }
             let Some(session) = self.session(s) else {
@@ -1022,16 +986,6 @@ impl Inner {
             } else {
                 (String::new(), String::new(), String::new(), None)
             };
-            // The owner's rules again on every call (they may have changed since the session opened, DEVICES §3.1).
-            let recipe = session.recipe.as_deref();
-            if let Some(failure) = self.agents_refusal(recipe).or_else(|| {
-                arguments
-                    .as_ref()
-                    .and_then(|a| self.data_refusal(recipe, a))
-            }) {
-                self.deny(s, id, method, params, Some(&session), &failure);
-                return;
-            }
             let mut entry = json!({
                 "kind": "request", "link": self.cfg.link, "mcp": s, "session": session.conversation,
                 "id": id, "method": method, "decision": "allowed",
@@ -1072,63 +1026,6 @@ impl Inner {
             servers::redact_value(&mut a, &srv.secrets());
         }
         a
-    }
-
-    /// `DEVICE_NOT_ALLOWED` when the owner lists the recipes that may use this computer and `recipe` is not one.
-    fn agents_refusal(&self, recipe: Option<&str>) -> Option<Failure> {
-        let why = self.rules.lock().unwrap().0.refuses(recipe)?;
-        Some(
-            Failure::new("DEVICE_NOT_ALLOWED", why)
-                .next("这台电脑不会运行它；请主人在这台电脑上用 agentrouter rules 加上这个 Agent，或放到别的设备或云端。"),
-        )
-    }
-
-    /// `LOCAL_DATA_NOT_ALLOWED` when a call names a folder of named local data its owner closed to `recipe`
-    /// (`rules.localData`). A second line after placement: it reads the paths a call's arguments spell out (a path in a
-    /// command line included); the OS sandbox of the link stays the boundary for what it does not name.
-    fn data_refusal(&self, recipe: Option<&str>, arguments: &Value) -> Option<Failure> {
-        let guard = self.rules.lock().unwrap();
-        let (rules, local_data) = &*guard;
-        if rules.local_data.is_empty() {
-            return None;
-        }
-        let norm = |p: &str| {
-            let p = p.replace('\\', "/");
-            let p = p.trim_end_matches('/').to_string();
-            if cfg!(any(windows, target_os = "macos")) {
-                p.to_lowercase()
-            } else {
-                p
-            }
-        };
-        let mut texts = Vec::new();
-        strings_in(arguments, &mut texts);
-        let texts: Vec<String> = texts.iter().map(|t| norm(t)).collect();
-        let closed = local_data.iter().find(|d| {
-            let folder = norm(&d.path);
-            !folder.is_empty()
-                && !rules.data_open(&d.name, recipe)
-                && texts.iter().any(|t| {
-                    t.match_indices(folder.as_str()).any(|(at, _)| {
-                        // The folder itself or a path inside it, not a longer sibling name (`/素材2`).
-                        matches!(
-                            t[at + folder.len()..].chars().next(),
-                            None | Some('/' | '"' | '\'' | ' ' | ';' | '&' | '|' | ')')
-                        )
-                    })
-                })
-        })?;
-        Some(
-            Failure::new(
-                "LOCAL_DATA_NOT_ALLOWED",
-                format!(
-                    "这台电脑的主人没把命名文件夹「{}」开放给{}",
-                    closed.name,
-                    recipe.map(|r| format!(" {r}")).unwrap_or_else(|| "主 Agent".into())
-                ),
-            )
-            .next("这次调用没执行；不要用这个文件夹，或请主人用 agentrouter rules 把它开放给这个 Agent。"),
-        )
     }
 
     fn deny(
@@ -1205,10 +1102,6 @@ impl Inner {
         let session = Arc::new(Session {
             conversation: conversation.to_string(),
             title: title.clone(),
-            recipe: params
-                .get(sig::RECIPE_PARAM)
-                .and_then(Value::as_str)
-                .map(|r| agentrouter_device::util::clip(r, 300)),
             tx,
             ct: ct.clone(),
             peer: Mutex::new(None),
