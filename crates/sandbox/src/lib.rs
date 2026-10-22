@@ -579,6 +579,9 @@ impl Runtime {
             // Also a refresh: what was created in the profile since the last run becomes readable.
             let first = windows_profile_state(&self.srt_win())?.0 != "current";
             self.windows_profile_grant()?;
+            if before.sid.is_none() || before.stale || first {
+                self.windows_warm_account();
+            }
             if first {
                 done.push(
                     "隔离账户现在能读你的用户文件夹（密钥、凭据、浏览器数据和 AgentRouter 的数据除外），和 macOS、Linux 一样；只读，不能写"
@@ -587,6 +590,51 @@ impl Runtime {
             }
         }
         Ok(done)
+    }
+
+    /// The sandbox account's own Windows profile, made now instead of in the first server start. srt-win makes it on the
+    /// first command run as that account (CreateProcessWithLogonW with LOGON_WITH_PROFILE), inside srt's once-per-process
+    /// egress check, which srt bounds by 30 s (`srt-win wfp verify … timed out after 30000ms`). On a fresh Windows (a
+    /// new PC, a CI runner) that first profile can take longer: the first confined start failed (device #105's Windows
+    /// sandbox run, Cloud #2383). One confined no-op, again once when srt-win timed out, pays it here. Best effort: a
+    /// start that still meets a slow first profile is restarted by the server's supervisor.
+    #[cfg(windows)]
+    fn windows_warm_account(&self) {
+        let Ok(node) = self.node() else { return };
+        let key = "agentrouter-setup-warm";
+        let cwd = self.scratch(key);
+        if std::fs::create_dir_all(&cwd).is_err() {
+            return;
+        }
+        let args = vec!["-e".to_string(), "0".to_string()];
+        let folders = vec![cwd.clone()];
+        let launch = Launch {
+            key,
+            program: &node,
+            args: &args,
+            env: &[],
+            cwd: &cwd,
+            folders: &folders,
+            network: &[],
+            readable: &[],
+            read_only: false,
+            open_web: false,
+            job: None,
+        };
+        for _ in 0..2 {
+            let Ok(mut cmd) = self.command(&launch) else {
+                return;
+            };
+            match cmd.stdin(std::process::Stdio::null()).output() {
+                Ok(out)
+                    if !out.status.success()
+                        && String::from_utf8_lossy(&out.stderr).contains("timed out") =>
+                {
+                    continue;
+                }
+                _ => return,
+            }
+        }
     }
 
     /// `agentrouter sandbox remove`: the Windows account and fence (one UAC prompt) and the installed runtime.
