@@ -1,5 +1,5 @@
 {
-  "source": "agentrouter-cloud@54c276e00c0b1935dbee408f657572c3f437f771",
+  "source": "agentrouter-cloud@7cc185b3d1d10999e50b18846e0f3ca0f9746f68",
   "schema": "agentrouter.errors/v1",
   "about": "The one error catalog (#2449; owner 2026-10-21 「还有，错误那一块，是不是应该有一种统一的方式？我不想错误都散落在各处」). Adding an error = adding an entry here, then `node scripts/sync-error-catalog.mjs`. README.md has the rules.",
   "errors": [
@@ -22,6 +22,140 @@
       "agent": "品牌与资料 could not be reached for {operation}{on_target}",
       "next": "Try once more in a few seconds. If it fails again, continue another way and tell the person in one plain sentence what could not be done.",
       "user": "品牌资料暂时连不上，稍后再试。"
+    },
+    {
+      "code": "COMPUTE_ARCHIVING",
+      "component": "compute-sandbox",
+      "status": 503,
+      "retry": "always",
+      "retryAfterSeconds": 30,
+      "log": "info",
+      "agent": "The conversation's cloud sandbox is being archived after a long idle, so {operation}{on_target} waits until it is stored (usually under a minute, a few minutes at most)",
+      "next": "Run the command again in a minute: the sandbox then starts again from its archive with its files as they were.",
+      "user": "云端沙箱正在归档，稍后会继续。"
+    },
+    {
+      "code": "COMPUTE_STARTING",
+      "component": "compute-sandbox",
+      "status": 503,
+      "retry": "always",
+      "retryAfterSeconds": 2,
+      "log": "info",
+      "agent": "The conversation's cloud sandbox is being attached or started again, so {operation}{on_target} waits",
+      "next": "Run the command again in a moment.",
+      "user": "云端沙箱正在启动，稍后会继续。"
+    },
+    {
+      "code": "COMPUTE_UNAVAILABLE",
+      "component": "compute-sandbox",
+      "status": 503,
+      "retry": "always",
+      "retryAfterSeconds": 5,
+      "log": "warn",
+      "agent": "The conversation's cloud sandbox could not be started for {operation}{on_target}",
+      "next": "Run the command again shortly; if it keeps failing, run it on the person's computer (env_use) or tell the person the cloud sandbox is unavailable.",
+      "user": "云端沙箱暂时启动不了。"
+    },
+    {
+      "code": "COMPUTE_HOST_UNAVAILABLE",
+      "component": "compute-sandbox",
+      "status": 503,
+      "retry": "always",
+      "retryAfterSeconds": 30,
+      "log": "warn",
+      "agent": "The conversation's cloud sandbox is there, but its host program (hostd) did not answer {operation} within its start-up wait",
+      "next": "Run the command again in a minute; if it keeps failing, run it on the person's computer (env_use) or tell the person the cloud sandbox is unavailable.",
+      "user": "云端沙箱还没准备好，稍后再试。"
+    },
+    {
+      "code": "CONNECTIONS_NOT_OPEN",
+      "component": "connections",
+      "status": 404,
+      "retry": "never",
+      "log": "info",
+      "agent": "Connections are not open for this account yet ({operation})",
+      "next": "Continue without a connection; do not retry. Tell the person in one plain sentence that connecting outside services is not open for them yet.",
+      "user": "连接功能还没有对你开放。"
+    },
+    {
+      "code": "CONNECTION_DEFINITION_INVALID",
+      "component": "connections",
+      "status": 422,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}{on_target}: the connection file would not be valid, so nothing was registered; the cause names every problem by file and field",
+      "next": "Fix each named field in the connection file, save it as a new version of its space, then check or publish that version again.",
+      "user": "连接文件有错误，没有发布。"
+    },
+    {
+      "code": "CONNECTION_FILE_MISSING",
+      "component": "connections",
+      "status": 404,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: there is no connection file at {target}",
+      "next": "Check the path and the version: the ref is <space>/<path>@<version> and the path names the .yaml file itself (connections/<name>.yaml). List the space's files at that version if unsure.",
+      "user": "找不到这个连接文件。"
+    },
+    {
+      "code": "CONNECTION_ID_TAKEN",
+      "component": "connections",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: connection id {target} is already published from another file",
+      "next": "Unpublish the connection that holds this id first, or give this file another id; one id is one file at a time, so it is always clear which file runs.",
+      "user": "这个连接名已经被另一个连接文件占用。"
+    },
+    {
+      "code": "CONNECTION_INPUT_INVALID",
+      "component": "connections",
+      "status": 400,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}{on_target}: the request is not valid; the cause says which part",
+      "next": "Fix the named part and call again: a connection ref is <space>/<path>@<version> (wrk_…/connections/<name>.yaml@<version>), a connection id is a slug such as orders.",
+      "user": "请求内容不对，请检查后重试。"
+    },
+    {
+      "code": "CONNECTION_NOT_PUBLISHED",
+      "component": "connections",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: connection {target} is not published",
+      "next": "List the person's connections to see which are published, or publish this one first.",
+      "user": "这个连接还没有发布。"
+    },
+    {
+      "code": "CONNECTION_NO_EARLIER_VERSION",
+      "component": "connections",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: connection {target} has no earlier published version to go back to",
+      "next": "Name the version to pin instead (publish that ref), or leave the current one.",
+      "user": "这个连接没有更早的发布版本。"
+    },
+    {
+      "code": "CONNECTION_SECRET_NOT_WAITING",
+      "component": "connections",
+      "status": 410,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}{on_target}: no signing secret of this connection waits to be shown; the cause says why (shown once already, not looked at within 24 hours, or shown at the person's own publish)",
+      "next": "Do not retry: a signing secret is shown once. To give the sender a new one, name a new secret in the connection file's signing credential (secret:<new name>) and publish the file again; the new secret is shown once.",
+      "user": "这个签名密钥已经看过或过期了，不能再显示。"
+    },
+    {
+      "code": "CONNECTION_SPACE_UNSUPPORTED",
+      "component": "connections",
+      "status": 422,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: a connection file cannot be read from {target} yet",
+      "next": "Keep connection files in a 作品 the person owns (wrk_…), e.g. connections/<name>.yaml; other spaces follow when the Space Server serves them.",
+      "user": "这个空间里的连接文件暂时还不能使用。"
     },
     {
       "code": "CONNECTOR_FAULT",
@@ -72,6 +206,16 @@
       "agent": "Task dispatch could not be reached for {operation}{on_target}",
       "next": "Try once more in a few seconds. If it fails again, continue another way and tell the person in one plain sentence what could not be done.",
       "user": "派活暂时连不上，稍后再试。"
+    },
+    {
+      "code": "CREDENTIAL_NEEDED",
+      "component": "secret-store",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "The credential {target} that {operation} needs is missing, revoked or needs a new login",
+      "next": "Do not ask for the value in chat. Tell the person in one plain sentence which credential to add or reconnect in 连接 / 设置 → 密钥, then continue once they have.",
+      "user": "这个连接需要的密钥还没设置或已失效，请到「连接」里重新设置。"
     },
     {
       "code": "CUSTOM_TOOLS_FAULT",
@@ -145,6 +289,16 @@
       "user": "电脑没能保护这个文件夹，命令没有运行。"
     },
     {
+      "code": "HOSTD_SANDBOX_NEEDS_ADMIN",
+      "component": "hostd",
+      "status": 424,
+      "retry": "never",
+      "log": "info",
+      "agent": "Folder mode on the person's computer cannot confine local tools for {operation}{on_target}: its sandbox needs a one-time change only that computer's administrator can make (on Ubuntu, an AppArmor rule that lets AgentRouter's own sandbox program make user namespaces: `sudo agentrouter sandbox userns install`; elsewhere, a kernel setting); `agentrouter sandbox setup` cannot make it",
+      "next": "Do not retry. Tell the person, in one plain sentence, the exact command the cause gives and what it is for (it asks for the computer's login password); after they ran it, call once more. Until then nothing runs in that folder.",
+      "user": "这台电脑要管理员确认一次设置，按提示运行那一行命令后再试。"
+    },
+    {
       "code": "HOSTD_FAULT",
       "component": "hostd",
       "status": 500,
@@ -163,6 +317,58 @@
       "agent": "The AgentRouter app on the person's computer (hostd) could not be reached for {operation}{on_target}",
       "next": "Check list_devices: if that computer is offline, tell the person and do not resend now; otherwise try once more in a few seconds.",
       "user": "电脑暂时连不上，稍后再试。"
+    },
+    {
+      "code": "HOST_STARTING",
+      "component": "hostd",
+      "status": 503,
+      "retry": "always",
+      "retryAfterSeconds": 10,
+      "log": "info",
+      "agent": "The person's computer is linked, but the AgentRouter app there (hostd) is still starting the server that does {operation}{on_target} (in folder mode it starts confined, which can take half a minute or more); nothing ran",
+      "next": "Call it once more in about 10 seconds. It is not an old AgentRouter: do not ask the person to update.",
+      "user": "电脑上的工具还在启动，稍后会继续。"
+    },
+    {
+      "code": "LINK_OFFLINE",
+      "component": "host-link",
+      "status": 503,
+      "retry": "always",
+      "retryAfterSeconds": 60,
+      "log": "info",
+      "agent": "The person's computer is offline, so {operation}{on_target} did not run there (it is not linked right now, it dropped and did not come back within the reconnect wait, or the link gateway could not reach it)",
+      "next": "The same call works once that computer is online again (remote_hosts / list_devices shows it): ask the person to start `agentrouter link` on it (the terminal must stay open), then call again; meanwhile keep working where you are (env_use cloud). Jobs already started there keep running. Do not resend in a loop.",
+      "user": "电脑没有连上：在那台电脑上重新运行 agentrouter link。"
+    },
+    {
+      "code": "LIMITS_NOT_APPLIED",
+      "component": "hostd",
+      "status": 502,
+      "retry": "never",
+      "log": "warn",
+      "agent": "This Agent's definition sets resource limits for its environment (environment_memory_mb / environment_processes / environment_cpu_percent), and the person's computer did not take them for {operation}{on_target}, so nothing runs there unlimited",
+      "next": "Do not retry. Tell the person their computer could not apply the limits (the cause says which value or which local tool), or keep working in your cloud sandbox (env_use cloud).",
+      "user": "这台电脑没能设上这个 Agent 要求的资源上限，所以没有在上面运行。"
+    },
+    {
+      "code": "LIMITS_UNSUPPORTED",
+      "component": "hostd",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "This Agent's definition sets resource limits for its environment, and the agentrouter on the person's computer ({operation}{on_target}) predates them, so nothing runs there unlimited",
+      "next": "Do not retry. Ask the person to update agentrouter on that computer (then link again), or keep working in your cloud sandbox (env_use cloud).",
+      "user": "这台电脑上的 agentrouter 太旧，设不了这个 Agent 要求的资源上限。请先更新。"
+    },
+    {
+      "code": "LINK_LOST",
+      "component": "host-link",
+      "status": 502,
+      "retry": "never",
+      "log": "warn",
+      "agent": "The link to the host dropped while {operation}{on_target} was running, so it may or may not have taken effect there (a read-only call is already sent again once)",
+      "next": "Check the state there first (read the file or list the folder again), then redo only what did not happen.",
+      "user": "连接中断了，这一步可能没有完成。"
     },
     {
       "code": "MEMORY_FAULT",
@@ -185,6 +391,16 @@
       "user": "记忆暂时连不上，稍后再试。"
     },
     {
+      "code": "NOT_IN_REACH",
+      "component": "agent-definitions",
+      "status": 403,
+      "retry": "never",
+      "log": "info",
+      "agent": "{target} is not in this Agent's reach, so {operation} did not run: its definition does not name it (the cause lists what it names and how to add it)",
+      "next": "Work with the spaces and computers this Agent reaches. If the person wants it to reach this one, tell them which line to add to the Agent's definition (the cause shows it); calling again will not work in this conversation.",
+      "user": "这个 Agent 的定义里没有包含它，这一步没有执行。"
+    },
+    {
       "code": "PLATFORM_TOOL_FAULT",
       "component": "platform-tools",
       "status": 500,
@@ -203,6 +419,76 @@
       "agent": "The platform tool could not be reached for {operation}{on_target}",
       "next": "Try once more in a few seconds. If it fails again, continue another way and tell the person in one plain sentence what could not be done.",
       "user": "这一步没连上，稍后再试。"
+    },
+    {
+      "code": "TOOL_UNKNOWN",
+      "component": "platform-tools",
+      "status": 404,
+      "retry": "never",
+      "log": "info",
+      "agent": "{target} is not a tool of this conversation ({operation}); the cause says why",
+      "next": "Use a tool from your tool list for this step; calling the same name again will not work in this conversation.",
+      "user": "这个工具在这次对话里用不了。"
+    },
+    {
+      "code": "TOOL_RETIRED",
+      "component": "platform-tools",
+      "status": 410,
+      "retry": "never",
+      "log": "info",
+      "agent": "{target} was removed from the platform's tools after this conversation's tool list was made ({operation}); the cause says when",
+      "next": "Do what the call was for with the replacement named here, with the arguments it describes; do not call the removed tool again.",
+      "user": "这个工具已经换成新的了。"
+    },
+    {
+      "code": "TOOL_ARGS_INVALID",
+      "component": "platform-tools",
+      "status": 400,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation} is missing arguments the tool requires{on_target}; the cause names them, the arguments it does not take, and its current input schema",
+      "next": "Call it again with every argument the cause lists as required (the tool may have gained one since your tool list was made); leave out the arguments it does not take.",
+      "user": "这一步的参数不完整。"
+    },
+    {
+      "code": "PORT_BUSY",
+      "component": "hostd",
+      "status": 503,
+      "retry": "always",
+      "log": "info",
+      "agent": "The person's computer has too many open preview connections to answer {operation}{on_target}",
+      "next": "Wait a few seconds, then open it once more; close previews you no longer need.",
+      "user": "电脑上同时打开的预览连接太多，稍等几秒再刷新。"
+    },
+    {
+      "code": "PORT_CLOSED",
+      "component": "hostd",
+      "status": 502,
+      "retry": "always",
+      "log": "info",
+      "agent": "Nothing listens on that port of the person's computer for {operation}{on_target}",
+      "next": "Check that the dev server runs on that computer and listens on 127.0.0.1 (its log, or a command there); start it again if it stopped.",
+      "user": "网页没有响应。它可能正在启动，或者刚刚停下了：稍等几秒再刷新，还不行就回到对话，让 AI 看看。"
+    },
+    {
+      "code": "PORT_NOT_IN_SANDBOX",
+      "component": "hostd",
+      "status": 403,
+      "retry": "never",
+      "log": "info",
+      "agent": "On the person's computer, linked in folder mode, the port of {operation}{on_target} is listened on by a program outside the link's sandbox (one of the person's own), which a folder-mode link never opens to the cloud",
+      "next": "Do not retry. Start the dev server with a command in this environment (then its port opens), or use the port of the server you started; the person's own programs are previewed only when they link with 完全访问.",
+      "user": "这个端口上是电脑上别的程序，文件夹模式不会打开它的网页预览。"
+    },
+    {
+      "code": "PORT_SANDBOXED",
+      "component": "hostd",
+      "status": 403,
+      "retry": "never",
+      "log": "info",
+      "agent": "The person's computer is linked in folder mode, where its ports are not opened to the cloud, so {operation}{on_target} cannot reach it",
+      "next": "Do not retry. Fetch the page with a command on that computer instead (curl), and tell the person in one plain sentence that the preview of a computer linked in folder mode does not open yet.",
+      "user": "这台电脑只链接了文件夹，还打不开它上面的网页预览。"
     },
     {
       "code": "PROJECT_SERVICE_FAULT",
@@ -235,6 +521,28 @@
       "user": "项目服务暂时连不上，稍后再试。"
     },
     {
+      "code": "VIEW_UNAVAILABLE",
+      "component": "space-server",
+      "status": 503,
+      "retry": "transient",
+      "retryAfterSeconds": 30,
+      "log": "warn",
+      "agent": "This conversation's session directory (its view through the Space Server) could not be joined for {operation}{on_target}, so the turn did not start: a session with a view never runs without it",
+      "next": "Send the message again in a minute: the conversation's next lease joins its view again. If it keeps failing, tell the person the platform's file service is unavailable right now.",
+      "user": "作品和资料暂时连不上，这次还没开始做，记录都还在。请稍后点重试。"
+    },
+    {
+      "code": "PLATFORM_TOOLS_UNAVAILABLE",
+      "component": "agent-sessions",
+      "status": 503,
+      "retry": "transient",
+      "retryAfterSeconds": 30,
+      "log": "warn",
+      "agent": "This conversation's platform tools (its MCP server through the runner) could not be set up for {operation}{on_target}, so the turn did not start: a session never runs without its platform tools",
+      "next": "Send the message again in a minute: the conversation's next lease sets up its tools again. If it keeps failing, tell the person the platform is having trouble right now.",
+      "user": "工具这次没接上，还没开始做，记录都还在。请稍后点重试。"
+    },
+    {
       "code": "QUOTA_EXHAUSTED",
       "component": "billing",
       "status": 402,
@@ -243,6 +551,36 @@
       "agent": "The person's quota is used up, so {operation}{on_target} was refused",
       "next": "Do not retry. Tell the person in one plain sentence that their quota is used up; they can top up or get a card (查看套餐), then ask again.",
       "user": "额度已用完，这一步没有执行。"
+    },
+    {
+      "code": "BUDGET_EXCEEDED",
+      "component": "budgets",
+      "status": 429,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation} was refused: a budget is used up ({target})",
+      "next": "Do not retry and do not start more work. Report what you have done so far (task_report, or reply to the person) and say which budget ran out; the one who set it (the task's dispatcher or the Agent's owner) decides whether to give more.",
+      "user": "这个 Agent 的额度上限已用完，这一步没有执行。"
+    },
+    {
+      "code": "ENVIRONMENT_NOT_ALLOWED",
+      "component": "environment",
+      "status": 403,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: this Agent's definition does not allow working on {target}",
+      "next": "Move only to a host its reach.environment.allow admits (env_list lists them), or keep working where you are; tell the person if the work needs that host.",
+      "user": "这个 Agent 不能在那台机器上工作。"
+    },
+    {
+      "code": "SANDBOX_OUTPUT_GONE",
+      "component": "compute-sandbox",
+      "status": 410,
+      "retry": "never",
+      "log": "info",
+      "agent": "The command output {target} was in the conversation's cloud sandbox, which has ended; its outputs went with it",
+      "next": "Run the command again if you still need its output.",
+      "user": "云端沙箱已结束，它的输出也随之清除。"
     },
     {
       "code": "SCHEDULED_TASKS_FAULT",
@@ -263,6 +601,96 @@
       "agent": "Scheduled tasks could not be reached for {operation}{on_target}",
       "next": "Try once more in a few seconds. If it fails again, continue another way and tell the person in one plain sentence what could not be done.",
       "user": "定时任务暂时连不上，稍后再试。"
+    },
+    {
+      "code": "SCHEDULE_AGENT_INVALID",
+      "component": "scheduled-tasks",
+      "status": 400,
+      "retry": "never",
+      "log": "info",
+      "agent": "The scheduled task's agent is not usable for {operation}{on_target}",
+      "next": "Give agent as one of the person's published Agents by id (e.g. bili-digest) or a definition ref space/path@version, when the task is made. A task's Agent cannot be changed afterwards: make a new task and delete the old one.",
+      "user": "这个定时任务要用的 Agent 写得不对。"
+    },
+    {
+      "code": "SCHEDULE_AGENT_UNAVAILABLE",
+      "component": "scheduled-tasks",
+      "status": 409,
+      "retry": "never",
+      "log": "warn",
+      "agent": "A scheduled task cannot start an Agent for {operation}{on_target} (own Agents are not open to this person, or this server cannot start them)",
+      "next": "Make the task without agent (it then runs in this conversation), or tell the person their own Agents are not available to them yet.",
+      "user": "定时任务现在还不能启动你自己的 Agent。"
+    },
+    {
+      "code": "SCHEDULE_AGENT_ACCESS",
+      "component": "scheduled-tasks",
+      "status": 401,
+      "retry": "never",
+      "log": "info",
+      "agent": "The scheduled task has no model access of its own for {operation}{on_target} (it was never given one from a conversation of the person, or 退出其他设备 revoked it)",
+      "next": "Set the task up again from a conversation of the person (schedule_update with its id from that conversation renews its access); runs start again after that.",
+      "user": "定时任务的后台权限失效了：在任意对话里让 Agent 恢复一下这个任务。"
+    },
+    {
+      "code": "SECRET_INPUT_INVALID",
+      "component": "secret-store",
+      "status": 400,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation} was given an invalid secret{on_target}: a name is a letter then letters, digits, _ or - (at most 64), a value 1–65536 characters, a kind one of api_key, oauth, cookie, file, ssh_key, webhook_signing",
+      "next": "Fix the name or kind and call again. Never put a secret value in chat or in a tool argument.",
+      "user": "密钥的名字或内容不符合要求。"
+    },
+    {
+      "code": "SECRET_NOT_GRANTED",
+      "component": "secret-store",
+      "status": 403,
+      "retry": "never",
+      "log": "warn",
+      "agent": "{operation} may not use the credential {target}: it is not granted to this connection or tool",
+      "next": "Use only the connections your definition lists. If this one should have access, tell the person in one plain sentence to grant it.",
+      "user": "这个连接没有使用该密钥的权限。"
+    },
+    {
+      "code": "SECRET_STORE_FAULT",
+      "component": "secret-store",
+      "status": 500,
+      "retry": "never",
+      "log": "error",
+      "agent": "The secret store failed while doing {operation}{on_target} (a fault in the platform, not in your call)",
+      "next": "Retrying will not help. Continue another way, and tell the person in one plain sentence what could not be done.",
+      "user": "密钥服务出错了，已记录。"
+    },
+    {
+      "code": "SECRET_STORE_UNAVAILABLE",
+      "component": "secret-store",
+      "status": 503,
+      "retry": "transient",
+      "log": "warn",
+      "agent": "The secret store could not be reached for {operation}{on_target}",
+      "next": "Try once more in a few seconds. If it fails again, continue another way and tell the person in one plain sentence what could not be done.",
+      "user": "密钥服务暂时连不上，稍后再试。"
+    },
+    {
+      "code": "SPACE_DEFINITION_INVALID",
+      "component": "spaces",
+      "status": 422,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}{on_target}: the space's definition (.ar/space.yaml or .ar/views/*.yaml) would not be valid, so nothing was submitted; the cause names every problem by file and field",
+      "next": "Fix each named file and field in your draft (describe shows how your session sees the definition now), then submit again. Your other changes stay in the draft.",
+      "user": "空间定义有错误，这次没有提交。"
+    },
+    {
+      "code": "SPACE_SUBMIT_NOTHING",
+      "component": "space-server",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}{on_target}: nothing is waiting to be submitted (the cause says which paths); what this session wrote is already a version of the space, or those paths have no changes",
+      "next": "Nothing to redo: go on from the space's current version (space_read shows it). Submit only after a space_write that leaves changes in your draft.",
+      "user": "没有要提交的改动，之前的修改已经保存了。"
     },
     {
       "code": "SPACE_OP_ARGS_INVALID",
@@ -293,6 +721,87 @@
       "agent": "space_op needs space (a ref from space_list) and op (one of its kind's ops, or describe); {operation} gave neither or only one",
       "next": "Call space_list for the ref, then space_op with that space and an op its kind declares (op describe lists them).",
       "user": "参数不对，这一步没有执行。"
+    },
+    {
+      "code": "SPACE_OP_REMOVED",
+      "component": "spaces",
+      "status": 410,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}{on_target}: this op was removed from the space's definition; the cause names the version that removed it and the ops it has now",
+      "next": "Use one of the ops it has now (space_op describe lists them). If you need the removed one, add it back to .ar/space.yaml and submit.",
+      "user": "这个操作已经从空间里移除了。"
+    },
+    {
+      "code": "TASK_UNKNOWN",
+      "component": "spaces",
+      "status": 404,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}{on_target}: the space declares no task of that name; the message names the tasks it declares",
+      "next": "Use one of the tasks it declares (space_op describe lists them), or declare it under tasks: in its .ar/space.yaml and run it again.",
+      "user": "这个空间没有这个任务。"
+    },
+    {
+      "code": "TASK_CYCLE",
+      "component": "spaces",
+      "status": 400,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}{on_target}: the task's after: chain loops; the message names the tasks that wait for each other",
+      "next": "Fix after: in the space's .ar/space.yaml so the tasks no longer wait for each other, then run it again.",
+      "user": "任务之间的先后关系绕成了一个圈。"
+    },
+    {
+      "code": "TASK_REQUIRES_UNMET",
+      "component": "spaces",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}{on_target}: this environment lacks what the task requires (os, tools with versions, a GPU, or the host that holds the space); the message names each",
+      "next": "Run it in an environment that has it (env_use to a computer that does), or change the task's requires in .ar/space.yaml.",
+      "user": "当前环境缺少这个任务需要的工具或系统。"
+    },
+    {
+      "code": "TOOLCHAIN_BUILDING",
+      "component": "spaces",
+      "status": 409,
+      "retry": "always",
+      "retryAfterSeconds": 60,
+      "log": "info",
+      "agent": "{operation}{on_target}: the environment lacks tools the task requires, and their toolchain layer is being built now (once per tool set; afterwards any environment mounts it in seconds); nothing has run",
+      "next": "Call env_task again in about a minute.",
+      "user": "任务需要的工具正在准备，稍后会自动可用。"
+    },
+    {
+      "code": "TASK_COMMIT_UNSUPPORTED",
+      "component": "spaces",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}{on_target}: the task commits its deliverables somewhere this environment cannot write (not a 作品 the person can change, or a path outside it)",
+      "next": "Commit into the 作品 itself (commit: { to: self, path: … }) or a 作品 id the person can change.",
+      "user": "任务的产物不能提交到那个位置。"
+    },
+    {
+      "code": "TASK_ENVIRONMENT_UNSUPPORTED",
+      "component": "spaces",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}{on_target}: declared tasks cannot run in this environment yet (a computer environment, or not open in this conversation)",
+      "next": "Move back to your cloud sandbox with env_use, or run the task's command yourself.",
+      "user": "这个环境暂时不能执行声明的任务。"
+    },
+    {
+      "code": "TASK_ENVIRONMENT_FAILED",
+      "component": "spaces",
+      "status": 502,
+      "retry": "transient",
+      "log": "warn",
+      "agent": "{operation}{on_target}: the environment could not prepare or finish the task (staging its inputs, listing its outputs or copying its deliverables failed); the cause says where",
+      "next": "Check the environment with a command (disk space, the 作品 folder), then run the task again.",
+      "user": "运行环境没能准备好这个任务。"
     },
     {
       "code": "SPACE_OP_UNAVAILABLE",
@@ -363,6 +872,1203 @@
       "agent": "作品 comments could not be reached for {operation}{on_target}",
       "next": "Try once more in a few seconds. If it fails again, continue another way and tell the person in one plain sentence what could not be done.",
       "user": "评论暂时连不上，稍后再试。"
+    },
+    {
+      "code": "AGENT_INPUT_INVALID",
+      "component": "agent-registry",
+      "status": 422,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation} got input it cannot use{on_target}",
+      "next": "Fix the input as described, then call it again.",
+      "user": "Agent 的设置有一处填得不对，改一下再试。"
+    },
+    {
+      "code": "AGENT_DEFINITION_INVALID",
+      "component": "agent-registry",
+      "status": 422,
+      "retry": "never",
+      "log": "info",
+      "agent": "The Agent definition {target} does not pass its checks, so {operation} cannot use it",
+      "next": "Fix every problem listed in the definition's files (agent.yaml and its role files), then check or publish again.",
+      "user": "这个 Agent 的定义还有问题，改好后再发布。"
+    },
+    {
+      "code": "AGENT_NOT_PUBLISHED",
+      "component": "agent-registry",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "The Agent {target} is not published on this channel, so {operation} has nothing to run",
+      "next": "Publish a version of its folder first (publish with ref space/path@version), or name a ref to try it unpublished.",
+      "user": "这个 Agent 还没发布。"
+    },
+    {
+      "code": "AGENT_NO_EARLIER_VERSION",
+      "component": "agent-registry",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: the Agent {target} has no earlier published version on this channel",
+      "next": "Name the version to go back to, or publish the version you want.",
+      "user": "没有更早发布过的版本可以退回。"
+    },
+    {
+      "code": "AGENT_ID_TAKEN",
+      "component": "agent-registry",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: the Agent id {target} already runs another folder",
+      "next": "Unpublish the other folder on its channels first, or give this folder another id in its agent.yaml.",
+      "user": "这个 Agent 名字已经被另一个 Agent 用了。"
+    },
+    {
+      "code": "AGENT_SPACE_UNSUPPORTED",
+      "component": "agent-registry",
+      "status": 422,
+      "retry": "never",
+      "log": "info",
+      "agent": "An Agent definition cannot be read from {target} yet ({operation})",
+      "next": "Keep the Agent's folder in a 作品 the person owns (wrk_…), or extend a platform definition (extends: platform/<id>).",
+      "user": "Agent 只能放在你自己的作品里。"
+    },
+    {
+      "code": "AGENT_KERNEL_UNFIT",
+      "component": "agent-sessions",
+      "status": 422,
+      "retry": "never",
+      "log": "warn",
+      "agent": "{operation}: the Agent definition {target} reaches fewer built-in tools than this kernel offers, so it does not run on it",
+      "next": "Run this Agent on a DeepSeek line (its kernel narrows built-in tools per Agent), or give the definition the environment / writes it needs.",
+      "user": "这个 Agent 不能在当前模型上运行，请换成 DeepSeek 模型线再试。"
+    },
+    {
+      "code": "AGENT_FILE_UNREADABLE",
+      "component": "agent-definition",
+      "status": 422,
+      "retry": "never",
+      "log": "info",
+      "agent": "A file of the Agent definition cannot be read{on_target}",
+      "next": "Write the file named (UTF-8 text, at most 64 KiB, inside the Agent's folder, no control characters), or remove the field that names it.",
+      "user": "这个 Agent 的某个文件读不了，改一下再试。"
+    },
+    {
+      "code": "AGENT_YAML_INVALID",
+      "component": "agent-definition",
+      "status": 422,
+      "retry": "never",
+      "log": "info",
+      "agent": "agent.yaml is not plain YAML the platform accepts{on_target}",
+      "next": "Write agent.yaml as plain YAML: no tags (!!…), anchors (&…), aliases (*…) or merge keys (<<), each key once, at most 32 KiB.",
+      "user": "这个 Agent 的设置文件格式不对。"
+    },
+    {
+      "code": "AGENT_FIELD_INVALID",
+      "component": "agent-definition",
+      "status": 422,
+      "retry": "never",
+      "log": "info",
+      "agent": "A field of agent.yaml does not fit the definition schema (agentrouter.agent/v2){on_target}",
+      "next": "Fix the field named: use only the schema's fields (schema, id, name, summary, attention, reach, model, channels, limits, evals, extends, team, forked_from) with the values it allows.",
+      "user": "这个 Agent 的设置有一处填得不对。"
+    },
+    {
+      "code": "AGENT_FIELD_RESERVED",
+      "component": "agent-definition",
+      "status": 422,
+      "retry": "never",
+      "log": "info",
+      "agent": "A field of agent.yaml is reserved for the platform's own definitions{on_target}",
+      "next": "Remove it: platform blocks, locked entries and platform: spaces belong to the platform layer (a platform default can be dropped with off: true).",
+      "user": "这个 Agent 用了只有平台能用的设置。"
+    },
+    {
+      "code": "AGENT_FIELD_CONFLICT",
+      "component": "agent-definition",
+      "status": 422,
+      "retry": "never",
+      "log": "info",
+      "agent": "Two fields of agent.yaml contradict each other{on_target}",
+      "next": "Make the fields agree as the message says (team needs dispatch in reach.actions, parent# views need extends, a locked entry cannot be off).",
+      "user": "这个 Agent 的设置前后矛盾。"
+    },
+    {
+      "code": "AGENT_REFERENCE_UNKNOWN",
+      "component": "agent-definition",
+      "status": 422,
+      "retry": "never",
+      "log": "info",
+      "agent": "agent.yaml names something that does not exist{on_target}",
+      "next": "Name an existing one: actions from the action catalog, views and events a space declares (space_op describe lists them), team members and extends from the platform definitions.",
+      "user": "这个 Agent 引用了不存在的东西。"
+    },
+    {
+      "code": "AGENT_SPACE_UNRESOLVED",
+      "component": "agent-definition",
+      "status": 422,
+      "retry": "never",
+      "log": "info",
+      "agent": "agent.yaml names a space the person does not have{on_target}",
+      "next": "Name a space the person has, as the problem lists them: own:<作品 title> with the 作品's exact title (survives a fork), wrk_<id> for one 作品, connection:<id> for a connection, or a role (work, conversation, self, memory.person …). Create the 作品 first (space_create) if it does not exist yet.",
+      "user": "这个 Agent 用到的作品或连接找不到了。"
+    },
+    {
+      "code": "AGENT_VIEW_UNBAKEABLE",
+      "component": "agent-definition",
+      "status": 422,
+      "retry": "never",
+      "log": "info",
+      "agent": "A view in attention.system or attention.session depends on something that changes during a session{on_target}",
+      "next": "Move the view into the include of a subscription on its change (attention.subscribe), so each notice carries it for the current state.",
+      "user": "这个 Agent 有一项内容不能固定在开头。"
+    },
+    {
+      "code": "AGENT_PROMPT_OVER_BUDGET",
+      "component": "agent-definition",
+      "status": 422,
+      "retry": "never",
+      "log": "info",
+      "agent": "The Agent's fixed prompt is over its size limit{on_target}",
+      "next": "Shorten the part named, or move reference material into knowledge/ or an experience repository it opens on demand. Nothing is cut: it does not run until it fits.",
+      "user": "这个 Agent 的说明太长了，精简一下再试。"
+    },
+    {
+      "code": "AGENT_DEFINITION_UNCOMPILABLE",
+      "component": "agent-definition",
+      "status": 422,
+      "retry": "never",
+      "log": "info",
+      "agent": "The Agent definition does not compile{on_target}",
+      "next": "Fix what the compiler names in agent.yaml, then check again.",
+      "user": "这个 Agent 的定义还不能用。"
+    },
+    {
+      "code": "AGENT_CHANNEL_UNFIT",
+      "component": "agent-definition",
+      "status": 422,
+      "retry": "never",
+      "log": "info",
+      "agent": "The Agent definition does not fit the channel it is published on{on_target}",
+      "next": "Fix what the message names (declare the channel in channels, add evals/injection.yaml for a public channel, set ask: never on actions that would ask first where nobody answers), or publish on another channel.",
+      "user": "这个 Agent 还不能发布到这个渠道。"
+    },
+    {
+      "code": "AGENT_EXTENDS_UNSUPPORTED",
+      "component": "agent-definition",
+      "status": 422,
+      "retry": "never",
+      "log": "info",
+      "agent": "agent.yaml extends something that cannot be extended{on_target}",
+      "next": "Extend a platform template (extends: platform/<id>), or copy (fork) the Agent you want to build on into your space.",
+      "user": "这个 Agent 只能基于平台模板。"
+    },
+    {
+      "code": "AGENT_BUILDER_OFF",
+      "component": "agent-builder",
+      "status": 404,
+      "retry": "never",
+      "log": "info",
+      "agent": "The Agent builder is not open for this person ({operation})",
+      "next": "Tell the person in one plain sentence that building their own Agents is not open for them yet.",
+      "user": "自己搭 Agent 还没对你开放。"
+    },
+    {
+      "code": "AGENT_BUILDER_UNAVAILABLE",
+      "component": "agent-builder",
+      "status": 503,
+      "retry": "transient",
+      "log": "warn",
+      "agent": "The Agent builder could not be reached for {operation}{on_target}",
+      "next": "Try once more in a few seconds. If it fails again, write the files with space_write instead and tell the person what could not be done.",
+      "user": "搭建 Agent 暂时连不上，稍后再试。"
+    },
+    {
+      "code": "AGENT_TRY_UNKNOWN",
+      "component": "agent-builder",
+      "status": 404,
+      "retry": "never",
+      "log": "info",
+      "agent": "{target} is not a test conversation this conversation started ({operation})",
+      "next": "Start a new one with agent_try ref and message, and continue it with the session that call returns.",
+      "user": "找不到这次试用的对话，重新试一次。"
+    },
+    {
+      "code": "AGENT_TRY_UNAVAILABLE",
+      "component": "agent-builder",
+      "status": 409,
+      "retry": "never",
+      "log": "warn",
+      "agent": "A test conversation could not be started from this conversation ({operation}{on_target})",
+      "next": "agent_try starts from a chat that runs on the person's own key. Tell the person to open a new conversation with the Agent instead (agent: { ref }) to try it.",
+      "user": "这里没法试用这个 Agent，请新开一个和它的对话试试。"
+    },
+    {
+      "code": "AGENT_BUILDER_FAULT",
+      "component": "agent-builder",
+      "status": 500,
+      "retry": "never",
+      "log": "error",
+      "agent": "The Agent builder failed while doing {operation}{on_target} (a fault in the platform, not in your call)",
+      "next": "Retrying will not help. Continue another way, and tell the person in one plain sentence what could not be done.",
+      "user": "搭建 Agent 出错了，已记录。"
+    },
+    {
+      "code": "CONNECTION_ENDPOINT_UNKNOWN",
+      "component": "connections",
+      "status": 404,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: no live connection endpoint here",
+      "next": "Check the endpoint URL in the connection's describe (it is made when a webhook connection is published, and stops when it is unpublished).",
+      "user": "这个连接地址不存在或已停用。"
+    },
+    {
+      "code": "CONNECTION_SIGNATURE_INVALID",
+      "component": "connections",
+      "status": 401,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: the item is not signed with the connection's signing secret (Standard Webhooks: webhook-id, webhook-timestamp, webhook-signature)",
+      "next": "Sign each POST with the signing secret shown when the connection was published (Standard Webhooks); if it was lost, replace the secret in 设置 → 密钥 and give the new one to the sender.",
+      "user": "签名不对，这条没有收下。"
+    },
+    {
+      "code": "CONNECTION_ITEM_TOO_LARGE",
+      "component": "connections",
+      "status": 413,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: the item is larger than the connection kind allows",
+      "next": "Send a smaller item: only the fields the connection maps.",
+      "user": "这条内容太大，没有收下。"
+    },
+    {
+      "code": "CONNECTION_INTAKE_LIMITED",
+      "component": "connections",
+      "status": 429,
+      "retry": "always",
+      "retryAfterSeconds": 60,
+      "log": "info",
+      "agent": "{operation}: more items than the connection's intake limit in its window",
+      "next": "Retry after the time given; nothing was written for this item.",
+      "user": "发来的太频繁了，稍后会再收。"
+    },
+    {
+      "code": "CONNECTION_ITEM_REFUSED",
+      "component": "connections",
+      "status": 422,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: the item could not be written into its target space (the target's declaration refused it); the connection's status names why",
+      "next": "Read the connection's status (describe) for the target's reason, fix the connection file's mapping or the space's declared event, and publish again.",
+      "user": "这条内容和目标空间对不上，没有写入。"
+    },
+    {
+      "code": "CONNECTION_WRITE_UNAVAILABLE",
+      "component": "connections",
+      "status": 503,
+      "retry": "always",
+      "retryAfterSeconds": 30,
+      "log": "warn",
+      "agent": "{operation}: the target space could not be written now",
+      "next": "Retry later with the same webhook-id: the item is written once.",
+      "user": "暂时没写进去，稍后重发会补上。"
+    },
+    {
+      "code": "CONNECTION_OP_UNKNOWN",
+      "component": "connections",
+      "status": 404,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}{on_target}: this conversation does not reach that connection op; the cause lists the ops it reaches",
+      "next": "Use one of the ops the cause lists. Connections a conversation reaches are fixed when it starts; do not retry the same call.",
+      "user": "这个连接现在用不了。"
+    },
+    {
+      "code": "CONNECTION_OP_INVALID",
+      "component": "connections",
+      "status": 422,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}{on_target}: the arguments do not fit the op's declared params; the cause names each one",
+      "next": "Fix the arguments the cause names and call again.",
+      "user": "发送内容不对，请检查后重试。"
+    },
+    {
+      "code": "CONNECTION_USE_REFUSED",
+      "component": "connections",
+      "status": 403,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}{on_target}: the connection's owner did not let this Agent use it (use.agents)",
+      "next": "Do not retry. Continue without it, and tell the person in one plain sentence that this Agent may not use that connection.",
+      "user": "这个 Agent 没有被允许使用这个连接。"
+    },
+    {
+      "code": "CONNECTION_ASK_UNAVAILABLE",
+      "component": "connections",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}{on_target}: the op asks the person first, and asking before a connection op is not built yet",
+      "next": "Do not retry. Tell the person in one plain sentence what you wanted to send and where; they can do it themselves or set the op to ask: never.",
+      "user": "这一步需要你先确认，暂时只能你自己来。"
+    },
+    {
+      "code": "CONNECTION_RATE_LIMITED",
+      "component": "connections",
+      "status": 429,
+      "retry": "always",
+      "retryAfterSeconds": 60,
+      "log": "info",
+      "agent": "{operation}{on_target}: the connection's rate for this op is used up in its window",
+      "next": "Wait for the time given before calling again, or send fewer messages: combine what you have into one.",
+      "user": "发得太频繁了，稍后再发。"
+    },
+    {
+      "code": "CONNECTION_SEND_UNAVAILABLE",
+      "component": "connections",
+      "status": 503,
+      "retry": "never",
+      "log": "warn",
+      "agent": "{operation}{on_target}: nothing can be sent there from here; the cause says what is missing",
+      "next": "Do not retry. Continue without sending, and tell the person in one plain sentence what is missing (the cause says it).",
+      "user": "这个渠道还发不出去。"
+    },
+    {
+      "code": "CONNECTION_SEND_FAILED",
+      "component": "connections",
+      "status": 502,
+      "retry": "upstream-status",
+      "log": "warn",
+      "agent": "{operation}{on_target}: the channel's sender refused or failed; its own answer is the cause",
+      "next": "If the cause is a busy or failing sender, try once more in a minute; otherwise fix what it names. Never send the same message more than twice.",
+      "user": "发送失败了，稍后再试。"
+    },
+    {
+      "code": "CONNECTION_UNAVAILABLE",
+      "component": "connections",
+      "status": 503,
+      "retry": "always",
+      "log": "warn",
+      "agent": "Connections could not be reached for {operation}{on_target}",
+      "next": "Try once more in a few seconds. If it fails again, continue another way and tell the person in one plain sentence what could not be done.",
+      "user": "连接暂时连不上，稍后再试。"
+    },
+    {
+      "code": "CONNECTION_FAULT",
+      "component": "connections",
+      "status": 500,
+      "retry": "never",
+      "log": "error",
+      "agent": "Connections failed while doing {operation}{on_target} (a fault in the platform, not in your call)",
+      "next": "Retrying will not help. Continue another way, and tell the person in one plain sentence what could not be done.",
+      "user": "连接出错了，已记录。"
+    },
+    {
+      "code": "WORK_MERGE_BUSY",
+      "component": "works",
+      "status": 409,
+      "retry": "always",
+      "retryAfterSeconds": 5,
+      "log": "warn",
+      "agent": "Another Control process is merging this 作品 right now; {operation}{on_target} waits behind it in the 作品's merge queue",
+      "next": "Try the merge once more in a few seconds; the earlier merge finishes on its own.",
+      "user": "作品正在合并别的修改，稍后再试。"
+    },
+    {
+      "code": "WORK_MERGE_FAILED",
+      "component": "works",
+      "status": 500,
+      "retry": "never",
+      "log": "error",
+      "agent": "The 作品 merge failed while doing {operation}{on_target}; the cause below is the failure the merge queue recorded",
+      "next": "Read the cause: fix what it names (a file the 作品 cannot hold, a conflict) and submit again, or tell the person in one plain sentence what could not be merged.",
+      "user": "合并没有成功，已记录。"
+    },
+    {
+      "code": "ADMIN_ACCESS_DENIED",
+      "component": "identity",
+      "status": 403,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation} is for administrators only, and this account is not one",
+      "next": "Sign in with an administrator account; otherwise this is not available.",
+      "user": "只有管理员可以这样操作。"
+    },
+    {
+      "code": "SPACE_EVENT_CONSUMER_UNKNOWN",
+      "component": "space-events",
+      "status": 409,
+      "retry": "never",
+      "log": "warn",
+      "agent": "No consumer of the Space Server's event log by that name runs in this Control for {operation}: {target}",
+      "next": "Replay it from a Control version that runs that consumer, or drop it with a reason if the consumer is gone for good.",
+      "user": "这个事件的处理方已经不在了。"
+    },
+    {
+      "code": "SPACE_EVENT_DEAD_LETTER_CLOSED",
+      "component": "space-events",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "The dead letter is no longer open for {operation}{on_target}",
+      "next": "List the open dead letters again; this one was already replayed or dropped.",
+      "user": "这条已经处理过了。"
+    },
+    {
+      "code": "SPACE_EVENT_DEAD_LETTER_UNKNOWN",
+      "component": "space-events",
+      "status": 404,
+      "retry": "never",
+      "log": "info",
+      "agent": "There is no dead letter{on_target} for {operation}",
+      "next": "List the dead letters and use an id from that list.",
+      "user": "找不到这条记录。"
+    },
+    {
+      "code": "SPACE_EVENT_DROP_REASON_REQUIRED",
+      "component": "space-events",
+      "status": 400,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}{on_target} needs a reason: a dropped event is never handled, so the reason is what stays on record",
+      "next": "Send {\"reason\": \"…\"} saying why the event need not be handled.",
+      "user": "请写明为什么不再处理。"
+    },
+    {
+      "code": "SPACE_EVENT_REPLAY_FAILED",
+      "component": "space-events",
+      "status": 502,
+      "retry": "transient",
+      "log": "warn",
+      "agent": "The consumer's handler failed again for {operation}: {target}; the dead letter stays open with this cause",
+      "next": "Fix what the cause names (or wait until the part it names is back), then replay again; drop it with a reason only if it never needs handling.",
+      "user": "重新处理又失败了，记录还在。"
+    },
+    {
+      "code": "NOT_FOUND",
+      "component": "hostd",
+      "status": 404,
+      "retry": "never",
+      "log": "info",
+      "agent": "A path in {operation}{on_target} does not exist on the person's computer",
+      "next": "Check the path (list the folder, or stat the path) and use one that exists; paths are relative to the target folder unless absolute. Writing a file creates its missing parent folders.",
+      "user": "找不到这个文件或文件夹。"
+    },
+    {
+      "code": "NOT_A_DIRECTORY",
+      "component": "hostd",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "Part of the path in {operation}{on_target} is a file, not a folder, on the person's computer",
+      "next": "Use another path, or deal with that file first.",
+      "user": "路径中间有一段是文件，不是文件夹。"
+    },
+    {
+      "code": "IS_A_DIRECTORY",
+      "component": "hostd",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}{on_target} names a folder on the person's computer where a file is needed",
+      "next": "Use a file name inside that folder instead.",
+      "user": "这里是文件夹，不能当文件用。"
+    },
+    {
+      "code": "PERMISSION_DENIED",
+      "component": "hostd",
+      "status": 403,
+      "retry": "never",
+      "log": "info",
+      "agent": "The person's computer refused to write for {operation}{on_target}: in folder mode only the linked folders are writable, or the file's own permissions forbid it",
+      "next": "Do not retry unchanged: write inside the linked folders (the cause lists them); if it is refused there too, the file's own permissions block it, so tell the person which file.",
+      "user": "电脑拒绝了这次写入：只能写链接的文件夹。"
+    },
+    {
+      "code": "NO_SPACE",
+      "component": "hostd",
+      "status": 507,
+      "retry": "never",
+      "log": "warn",
+      "agent": "The disk or quota of the person's computer is full, so {operation}{on_target} could not write",
+      "next": "Tell the person to free space on that computer (host__out_status shows what the output folder holds); do not retry until they have.",
+      "user": "电脑磁盘满了，请先腾出一些空间。"
+    },
+    {
+      "code": "IO_BUSY",
+      "component": "hostd",
+      "status": 503,
+      "retry": "always",
+      "retryAfterSeconds": 5,
+      "log": "info",
+      "agent": "A file on the person's computer was busy, or the file operation timed out, for {operation}{on_target}",
+      "next": "Try once more in a few seconds.",
+      "user": "电脑上的文件正忙，稍后再试。"
+    },
+    {
+      "code": "IO_ERROR",
+      "component": "hostd",
+      "status": 500,
+      "retry": "never",
+      "log": "warn",
+      "agent": "The person's computer failed a file operation for {operation}{on_target} (the operating-system error is in the cause)",
+      "next": "Retrying will not help: tell the person the cause in one plain sentence.",
+      "user": "电脑上的文件操作出错了。"
+    },
+    {
+      "code": "OUTSIDE_FOLDER",
+      "component": "hostd",
+      "status": 403,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}{on_target} reaches outside the linked folders on the person's computer (or targets a linked folder itself)",
+      "next": "Use paths inside the linked folders (remote_hosts lists them); if another folder is needed, ask the person to link it with `agentrouter link`. Do not rephrase the call to get around it.",
+      "user": "这个路径不在链接的文件夹里。"
+    },
+    {
+      "code": "NOT_EMPTY",
+      "component": "hostd",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}{on_target} removes only empty folders, and this one still holds files",
+      "next": "Remove the files the cause names first, then the folder.",
+      "user": "文件夹里还有东西。"
+    },
+    {
+      "code": "EXISTS",
+      "component": "hostd",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}{on_target} would create something that already exists on the person's computer",
+      "next": "Read it first, then change it with the version it has (the cause carries it).",
+      "user": "已经有这个文件了。"
+    },
+    {
+      "code": "STALE_VERSION",
+      "component": "hostd",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "The file changed or was removed on the person's computer since you read it, so {operation}{on_target} left it as it is",
+      "next": "Read it again and redo the change on its current content and version.",
+      "user": "文件已经被改过，这一步没有执行。"
+    },
+    {
+      "code": "BUSY",
+      "component": "hostd",
+      "status": 429,
+      "retry": "never",
+      "log": "info",
+      "agent": "The person's computer is at its limit of local tools or running jobs for {operation}{on_target}",
+      "next": "Wait for a running job to end, or stop one you no longer need (a job: env_job; a local tool: link__server_remove), then call again.",
+      "user": "电脑上同时运行的工具已经满了。"
+    },
+    {
+      "code": "CANCELLED",
+      "component": "hostd",
+      "status": 499,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}{on_target} was cancelled before it finished",
+      "next": "Continue only if it is still needed; then send it again.",
+      "user": "这一步被取消了。"
+    },
+    {
+      "code": "DENIED_BY_USER",
+      "component": "hostd",
+      "status": 403,
+      "retry": "never",
+      "log": "info",
+      "agent": "The person declined {operation}{on_target} on their computer",
+      "next": "Do not retry it or rephrase it to get around the refusal. Ask the person why, or what they want instead.",
+      "user": "你在电脑上拒绝了这一步。"
+    },
+    {
+      "code": "DENIED",
+      "component": "hostd",
+      "status": 403,
+      "retry": "never",
+      "log": "info",
+      "agent": "The person's computer refused {operation}{on_target}: its access level or linked folders do not allow it",
+      "next": "Do it inside the linked folders and within the access level; otherwise ask the person to change that on the computer. Do not rephrase the call to get around it.",
+      "user": "电脑拒绝了这一步。"
+    },
+    {
+      "code": "ENV_RESERVED",
+      "component": "hostd",
+      "status": 400,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}{on_target} sets an environment variable that belongs to the person's computer (the cause names it); the cloud cannot set it",
+      "next": "Leave that variable out and call again.",
+      "user": "这个环境变量只能在电脑上设置。"
+    },
+    {
+      "code": "FOLDER_INVALID",
+      "component": "hostd",
+      "status": 400,
+      "retry": "never",
+      "log": "info",
+      "agent": "The folder given to {operation}{on_target} is not an existing project folder on the person's computer",
+      "next": "Pass a specific project folder that exists there.",
+      "user": "这个文件夹不可用，换一个具体的项目文件夹。"
+    },
+    {
+      "code": "LIMITS_INVALID",
+      "component": "hostd",
+      "status": 400,
+      "retry": "never",
+      "log": "info",
+      "agent": "The resource limits given to {operation}{on_target} are not valid (the cause names the value)",
+      "next": "Fix the values as link__limits' input schema describes (null means no limit), then set them again.",
+      "user": "资源上限的数值不对。"
+    },
+    {
+      "code": "PACKAGE_NEEDED",
+      "component": "hostd",
+      "status": 424,
+      "retry": "never",
+      "log": "info",
+      "agent": "The person's computer does not hold the package that {operation}{on_target} needs",
+      "next": "Send the package with link__package_put first, then call link__server_add again.",
+      "user": "电脑上还没有这个工具包。"
+    },
+    {
+      "code": "MCP_PACKAGE_NEEDED",
+      "component": "hostd",
+      "status": 424,
+      "retry": "never",
+      "log": "info",
+      "agent": "A local tool package that {operation}{on_target} needs is not on the person's computer yet",
+      "next": "Install it the way the cause says (link__package_put), then call again.",
+      "user": "电脑上还没有这个本机工具。"
+    },
+    {
+      "code": "MCP_DIGEST_MISMATCH",
+      "component": "hostd",
+      "status": 409,
+      "retry": "never",
+      "log": "warn",
+      "agent": "The local tool package for {operation}{on_target} is not the one the catalog reviewed (its checksum differs), so the person's computer did not install it",
+      "next": "Do not install it another way. Tell the person the package could not be verified; updating AgentRouter on that computer refreshes its catalog.",
+      "user": "工具包校验没有通过，没有安装。"
+    },
+    {
+      "code": "REPLAYED",
+      "component": "hostd",
+      "status": 409,
+      "retry": "never",
+      "log": "warn",
+      "agent": "The signed request for {operation}{on_target} was already used, so the person's computer refused it",
+      "next": "Make a new call; a signed request is never sent twice.",
+      "user": "这个请求已经用过了。"
+    },
+    {
+      "code": "REQUEST_EXPIRED",
+      "component": "hostd",
+      "status": 408,
+      "retry": "always",
+      "log": "info",
+      "agent": "The signed request for {operation}{on_target} was out of its time window when the person's computer checked it (expired, or dated ahead; its clock may be off)",
+      "next": "Send the call once more; if it keeps failing, ask the person to check that computer's clock.",
+      "user": "请求过期了，请再试一次。"
+    },
+    {
+      "code": "SIGNATURE_INVALID",
+      "component": "hostd",
+      "status": 401,
+      "retry": "never",
+      "log": "warn",
+      "agent": "The person's computer could not verify the signature on the request for {operation}{on_target}",
+      "next": "Do not resend unchanged; ask the person to run `agentrouter link` on that computer again so it pairs afresh.",
+      "user": "请求校验没有通过。"
+    },
+    {
+      "code": "WRONG_LINK",
+      "component": "hostd",
+      "status": 409,
+      "retry": "never",
+      "log": "warn",
+      "agent": "The request for {operation}{on_target} was signed for another link of the person's computer (it reconnected)",
+      "next": "Call remote_hosts again and use the target it lists now.",
+      "user": "请求发到了旧的连接。"
+    },
+    {
+      "code": "RUNTIME_MISSING",
+      "component": "hostd",
+      "status": 424,
+      "retry": "never",
+      "log": "info",
+      "agent": "A program a local tool needs for {operation}{on_target} is not installed on the person's computer (the cause names it)",
+      "next": "Tell the person which program to install (or to run `agentrouter sandbox setup`), then add the tool again.",
+      "user": "电脑上缺少这个工具需要的程序。"
+    },
+    {
+      "code": "SERVER_CRASHED",
+      "component": "hostd",
+      "status": 502,
+      "retry": "never",
+      "log": "warn",
+      "agent": "A local tool on the person's computer exited repeatedly during {operation}{on_target}",
+      "next": "Read its log (the cause, or link__server_log), fix what it names, then add it again; resending the call will not help.",
+      "user": "电脑上的本机工具反复退出了。"
+    },
+    {
+      "code": "SERVER_NOT_RUNNING",
+      "component": "hostd",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "The local tool that {operation}{on_target} needs is not running on the person's computer",
+      "next": "Start it again with link__server_add (link__servers lists what runs), then call.",
+      "user": "这个本机工具没有在运行。"
+    },
+    {
+      "code": "SERVER_STARTING",
+      "component": "hostd",
+      "status": 503,
+      "retry": "always",
+      "retryAfterSeconds": 5,
+      "log": "info",
+      "agent": "The local tool for {operation}{on_target} is still starting on the person's computer",
+      "next": "Try once more in a few seconds.",
+      "user": "本机工具还在启动，稍等再试。"
+    },
+    {
+      "code": "SESSION_UNKNOWN",
+      "component": "hostd",
+      "status": 410,
+      "retry": "never",
+      "log": "info",
+      "agent": "The link session for {operation}{on_target} is no longer on the person's computer (the link was down too long, or the session ended)",
+      "next": "Start a new MCP session on that link (initialize again), then call.",
+      "user": "这次连接已经结束了。"
+    },
+    {
+      "code": "TIMEOUT",
+      "component": "hostd",
+      "status": 504,
+      "retry": "never",
+      "log": "info",
+      "agent": "A local tool on the person's computer did not answer {operation}{on_target} in time, so the call was cancelled",
+      "next": "Do not resend unchanged: use a faster approach, split the work, or run long commands in the background.",
+      "user": "电脑上的工具没有及时答复。"
+    },
+    {
+      "code": "TOO_LARGE",
+      "component": "hostd",
+      "status": 413,
+      "retry": "never",
+      "log": "info",
+      "agent": "The content of {operation}{on_target} is larger than the link to the person's computer carries",
+      "next": "Read it in parts (offset and limit), narrow the search (path or glob), or send smaller pieces.",
+      "user": "内容太大了。"
+    },
+    {
+      "code": "UNKNOWN_TOOL",
+      "component": "hostd",
+      "status": 404,
+      "retry": "never",
+      "log": "info",
+      "agent": "The person's computer has no tool by the name {operation} used{on_target}",
+      "next": "Use a tool from the current tool list; list it again, the computer's tools may have changed.",
+      "user": "电脑上没有这个工具。"
+    },
+    {
+      "code": "UNSUPPORTED",
+      "component": "hostd",
+      "status": 501,
+      "retry": "never",
+      "log": "info",
+      "agent": "A local tool asked for an interaction during {operation}{on_target} that the person's computer does not support yet",
+      "next": "Get the result another way; updating AgentRouter on that computer may add it.",
+      "user": "电脑上的 AgentRouter 还不支持这种操作。"
+    },
+    {
+      "code": "PATH_INVALID",
+      "component": "hostd",
+      "status": 400,
+      "retry": "never",
+      "log": "info",
+      "agent": "The path in {operation}{on_target} is not usable on the person's computer (escapes, device names, streams and UNC paths are refused)",
+      "next": "Give a path inside the target folder (relative) or an absolute path on that computer.",
+      "user": "路径不对。"
+    },
+    {
+      "code": "EXEC_FAILED",
+      "component": "hostd",
+      "status": 500,
+      "retry": "never",
+      "log": "warn",
+      "agent": "The person's computer could not start the command for {operation}{on_target} (the cause says why)",
+      "next": "Fix what the cause names (the shell, the working folder); do not resend unchanged.",
+      "user": "命令没能启动。"
+    },
+    {
+      "code": "LOCAL_SESSION_BUSY",
+      "component": "hostd",
+      "status": 409,
+      "retry": "always",
+      "retryAfterSeconds": 10,
+      "log": "info",
+      "agent": "Another local session is running a command in this project on the person's computer, so {operation}{on_target} waited and gave up",
+      "next": "Wait a little and try once more; if it stays busy, ask the person whether another session is still running there.",
+      "user": "这个项目里正在运行另一个命令，稍后再试。"
+    },
+    {
+      "code": "LOCAL_AGENT_REGISTRY_FAILED",
+      "component": "hostd",
+      "status": 500,
+      "retry": "never",
+      "log": "error",
+      "agent": "The person's computer could not read or write its local Agent registry for {operation}{on_target}",
+      "next": "Retrying will not help: tell the person the cause (a folder that could not be created or read) in one plain sentence.",
+      "user": "电脑上的本地 Agent 登记出错了。"
+    },
+    {
+      "code": "SANDBOX_UNAVAILABLE",
+      "component": "hostd",
+      "status": 424,
+      "retry": "never",
+      "log": "info",
+      "agent": "The sandbox on the person's computer is not ready for {operation}{on_target}",
+      "next": "Ask the person to run `agentrouter sandbox setup` on that computer, then call again.",
+      "user": "电脑的隔离环境还没准备好：在电脑上运行 agentrouter sandbox setup。"
+    },
+    {
+      "code": "NETWORK",
+      "component": "hostd",
+      "status": 503,
+      "retry": "always",
+      "log": "warn",
+      "agent": "The AgentRouter app on the person's computer could not reach AgentRouter for {operation}{on_target}",
+      "next": "Try once more in a few seconds; if it keeps failing, that computer's network or proxy is the cause.",
+      "user": "电脑连不上 AgentRouter，请检查网络。"
+    },
+    {
+      "code": "BAD_ANSWER",
+      "component": "hostd",
+      "status": 502,
+      "retry": "never",
+      "log": "warn",
+      "agent": "AgentRouter's answer to the person's computer for {operation}{on_target} was not what the app expected",
+      "next": "Retrying will not help; updating AgentRouter on that computer may fix it.",
+      "user": "电脑上的 AgentRouter 收到了无法识别的答复。"
+    },
+    {
+      "code": "WORKSPACE_INVALID",
+      "component": "hostd",
+      "status": 400,
+      "retry": "never",
+      "log": "info",
+      "agent": "The arguments of {operation}{on_target} are not what the workspace tool takes (the cause names which)",
+      "next": "Fix the argument the cause names, then call once more.",
+      "user": "参数不对，这一步没有执行。"
+    },
+    {
+      "code": "WORKSPACE_CWD_INVALID",
+      "component": "hostd",
+      "status": 400,
+      "retry": "never",
+      "log": "info",
+      "agent": "The working folder of {operation}{on_target} is not a project or worktree folder registered in the workspace",
+      "next": "Use a folder that workspace_ensure or workspace_status lists.",
+      "user": "这个目录不是工作区里的项目。"
+    },
+    {
+      "code": "WORKSPACE_NO_CWD",
+      "component": "hostd",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}{on_target} has no folder to run in: this session has no worktree yet",
+      "next": "Create the session's worktree first (workspace_ensure), then call again.",
+      "user": "这个会话还没有工作目录。"
+    },
+    {
+      "code": "WORKSPACE_SESSION_INVALID",
+      "component": "hostd",
+      "status": 400,
+      "retry": "never",
+      "log": "warn",
+      "agent": "The workspace service on the person's computer could not tell which session called {operation}{on_target}",
+      "next": "Retrying will not help (a setup fault): tell the person that updating or relinking AgentRouter on that computer may fix it.",
+      "user": "工作区不知道是哪个会话在调用。"
+    },
+    {
+      "code": "WORKSPACE_FAILED",
+      "component": "hostd",
+      "status": 500,
+      "retry": "never",
+      "log": "error",
+      "agent": "The person's computer could not create or write its workspace data for {operation}{on_target}",
+      "next": "Retrying will not help: tell the person the cause (a folder that could not be created) in one plain sentence.",
+      "user": "电脑上的工作区出错了。"
+    },
+    {
+      "code": "WORKSPACE_REGISTRY_INVALID",
+      "component": "hostd",
+      "status": 500,
+      "retry": "never",
+      "log": "error",
+      "agent": "The workspace registry on the person's computer cannot be read for {operation}{on_target}",
+      "next": "Retrying will not help: tell the person the file and the cause the error names; they repair it on that computer.",
+      "user": "工作区登记文件读不出来。"
+    },
+    {
+      "code": "WORKSPACE_LEDGER_INVALID",
+      "component": "hostd",
+      "status": 500,
+      "retry": "never",
+      "log": "error",
+      "agent": "The worktree ledger on the person's computer cannot be read for {operation}{on_target}",
+      "next": "Retrying will not help: tell the person the file and the cause the error names; they repair it on that computer.",
+      "user": "worktree 登记文件读不出来。"
+    },
+    {
+      "code": "WORKSPACE_ROOT_CONFLICT",
+      "component": "hostd",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}{on_target} asks for another workspace root, but the person's computer already has one that holds projects",
+      "next": "Use the existing workspace root the cause names, or ask the person to move those projects first.",
+      "user": "工作区的位置已经定了。"
+    },
+    {
+      "code": "WORKSPACE_PROJECT_NOT_FOUND",
+      "component": "hostd",
+      "status": 404,
+      "retry": "never",
+      "log": "info",
+      "agent": "The workspace on the person's computer has no project named in {operation}{on_target}",
+      "next": "Create it with workspace_ensure first, then call again.",
+      "user": "工作区里没有这个项目。"
+    },
+    {
+      "code": "WORKSPACE_NO_WORKTREE",
+      "component": "hostd",
+      "status": 404,
+      "retry": "never",
+      "log": "info",
+      "agent": "The session named in {operation}{on_target} has no worktree on the person's computer yet",
+      "next": "Create one with workspace_ensure first.",
+      "user": "这个会话还没有 worktree。"
+    },
+    {
+      "code": "WORKSPACE_WORKTREE_CONFLICT",
+      "component": "hostd",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "The session in {operation}{on_target} already belongs to another project's worktree",
+      "next": "Keep using that worktree, or use a new session for the other project.",
+      "user": "这个会话已经属于另一个项目。"
+    },
+    {
+      "code": "WORKSPACE_WORKTREE_REMOVE_FAILED",
+      "component": "hostd",
+      "status": 500,
+      "retry": "never",
+      "log": "warn",
+      "agent": "The person's computer could not remove the worktree folder in {operation}{on_target}",
+      "next": "Tell the person which folder could not be removed (a program may hold it open); try again after they close it.",
+      "user": "worktree 文件夹删不掉。"
+    },
+    {
+      "code": "WORKSPACE_GIT_FAILED",
+      "component": "hostd",
+      "status": 502,
+      "retry": "never",
+      "log": "warn",
+      "agent": "A git command failed on the person's computer during {operation}{on_target} (the cause has git's own words)",
+      "next": "Fix what git says (a conflict, a missing branch) and call again; do not resend unchanged.",
+      "user": "git 命令出错了。"
+    },
+    {
+      "code": "WORKSPACE_GIT_MISSING",
+      "component": "hostd",
+      "status": 424,
+      "retry": "never",
+      "log": "info",
+      "agent": "git is not installed on the person's computer, and {operation}{on_target} needs it",
+      "next": "Ask the person to install git on that computer, then call again.",
+      "user": "电脑上没有安装 git。"
+    },
+    {
+      "code": "DEPLOY_TARGET_UNKNOWN",
+      "component": "hostd",
+      "status": 404,
+      "retry": "never",
+      "log": "info",
+      "agent": "No deploy target by that name is registered on the person's computer for {operation}{on_target}",
+      "next": "Use a registered target, or ask the person to register this one on that computer.",
+      "user": "没有登记这个部署目标。"
+    },
+    {
+      "code": "DEPLOY_TARGET_INVALID",
+      "component": "hostd",
+      "status": 500,
+      "retry": "never",
+      "log": "warn",
+      "agent": "The deploy target registry on the person's computer cannot be read, or the target in {operation}{on_target} is not valid",
+      "next": "Tell the person the cause; they fix the registration on that computer.",
+      "user": "部署目标的登记有问题。"
+    },
+    {
+      "code": "DEPLOY_TARGET_FAILED",
+      "component": "hostd",
+      "status": 500,
+      "retry": "never",
+      "log": "error",
+      "agent": "The person's computer could not save its deploy target data for {operation}{on_target}",
+      "next": "Retrying will not help: tell the person the cause in one plain sentence.",
+      "user": "部署目标没能保存。"
+    },
+    {
+      "code": "DEPLOY_TARGET_OWNER_ONLY",
+      "component": "hostd",
+      "status": 403,
+      "retry": "never",
+      "log": "info",
+      "agent": "Only the computer's owner, at full access, registers a deploy target; {operation}{on_target} came at a lower access level",
+      "next": "Ask the person to register it on that computer, or to give this link full access.",
+      "user": "只有电脑的主人能登记部署目标。"
+    },
+    {
+      "code": "DEPLOY_ARTIFACT_INVALID",
+      "component": "hostd",
+      "status": 400,
+      "retry": "never",
+      "log": "info",
+      "agent": "An artifact of {operation}{on_target} cannot be opened or is not valid (the cause names it)",
+      "next": "Build or fix the artifact the cause names, then deploy again.",
+      "user": "要部署的文件有问题。"
+    },
+    {
+      "code": "DEPLOY_DEST_INVALID",
+      "component": "hostd",
+      "status": 400,
+      "retry": "never",
+      "log": "info",
+      "agent": "A destination in {operation}{on_target} is not a relative path inside the deploy target",
+      "next": "Give each dest as a relative path inside the target.",
+      "user": "部署位置不对。"
+    },
+    {
+      "code": "DEPLOY_NOT_FOUND",
+      "component": "hostd",
+      "status": 404,
+      "retry": "never",
+      "log": "info",
+      "agent": "No deployment with that id exists on the person's computer for {operation}{on_target}",
+      "next": "Use an id from the deployments that computer lists.",
+      "user": "找不到这次部署。"
+    },
+    {
+      "code": "DEPLOY_ALREADY_ROLLED_BACK",
+      "component": "hostd",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "The deployment in {operation}{on_target} was already rolled back",
+      "next": "Nothing to undo; deploy again if the change is still wanted.",
+      "user": "这次部署已经回滚过了。"
+    },
+    {
+      "code": "DEPLOY_BACKUP_FAILED",
+      "component": "hostd",
+      "status": 500,
+      "retry": "never",
+      "log": "error",
+      "agent": "The backup taken before {operation}{on_target} did not verify, so nothing was replaced",
+      "next": "Tell the person the file the cause names; retrying will not help until it is fixed.",
+      "user": "备份没有通过校验，没有部署。"
+    },
+    {
+      "code": "DEPLOY_ROLLBACK_FAILED",
+      "component": "hostd",
+      "status": 500,
+      "retry": "never",
+      "log": "error",
+      "agent": "Rolling back {operation}{on_target} did not restore the files exactly (the cause names which)",
+      "next": "Tell the person right away which files differ; they check that target folder by hand.",
+      "user": "回滚没有完全恢复，需要检查。"
+    },
+    {
+      "code": "DEPLOY_FAILED",
+      "component": "hostd",
+      "status": 500,
+      "retry": "never",
+      "log": "error",
+      "agent": "The person's computer could not complete {operation}{on_target} (the cause names the step)",
+      "next": "Retrying will not help until the cause is fixed: tell the person in one plain sentence.",
+      "user": "部署没有完成。"
+    },
+    {
+      "code": "PORT_DIAL_FAILED",
+      "component": "hostd",
+      "status": 502,
+      "retry": "always",
+      "log": "info",
+      "agent": "The person's computer could not open the stream back to the gateway for {operation}{on_target}",
+      "next": "Try once more; if it fails again, check that the computer is still online (remote_hosts).",
+      "user": "预览连接没有打开，稍后再试。"
+    },
+    {
+      "code": "DEVICE_OUTDATED",
+      "component": "host-link",
+      "status": 426,
+      "retry": "never",
+      "log": "info",
+      "agent": "The AgentRouter app on the person's computer is too old for {operation}{on_target}",
+      "next": "Ask the person to update it (run `npx @agentrouter-top/cli@latest link <folder>` again, or install the new app); until then use what that computer still offers.",
+      "user": "电脑上的 AgentRouter 版本太旧，请更新。"
+    },
+    {
+      "code": "DEVICE_REVOKED",
+      "component": "host-link",
+      "status": 401,
+      "retry": "never",
+      "log": "info",
+      "agent": "The person's computer was unlinked (its device key was revoked), so {operation}{on_target} cannot reach it",
+      "next": "Ask the person to link that computer again (`agentrouter link`).",
+      "user": "这台电脑已经取消链接，需要重新链接。"
+    },
+    {
+      "code": "LINK_DISABLED",
+      "component": "host-link",
+      "status": 403,
+      "retry": "never",
+      "log": "info",
+      "agent": "Linking computers is turned off here, so {operation}{on_target} cannot use the person's computer",
+      "next": "Continue in the cloud; tell the person in one plain sentence if they wanted their computer.",
+      "user": "电脑链接已经关闭。"
+    },
+    {
+      "code": "SANDBOX_REQUIRED",
+      "component": "host-link",
+      "status": 403,
+      "retry": "never",
+      "log": "info",
+      "agent": "The gateway requires a sandboxed link for {operation}{on_target}, and the person's computer has no working sandbox",
+      "next": "Ask the person to run `agentrouter sandbox setup` on that computer, then link again.",
+      "user": "需要先在电脑上准备隔离环境。"
+    },
+    {
+      "code": "GATEWAY_NOT_ALLOWED",
+      "component": "host-link",
+      "status": 403,
+      "retry": "never",
+      "log": "warn",
+      "agent": "The person's computer refused to connect to this gateway address (not on its allowed list) for {operation}{on_target}",
+      "next": "Tell the person the address the cause names; they link with the official AgentRouter address.",
+      "user": "电脑拒绝连接这个地址。"
     }
   ]
 }
