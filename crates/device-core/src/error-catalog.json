@@ -1,5 +1,5 @@
 {
-  "source": "agentrouter-cloud@d59c22cc1e6194479188284553b179b3f71f2812",
+  "source": "agentrouter-cloud@8243fe8994b287d39e16108029a6e61b4a7992de",
   "schema": "agentrouter.errors/v1",
   "about": "The one error catalog (#2449; owner 2026-10-21 「还有，错误那一块，是不是应该有一种统一的方式？我不想错误都散落在各处」). Adding an error = adding an entry here, then `node scripts/sync-error-catalog.mjs`. README.md has the rules.",
   "errors": [
@@ -521,6 +521,26 @@
       "user": "项目服务暂时连不上，稍后再试。"
     },
     {
+      "code": "COPY_SYNC_UNAVAILABLE",
+      "component": "control",
+      "status": 503,
+      "retry": "transient",
+      "log": "warn",
+      "agent": "Control cannot sync the session's 作品 copy now for {operation}{on_target}",
+      "next": "Go on with the files in your environment; they may lag behind your view until a later sync. If a file you need is missing there, read it through your view instead.",
+      "user": "作品同步暂时不可用，稍后会再同步。"
+    },
+    {
+      "code": "COPY_SYNC_INVALID",
+      "component": "control",
+      "status": 400,
+      "retry": "never",
+      "log": "warn",
+      "agent": "A sync of the session's 作品 copy was asked wrongly for {operation}{on_target}",
+      "next": "This is a fault of the runner, not of your work: go on; the files in your environment may lag behind your view until the next turn.",
+      "user": "作品同步出错了，下一轮会再同步。"
+    },
+    {
       "code": "VIEW_UNAVAILABLE",
       "component": "space-server",
       "status": 503,
@@ -904,6 +924,16 @@
       "user": "这个 Agent 还没发布。"
     },
     {
+      "code": "AGENT_NOT_SHARED",
+      "component": "agent-registry",
+      "status": 404,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: {target} is not an Agent its author shares at that version (no active share link, someone else's private space, or a version they never published)",
+      "next": "Install from the author's current share link (agent_install from: <link>), which takes the version they publish now; or ask them to share or publish it.",
+      "user": "这个 Agent 没有被分享，或者链接已经失效。"
+    },
+    {
       "code": "AGENT_NO_EARLIER_VERSION",
       "component": "agent-registry",
       "status": 409,
@@ -922,6 +952,16 @@
       "agent": "{operation}: the Agent id {target} already runs another folder",
       "next": "Unpublish the other folder on its channels first, or give this folder another id in its agent.yaml.",
       "user": "这个 Agent 名字已经被另一个 Agent 用了。"
+    },
+    {
+      "code": "AGENT_INSTALL_SPACES_UNAVAILABLE",
+      "component": "agent-registry",
+      "status": 503,
+      "retry": "transient",
+      "log": "warn",
+      "agent": "{operation}: the install's own memory space and 经验仓库 ({target}) could not be made (the cause names the store and why)",
+      "next": "Try once more in a few seconds; making them is idempotent, so a retry never makes a second pair. If it fails again, report the cause to the person: the Agent is published but cannot start a conversation until its own spaces exist.",
+      "user": "这个 Agent 自己的记忆空间还没建好，稍后再试。"
     },
     {
       "code": "AGENT_SPACE_UNSUPPORTED",
@@ -1599,6 +1639,16 @@
       "user": "工具包校验没有通过，没有安装。"
     },
     {
+      "code": "MCP_INSTALL_FAILED",
+      "component": "hostd",
+      "status": 502,
+      "retry": "transient",
+      "log": "warn",
+      "agent": "The person's computer could not install the locked packages of the local tool for {operation}{on_target} from any package source (the cause names every source tried and what it answered)",
+      "next": "Try once more in a minute. If it fails again, tell the person their computer could not reach the package sources the cause names (network, proxy or firewall); do not install the tool another way.",
+      "user": "本机工具没装上，电脑连不上软件源。"
+    },
+    {
       "code": "REPLAYED",
       "component": "hostd",
       "status": 409,
@@ -2190,6 +2240,258 @@
       "agent": "The computer may not write {target}: a host writes only the spaces whose runtime it runs ({operation})",
       "next": "Place the space's runtime on that computer (its requires.host), or write the space from where its runtime runs.",
       "user": "这台电脑不能写入这个空间，相关事件已跳过。"
+    },
+    {
+      "code": "FEED_INVALID",
+      "component": "hostd",
+      "status": 400,
+      "retry": "never",
+      "log": "warn",
+      "agent": "The feeds sent to that computer for {target} are not ones its feed runner can run ({operation})",
+      "next": "Fix what the message names in the space's feeds (space.yaml); Control sends the checked definition again.",
+      "user": "这个空间的数据收集设置有问题，暂时没有启动。"
+    },
+    {
+      "code": "FEED_SERVER_NOT_READY",
+      "component": "hostd",
+      "status": 503,
+      "retry": "transient",
+      "retryAfterSeconds": 30,
+      "log": "info",
+      "agent": "The MCP server feed {target} calls is not running on that computer yet ({operation})",
+      "next": "Nothing to do: the feed starts once the space's runtime is running there (its status view says so).",
+      "user": "这台电脑上的工具还在启动，数据收集稍后开始。"
+    },
+    {
+      "code": "FEED_TOOL_FAILED",
+      "component": "hostd",
+      "status": 502,
+      "retry": "transient",
+      "log": "warn",
+      "agent": "Feed {target} could not read its tool on that computer ({operation}); the tool's own error is attached as the cause",
+      "next": "The feed tries again with growing waits. If it keeps failing, read the cause and the server's log (link__server_logs) on that computer.",
+      "user": "数据收集暂时失败，会自动重试。"
+    },
+    {
+      "code": "FEED_BACKING_OFF",
+      "component": "hostd",
+      "status": 429,
+      "retry": "always",
+      "retryAfterSeconds": 1800,
+      "log": "info",
+      "agent": "Feed {target} paused: its tool answered a code the space declared as back off ({operation})",
+      "next": "Nothing to do: the feed resumes by itself after the declared wait (its status names until when).",
+      "user": "对方平台限流，数据收集暂停一会儿，稍后自动继续。"
+    },
+    {
+      "code": "FEED_OUTPUT_UNSTRUCTURED",
+      "component": "hostd",
+      "status": 422,
+      "retry": "never",
+      "log": "warn",
+      "agent": "Feed {target}: its tool returned no structured result and no JSON its declared extract rule finds ({operation})",
+      "next": "Use a tool that returns structuredContent, or declare extract: { json: \"$.path\" } on the feed for JSON inside a text result; a tool that returns only prose is not a feed (an Agent reads it instead).",
+      "user": "这个工具返回的内容没法自动收集。"
+    },
+    {
+      "code": "FEED_ITEMS_NOT_A_LIST",
+      "component": "hostd",
+      "status": 422,
+      "retry": "never",
+      "log": "warn",
+      "agent": "Feed {target}: the result at its items path is not a list ({operation})",
+      "next": "Set the feed's items (or extract.json) to the path of the list; the message names the lists the result has.",
+      "user": "这个工具返回的内容没法自动收集。"
+    },
+    {
+      "code": "FEED_ITEM_NO_KEY",
+      "component": "hostd",
+      "status": 422,
+      "retry": "never",
+      "log": "warn",
+      "agent": "Feed {target}: items without the declared key field were skipped ({operation})",
+      "next": "Set the feed's key to a field every item has (the message names the fields the items carry).",
+      "user": "有些条目缺少编号，已跳过。"
+    },
+    {
+      "code": "FEED_TOOL_UNKNOWN",
+      "component": "control",
+      "status": 400,
+      "retry": "never",
+      "log": "info",
+      "agent": "Feed {target} names a tool the space's program does not offer ({operation})",
+      "next": "Use one of the tools the message lists (the pinned catalog entry's tools), or pin the catalog version that has it.",
+      "user": "这个空间的数据收集设置有问题。"
+    },
+    {
+      "code": "FEED_OUTPUT_UNDECLARED",
+      "component": "control",
+      "status": 400,
+      "retry": "never",
+      "log": "info",
+      "agent": "Feed {target}: its tool declares no structured output and the feed declares no extract rule ({operation})",
+      "next": "Pick a tool with an outputSchema, or add extract: { json: \"$.path\" } when the tool returns JSON in its text.",
+      "user": "这个空间的数据收集设置有问题。"
+    },
+    {
+      "code": "FEED_EVERY_BELOW_FLOOR",
+      "component": "control",
+      "status": 400,
+      "retry": "never",
+      "log": "info",
+      "agent": "Feed {target} polls more often than its program allows ({operation})",
+      "next": "Set every to at least the floor the message names.",
+      "user": "数据收集太频繁，请调慢一些。"
+    },
+    {
+      "code": "FEED_KEY_NOT_IN_OUTPUT",
+      "component": "control",
+      "status": 400,
+      "retry": "never",
+      "log": "info",
+      "agent": "Feed {target}: its key is not a field of the tool's items ({operation})",
+      "next": "Set key to a field the message lists from the tool's outputSchema.",
+      "user": "这个空间的数据收集设置有问题。"
+    },
+    {
+      "code": "ACCESS_LEVEL",
+      "component": "hostd",
+      "status": 403,
+      "retry": "never",
+      "log": "info",
+      "agent": "The access level the person set on their computer does not allow {operation}{on_target} (read-only for the Agent)",
+      "next": "Tell the person what you need. They change the access level on that computer (AgentRouter tray, or `agentrouter-device access`); do not look for another way.",
+      "user": "这台电脑对 AI 是只读的。"
+    },
+    {
+      "code": "APPROVAL_EXPIRED",
+      "component": "hostd",
+      "status": 408,
+      "retry": "never",
+      "log": "info",
+      "agent": "The person did not confirm {operation}{on_target} in time; the request expired",
+      "next": "Ask the person whether it should still be done; if yes, send it once more.",
+      "user": "确认超时了，没有执行。"
+    },
+    {
+      "code": "CONFLICT",
+      "component": "hostd",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "The file changed since you read it, so {operation}{on_target} changed nothing (its sha256 differs from base_hash)",
+      "next": "Read the file again, then redo the change on its current content (with the new sha256 as base_hash).",
+      "user": "文件刚被改过，这次没有改动。"
+    },
+    {
+      "code": "DEVICE_DENIED",
+      "component": "hostd",
+      "status": 403,
+      "retry": "never",
+      "log": "info",
+      "agent": "The person's computer refused {operation}{on_target}",
+      "next": "Tell the person in plain words; do not try to get around it.",
+      "user": "电脑拒绝了这一步。"
+    },
+    {
+      "code": "DEVICE_TIMEOUT",
+      "component": "host-link",
+      "status": 504,
+      "retry": "transient",
+      "log": "warn",
+      "agent": "The person's computer did not answer {operation}{on_target} in time",
+      "next": "Check list_devices before trying again; start long commands with background:true and follow them with env_job.",
+      "user": "电脑没有及时回应。"
+    },
+    {
+      "code": "EDIT_AMBIGUOUS",
+      "component": "hostd",
+      "status": 422,
+      "retry": "never",
+      "log": "info",
+      "agent": "old_string occurs more than once in the file, so {operation}{on_target} changed nothing",
+      "next": "Add surrounding lines to old_string so it matches once, or set replace_all if every occurrence should change.",
+      "user": "要改的内容在文件里出现了不止一次。"
+    },
+    {
+      "code": "EDIT_NOT_FOUND",
+      "component": "hostd",
+      "status": 422,
+      "retry": "never",
+      "log": "info",
+      "agent": "old_string is not in the file, so {operation}{on_target} changed nothing",
+      "next": "Read the file again and copy old_string exactly (indentation and spaces included), or use apply_patch.",
+      "user": "文件里找不到要改的内容。"
+    },
+    {
+      "code": "JOB_ENDED",
+      "component": "hostd",
+      "status": 404,
+      "retry": "never",
+      "log": "info",
+      "agent": "That job is gone{on_target}: it ended, or AgentRouter on the computer restarted",
+      "next": "Start the command again only if it is still needed; list_devices shows the jobs that are there.",
+      "user": "这个任务已经结束了。"
+    },
+    {
+      "code": "NOT_TEXT",
+      "component": "hostd",
+      "status": 415,
+      "retry": "never",
+      "log": "info",
+      "agent": "The file is not UTF-8 text, so {operation}{on_target} cannot treat it as text",
+      "next": "Read it with read_file encoding base64, and replace it whole with write_file if it must change.",
+      "user": "这个文件不是文本。"
+    },
+    {
+      "code": "OUT_OF_SCOPE",
+      "component": "hostd",
+      "status": 403,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}{on_target} reaches beyond the linked folders or is too destructive, and the computer refused it",
+      "next": "Do it inside the linked folders, or ask the person to widen the scope (在链接的文件夹里完成，或者请用户扩大范围). Do not rephrase it to get around the refusal.",
+      "user": "超出了允许的范围，电脑拒绝了。"
+    },
+    {
+      "code": "PATCH_INVALID",
+      "component": "hostd",
+      "status": 422,
+      "retry": "never",
+      "log": "info",
+      "agent": "The patch for {operation}{on_target} is not in the expected format; nothing changed",
+      "next": "Fix the patch (*** Begin Patch / *** Update File: path / @@ / ' ', '-', '+' lines / *** End Patch) and send it once.",
+      "user": "补丁格式不对，没有改动。"
+    },
+    {
+      "code": "PATCH_NOT_APPLIED",
+      "component": "hostd",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "The patch does not match the file's current content, so {operation}{on_target} changed nothing",
+      "next": "Read that file again and make the patch from its current content.",
+      "user": "补丁和文件对不上，没有改动。"
+    },
+    {
+      "code": "PATH_OUTSIDE_SCOPE",
+      "component": "hostd",
+      "status": 403,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}{on_target} names a path outside the folders the person allows the Agent to use",
+      "next": "Work inside the allowed folders. If the person wants another folder, ask them to link it on that computer.",
+      "user": "这个路径不在允许的文件夹里。"
+    },
+    {
+      "code": "PAUSED",
+      "component": "hostd",
+      "status": 423,
+      "retry": "never",
+      "log": "info",
+      "agent": "The person paused the Agent on their computer (or is using it themselves), so {operation}{on_target} did not run",
+      "next": "Wait and try again later, or ask the person when to continue. Do not resend at once.",
+      "user": "你暂停了电脑上的 AI 操作。"
     }
   ]
 }

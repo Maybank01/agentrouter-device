@@ -32,6 +32,8 @@ pub const DEFAULT_CAP_BYTES: u64 = 256 << 20;
 pub const BATCH_ITEMS: usize = 200;
 /// … and at most this much JSON (well under the 8 MiB frame).
 pub const BATCH_BYTES: usize = 1 << 20;
+/// Keys one dedupe scope (a feed) remembers; older ones are forgotten (the Space Server's own dedupe stays authoritative).
+pub const SEEN_KEEP: i64 = 20_000;
 /// Refusals kept for the status (the oldest leave first).
 const REFUSED_KEEP: i64 = 500;
 
@@ -162,7 +164,9 @@ impl Outbox {
              CREATE TABLE IF NOT EXISTS outbox (seq INTEGER PRIMARY KEY AUTOINCREMENT, item TEXT NOT NULL,
                                                 bytes INTEGER NOT NULL, at INTEGER NOT NULL);
              CREATE TABLE IF NOT EXISTS refused (seq INTEGER PRIMARY KEY, item TEXT, code TEXT NOT NULL,
-                                                 message TEXT NOT NULL, at INTEGER NOT NULL);",
+                                                 message TEXT NOT NULL, at INTEGER NOT NULL);
+             CREATE TABLE IF NOT EXISTS seen (scope TEXT NOT NULL, key TEXT NOT NULL, at INTEGER NOT NULL,
+                                              PRIMARY KEY (scope, key));",
         )
         .map_err(|e| sql(e, path))?;
         let stored: Option<String> = conn
@@ -226,6 +230,109 @@ impl Outbox {
     /// Writes one event; returns its seq once it is on disk. Refuses an event the platform could never take
     /// (`EVENT_INVALID`, `EVENT_TOO_LARGE`) and, past the disk cap, `OUTBOX_FULL` (pause the producer; retry later).
     pub fn append(&self, e: &NewEvent) -> Result<u64, Refusal> {
+        let text = Self::entry(e)?;
+        let mut db = self.db.lock().unwrap();
+        let seq = self.insert(&mut db, &text)?;
+        drop(db);
+        self.wake.notify_one();
+        Ok(seq)
+    }
+
+    /// Writes one event unless `scope` already saw its `key` (a feed's own dedupe, persisted with the outbox so a
+    /// restart or a reinstall of the feed never sends a row twice): `Ok(None)` for a key seen before. The key is marked
+    /// seen in the same transaction as the write, so a refusal (`OUTBOX_FULL`, …) leaves it unseen for the next try.
+    /// Each scope keeps its newest [`SEEN_KEEP`] keys.
+    pub fn append_new(&self, scope: &str, e: &NewEvent) -> Result<Option<u64>, Refusal> {
+        let Some(key) = e.key.as_deref() else {
+            return Err(Refusal {
+                code: "EVENT_INVALID",
+                message: format!("{} for {} has no key to deduplicate by", e.event, e.space),
+            });
+        };
+        if !text_ok(scope, 400) {
+            return Err(Refusal {
+                code: "EVENT_INVALID",
+                message: "a dedupe scope is a text of 1 to 400 characters".into(),
+            });
+        }
+        let text = Self::entry(e)?;
+        let mut db = self.db.lock().unwrap();
+        let fault = |err: rusqlite::Error| Refusal {
+            code: "OUTBOX_FAULT",
+            message: sql(err, &self.path),
+        };
+        let seen: bool = db
+            .conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM seen WHERE scope = ?1 AND key = ?2)",
+                params![scope, key],
+                |r| r.get(0),
+            )
+            .map_err(fault)?;
+        if seen {
+            return Ok(None);
+        }
+        db.conn.execute_batch("BEGIN IMMEDIATE").map_err(fault)?;
+        let written = self.insert(&mut db, &text).and_then(|seq| {
+            db.conn
+                .execute(
+                    "INSERT OR IGNORE INTO seen (scope, key, at) VALUES (?1, ?2, ?3)",
+                    params![scope, key, now_ms()],
+                )
+                .map_err(fault)?;
+            if seq % 128 == 0 {
+                db.conn
+                    .execute(
+                        "DELETE FROM seen WHERE scope = ?1 AND rowid NOT IN
+                           (SELECT rowid FROM seen WHERE scope = ?1 ORDER BY at DESC, rowid DESC LIMIT ?2)",
+                        params![scope, SEEN_KEEP],
+                    )
+                    .map_err(fault)?;
+            }
+            Ok(seq)
+        });
+        match written.and_then(|seq| db.conn.execute_batch("COMMIT").map_err(fault).map(|()| seq)) {
+            Ok(seq) => {
+                drop(db);
+                self.wake.notify_one();
+                Ok(Some(seq))
+            }
+            Err(refusal) => {
+                let _ = db.conn.execute_batch("ROLLBACK");
+                // The size was counted by insert; the rollback took the entry back out.
+                db.bytes = db
+                    .conn
+                    .query_row("SELECT COALESCE(SUM(bytes), 0) FROM outbox", [], |r| {
+                        r.get::<_, i64>(0)
+                    })
+                    .map(|b| b.max(0) as u64)
+                    .unwrap_or(db.bytes);
+                Err(refusal)
+            }
+        }
+    }
+
+    /// Forget what `scope` saw (a feed that was removed for good).
+    pub fn forget(&self, scope: &str) {
+        let db = self.db.lock().unwrap();
+        let _ = db
+            .conn
+            .execute("DELETE FROM seen WHERE scope = ?1", [scope]);
+    }
+
+    /// How many keys `scope` remembers.
+    pub fn seen_count(&self, scope: &str) -> u64 {
+        let db = self.db.lock().unwrap();
+        db.conn
+            .query_row("SELECT COUNT(*) FROM seen WHERE scope = ?1", [scope], |r| {
+                r.get::<_, i64>(0)
+            })
+            .map(|n| n.max(0) as u64)
+            .unwrap_or(0)
+    }
+
+    /// The stored form of one event, or why the platform could never take it.
+    fn entry(e: &NewEvent) -> Result<String, Refusal> {
         if !text_ok(&e.space, 200) {
             return Err(Refusal {
                 code: "EVENT_INVALID",
@@ -285,9 +392,12 @@ impl Outbox {
                 item[field] = json!(v);
             }
         }
-        let text = item.to_string();
+        Ok(item.to_string())
+    }
+
+    /// Inserts one stored entry (inside the caller's lock): its seq, or `OUTBOX_FULL` / `OUTBOX_FAULT`.
+    fn insert(&self, db: &mut Db, text: &str) -> Result<u64, Refusal> {
         let size = text.len() as u64;
-        let mut db = self.db.lock().unwrap();
         if db.bytes + size > self.cap {
             return Err(Refusal {
                 code: "OUTBOX_FULL",
@@ -308,8 +418,6 @@ impl Outbox {
             })?;
         let seq = db.conn.last_insert_rowid() as u64;
         db.bytes += size;
-        drop(db);
-        self.wake.notify_one();
         Ok(seq)
     }
 

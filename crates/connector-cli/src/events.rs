@@ -27,3 +27,41 @@ pub fn open_outbox(data: &Path, link: &str, line: impl Fn(&str)) -> Option<Arc<O
         }
     }
 }
+
+/// The outbox as the feed runner's sink (`agentrouter_aggregator::feeds`): a feed's dedupe scope is its seen-set here,
+/// marked in the same transaction as the write.
+pub struct OutboxSink(pub Arc<Outbox>);
+
+impl agentrouter_aggregator::feeds::EventSink for OutboxSink {
+    fn append_new(
+        &self,
+        scope: &str,
+        row: &agentrouter_aggregator::feeds::FeedRow,
+    ) -> Result<bool, agentrouter_aggregator::Failure> {
+        let event = agentrouter_hostd_link::outbox::NewEvent {
+            space: row.space.clone(),
+            instance: Some(row.instance.clone()),
+            event: row.event.clone(),
+            payload: row.payload.clone(),
+            key: Some(row.key.clone()),
+            cause: Some(row.cause.clone()),
+        };
+        self.0
+            .append_new(scope, &event)
+            .map(|seq| seq.is_some())
+            .map_err(|r| agentrouter_aggregator::Failure::new(r.code, r.message))
+    }
+
+    fn nearly_full(&self) -> bool {
+        self.0.nearly_full()
+    }
+}
+
+/// The sink of an opened outbox.
+pub fn sink(
+    outbox: &Option<Arc<Outbox>>,
+) -> Option<Arc<dyn agentrouter_aggregator::feeds::EventSink>> {
+    outbox
+        .clone()
+        .map(|o| Arc::new(OutboxSink(o)) as Arc<dyn agentrouter_aggregator::feeds::EventSink>)
+}

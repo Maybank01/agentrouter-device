@@ -8,12 +8,14 @@
 //!   confines it to the folder; no sandbox = it does not run). Tools are exposed as `<server>__<tool>` with their
 //!   annotations; a server's `list_changed` becomes ours; cancellation and progress pass through.
 //! - Reserved management tools `link__servers`, `link__server_add`, `link__server_remove`, `link__server_logs`,
-//!   `link__package_put` decide *which* servers run; they are not capabilities. A server that is not a pinned
+//!   `link__package_put` decide *which* servers run; they are not capabilities. `link__feeds` sets the feeds a space's
+//!   runtime on this host polls ([`feeds`], Cloud #2739). A server that is not a pinned
 //!   catalog preset needs the person's `y` on this computer ([`Hooks::confirm_server`]).
 //! - Every request and every answer is one line in the append-only, hash-chained audit with its arguments.
 //! - Before the first call of a turn to a tool without `readOnlyHint: true`, [`Hooks::checkpoint`] snapshots the
 //!   folder (shadow git outside it, #47).
 
+pub mod feeds;
 pub mod grants;
 pub mod servers;
 pub mod sig;
@@ -182,6 +184,10 @@ pub trait Hooks: Send + Sync + 'static {
     }
     /// The folders changed (a folder was added): tell the cloud (`info`) and the checkpoints.
     fn folders_changed(&self, _folders: &[PathBuf]) {}
+    /// The host's event outbox, where feeds write (Cloud PROJECT-SERVICE §9.8.2); None: no feed can run here.
+    fn events(&self) -> Option<Arc<dyn feeds::EventSink>> {
+        None
+    }
 }
 
 /// Why a path cannot be a linked folder (missing, a file, the home folder, a drive root, the device data folder), or
@@ -303,6 +309,8 @@ pub struct Inner {
     closed: CancellationToken,
     /// The platform's limits for this environment (`link__limits`); none until it sends them.
     platform_limits: Mutex<agentrouter_device::limits::Limits>,
+    /// The feeds of the space runtimes this host runs (`link__feeds`).
+    feeds: feeds::Feeds,
 }
 
 /// The aggregator of one running link.
@@ -504,6 +512,7 @@ impl Aggregator {
             down_since: Mutex::new(None),
             closed: CancellationToken::new(),
             platform_limits: Mutex::new(Default::default()),
+            feeds: Default::default(),
         });
         let janitor = Arc::downgrade(&inner);
         let closed = inner.closed.clone();
@@ -662,6 +671,12 @@ impl Aggregator {
         outcomes
     }
 
+    /// `link__feeds` without a session (the platform's call goes through [`Aggregator::on_message`]; tests and the
+    /// terminal use this): replaces one runtime instance's feeds, answers their status.
+    pub fn set_feeds(&self, args: &Value) -> Result<Value, Failure> {
+        feeds::set(&self.inner, args)
+    }
+
     /// The servers and the sandbox, as `link__servers` shows them.
     pub fn servers_view(&self) -> Value {
         self.inner.servers_view()
@@ -727,6 +742,7 @@ impl Aggregator {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }
+        self.inner.feeds.stop_all();
         self.inner
             .record(json!({"kind": "link", "event": "stop", "link": self.inner.cfg.link}));
         self.inner.closed.cancel();
@@ -1187,6 +1203,7 @@ impl Inner {
                         "notes": status.notes.iter().map(|p| json!({"message": p.message, "next": p.next})).collect::<Vec<_>>()},
             "limits": self.limits_view(),
             "servers": list,
+            "feeds": self.feeds.view(),
         })
     }
 
@@ -1651,6 +1668,77 @@ impl Inner {
         }
     }
 
+    /// One call of a feed's tool (outside any MCP session, [`feeds`]): the server's result, or why not — `not_ready`
+    /// while the server is not running, else the error's codes and words. Audited like a session's call.
+    pub(crate) async fn feed_call(
+        &self,
+        server_name: &str,
+        tool: &str,
+        arguments: Option<serde_json::Map<String, Value>>,
+        wait: Duration,
+    ) -> Result<CallToolResult, feeds::CallError> {
+        let not_ready = |message: String| feeds::CallError {
+            not_ready: true,
+            codes: Vec::new(),
+            message,
+        };
+        let server = self.servers.lock().unwrap().get(server_name).cloned();
+        let Some(server) = server else {
+            return Err(not_ready(format!(
+                "the local MCP server {server_name} is not running on this computer"
+            )));
+        };
+        if server.state() != State::Ready {
+            return Err(not_ready(format!(
+                "the local MCP server {server_name} is {}",
+                server.state().label()
+            )));
+        }
+        let Some(peer) = server.peer.lock().unwrap().clone() else {
+            return Err(not_ready(format!(
+                "the local MCP server {server_name} is not running on this computer"
+            )));
+        };
+        let name = format!("{server_name}__{tool}");
+        let shown = arguments.clone().map(Value::Object).unwrap_or(json!({}));
+        self.record(
+            json!({"kind": "feed_call", "link": self.cfg.link, "tool": name, "arguments": shown}),
+        );
+        let mut params = CallToolRequestParams::new(tool.to_string());
+        params.arguments = arguments;
+        let started = std::time::Instant::now();
+        let answer = tokio::time::timeout(wait, peer.call_tool(params)).await;
+        let ms = started.elapsed().as_millis() as u64;
+        match answer {
+            Ok(Ok(result)) => {
+                let mut value = serde_json::to_value(&result).unwrap_or(Value::Null);
+                servers::redact_value(&mut value, &server.def.secrets());
+                self.record(json!({"kind": "feed_result", "link": self.cfg.link, "tool": name, "ms": ms, "isError": result.is_error == Some(true), "bytes": value.to_string().len()}));
+                Ok(serde_json::from_value(value).unwrap_or(result))
+            }
+            Ok(Err(rmcp::ServiceError::McpError(e))) => {
+                let mut codes = vec![e.code.0.to_string()];
+                codes.extend(feeds::codes_in(&e.message, e.data.as_ref()));
+                self.record(json!({"kind": "feed_result", "link": self.cfg.link, "tool": name, "ms": ms, "error": e.message}));
+                Err(feeds::CallError {
+                    not_ready: false,
+                    codes,
+                    message: format!("{name} answered error {}: {}", e.code.0, e.message),
+                })
+            }
+            Ok(Err(e)) => Err(feeds::CallError {
+                not_ready: false,
+                codes: Vec::new(),
+                message: format!("{name} broke off the call: {e}"),
+            }),
+            Err(_) => Err(feeds::CallError {
+                not_ready: false,
+                codes: Vec::new(),
+                message: format!("{name} did not answer in {} s", wait.as_secs()),
+            }),
+        }
+    }
+
     /// 「（期间触发了资源上限：…）」 when a limit was reached on `server` since `at`.
     fn limits_note(&self, server: &Server, at: std::time::Instant) -> String {
         let reached = server.limits_since(at);
@@ -1707,6 +1795,7 @@ impl Inner {
             }
             "package_put" => self.packages.store(args).map_err(Failure::from)?,
             "limits" => self.set_limits(args)?,
+            "feeds" => feeds::set(self, args)?,
             "folder_add" if self.cfg.cloud => {
                 self.record(json!({"kind": "link", "event": "folder_declined", "link": self.cfg.link, "folder": args.get("path").and_then(Value::as_str).unwrap_or(""), "reason": "cloud"}));
                 return Err(Failure::new(
@@ -1831,6 +1920,22 @@ pub fn link_tools() -> Vec<Tool> {
                 "processes": {"type": ["integer", "null"], "minimum": agentrouter_device::limits::PROCESSES_MIN, "maximum": agentrouter_device::limits::PROCESSES_MAX},
                 "cpuPercent": {"type": ["integer", "null"], "minimum": 1, "maximum": 100, "description": "percent of the whole machine (all cores)"}
             }}),
+            false,
+        ),
+        tool(
+            "link__feeds",
+            "Platform only: set the feeds of a space's runtime instance on this computer (Cloud PROJECT-SERVICE §9.8.5). Each feed calls a tool of the named local server on its timer and writes new items (by key) into this computer's event outbox as the declared event. feeds: [] stops them. The answer is each feed's status (also in link__servers).",
+            json!({"type": "object", "properties": {
+                "instance": {"type": "string"}, "space": {"type": "string"}, "server": {"type": "string"},
+                "feeds": {"type": "array", "items": {"type": "object", "properties": {
+                    "name": {"type": "string"}, "tool": {"type": "string"}, "args": {"type": "object"},
+                    "everyMs": {"type": "integer"}, "key": {"type": "string"}, "items": {"type": "string"},
+                    "extract": {"type": "object", "properties": {"json": {"type": "string"}}},
+                    "into": {"type": "string"}, "event": {"type": "string"},
+                    "payload": {"type": "object", "additionalProperties": {"type": "string"}},
+                    "backoff": {"type": "object", "properties": {"on": {"type": "array"}, "waitMs": {"type": "integer"}}}
+                }, "required": ["name", "tool", "everyMs", "key", "into", "event", "payload"]}}
+            }, "required": ["instance", "space", "server", "feeds"]}),
             false,
         ),
         tool(

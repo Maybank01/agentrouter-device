@@ -270,6 +270,24 @@ Unsigned (harmless, read-only shape): `tools/list`, `ping`, notifications. Failu
   `<device data>/logs/server-<name>.log` (moved to `.log.1` at 2 MiB), so a server that never got ready can be
   diagnosed after the link ended (Cloud #2703).
 - `link__limits {memoryMb?, processes?, cpuPercent?}`: the environment's resource limits, applied live (§6.6).
+- `link__feeds {instance, space, server, feeds}` (platform only, Cloud #2739 step 2): the feeds of a space's runtime
+  instance on this host (Cloud PROJECT-SERVICE §9.8.5), as the Space Server describes them plus the event's declared
+  payload fields (`{name, tool, args?, everyMs, key, items?, extract?: {json}, into, event, payload: {field: type},
+  backoff?: {on, waitMs}}`); `feeds: []` stops them, an unchanged set keeps its timers. The generic feed runner
+  (`agentrouter_aggregator::feeds`) calls the tool of the local server `server` on its timer (±20 % jitter); takes the
+  items from `structuredContent` (at `items`, else the result must be the list) or JSON inside a text result at
+  `extract.json` — anything else is `FEED_OUTPUT_UNSTRUCTURED` / `FEED_ITEMS_NOT_A_LIST`, prose is never parsed; keeps
+  of each item the declared payload fields (a number for a `text` field becomes text); and writes each item whose key
+  the feed has not seen into the outbox (§3.2) as the declared event with key `<feed>:<item key>` and cause
+  `feed:<instance>/<feed>@<ms>`. The seen-set lives in the outbox database (`seen`, newest 20,000 keys per feed),
+  marked in the same transaction as the write, so a restart never sends a row twice and a refused write
+  (`OUTBOX_FULL`) leaves the key for the next poll. Errors carrying a code of `backoff.on` (HTTP status, JSON-RPC code,
+  the server's own `code`; `-412` matches `412`) pause the feed for `waitMs` (`backing_off`, `FEED_BACKING_OFF`); other
+  errors wait `every` doubled per failure (at most an hour beyond it, `FEED_TOOL_FAILED`); a nearly full outbox pauses
+  polling (`paused`); a server that is not running yet is `waiting` (`FEED_SERVER_NOT_READY`). Each feed's status
+  (`state`, `nextAt`, `until`, `written`, `skipped`, `error {code, message}`) is in `link__servers.feeds` and the answer;
+  a change of state is one audit line and one terminal line, never one per poll. Feeds are kept in memory: the platform
+  sends them again after every welcome, with the server.
 - `link__folder_add {path, reason?}`: the Agent asks for another folder; the person answers `y/N` on the computer
   (§5). On `y` the folder joins the writable set, every running server restarts with the new policy, `info` goes
   out and the answer lists the folders. Refused: `DENIED_BY_USER`, `FOLDER_INVALID` (missing, a file, the home

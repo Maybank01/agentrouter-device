@@ -150,6 +150,8 @@ struct Console {
     /// The link's info and handle: `info` goes out when the folders change.
     info: Mutex<LinkInfo>,
     handle: OnceLock<agentrouter_hostd_link::Handle>,
+    /// The host's outbox, where feeds write (Cloud #2739): set once it is open.
+    events: OnceLock<Arc<dyn agentrouter_aggregator::feeds::EventSink>>,
 }
 
 /// A folder gets shadow-git checkpoints unless it is the home folder, a drive root or AgentRouter's own data
@@ -298,6 +300,10 @@ impl Hooks for Console {
                 .await
                 .unwrap_or(false)
         })
+    }
+
+    fn events(&self) -> Option<Arc<dyn agentrouter_aggregator::feeds::EventSink>> {
+        self.events.get().cloned()
     }
 
     fn folders_changed(&self, folders: &[PathBuf]) {
@@ -644,6 +650,7 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
             no_git_said: AtomicBool::new(false),
             info: Mutex::new(info.clone()),
             handle: OnceLock::new(),
+            events: OnceLock::new(),
         });
         console.set_folders(&folders);
         let handle_cell: Arc<OnceLock<agentrouter_hostd_link::Handle>> = Arc::new(OnceLock::new());
@@ -704,6 +711,10 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
         });
         #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
         let bridge = None;
+        let outbox = crate::events::open_outbox(&data_dir(), &link_id, line);
+        if let Some(sink) = crate::events::sink(&outbox) {
+            let _ = console.events.set(sink);
+        }
         let (handle, mut events) = agentrouter_hostd_link::start(agentrouter_hostd_link::Options {
             gateway: gateway.clone(),
             info,
@@ -711,7 +722,7 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
             audit_head: Arc::new(move || for_head.audit_head()),
             load: Some(Arc::new(move || meter.sample(&load_home, for_load.environments()))),
             bridge,
-            outbox: crate::events::open_outbox(&data_dir(), &link_id, line),
+            outbox,
         });
         let _ = handle_cell.set(handle.clone());
         let _ = console.handle.set(handle.clone());

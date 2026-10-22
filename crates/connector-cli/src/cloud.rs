@@ -113,9 +113,16 @@ fn host_id() -> String {
 }
 
 /// The sandbox's log: one line per call and server event; no questions.
-struct CloudHooks;
+struct CloudHooks {
+    /// The host's outbox, where feeds write (Cloud #2739).
+    events: Option<Arc<dyn agentrouter_aggregator::feeds::EventSink>>,
+}
 
 impl Hooks for CloudHooks {
+    fn events(&self) -> Option<Arc<dyn agentrouter_aggregator::feeds::EventSink>> {
+        self.events.clone()
+    }
+
     fn feed(&self, event: Feed) {
         match event {
             Feed::Session {
@@ -264,7 +271,9 @@ pub fn link(opts: CloudOptions, interrupted: &'static AtomicBool) -> i32 {
                 limits: Default::default(),
                 device_program: std::env::current_exe().ok(),
             },
-            Arc::new(CloudHooks),
+            Arc::new(CloudHooks {
+                events: crate::events::sink(&outbox),
+            }),
             Arc::new(move |s: &str, m: Value| {
                 if let Some(h) = cell.get() {
                     h.send(s, m);
