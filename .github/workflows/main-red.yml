@@ -1,7 +1,8 @@
 # A red main is never silent (issue #125). `Sandbox (Windows)` takes ~4–7 min, too long for the merge path (p90 ≤ 5 min,
 # AGENTS.md "Merge path in minutes"), so it runs on the PR without blocking and gates here, after the merge, like every
 # post-merge step of CI: red once → the failed jobs run again; red again and green on the parent → GitHub's revert PR of
-# the merge, with auto-merge; otherwise a `main-red` issue. Logic and decision table: scripts/main-red.mjs.
+# the merge, with auto-merge; otherwise a `main-red` issue. A confirmed red emails the owner once per red streak and
+# once when main is green again (the ops-mail Worker's /alert, Cloud #2623). Logic and decision table: scripts/main-red.mjs.
 # Holds the merge bot App key (agentrouter-cloud-agent-dev, as Cloud's merge bot): only the default branch's copy of this
 # file and script run, and they never check out or run pull request code.
 name: main red
@@ -53,6 +54,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           APP_TOKEN: ${{ steps.app.outputs.token }}
+          # The owner's email (Cloud #2623): this repository's key for the ops-mail Worker's /alert (one per red streak).
+          OPS_MAIL_ALERT_KEY: ${{ secrets.OPS_MAIL_ALERT_KEY }}
           RUN_ID: ${{ github.event.workflow_run.id || inputs.run_id }}
           DRY_RUN: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '1' || '' }}
           DRILL_RERUN: ${{ (github.event_name == 'workflow_dispatch' && inputs.drill_rerun) && '1' || '' }}
