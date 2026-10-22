@@ -1512,7 +1512,7 @@ impl Inner {
         let state = server.wait_settled(Duration::from_secs(60)).await;
         if state != State::Ready {
             return Err(Failure::new(
-                "SERVER_NOT_READY",
+                "SERVER_NOT_RUNNING",
                 format!("本机工具 {name} 现在是 {}，还不能登录", state.label()),
             )
             .next("用 link__servers 看它的状态，就绪后再登录。"));
@@ -1634,14 +1634,14 @@ impl Inner {
             .collect();
         if names.is_empty() {
             return Err(Failure::new(
-                "CREDENTIAL_UNKNOWN",
+                "HOSTD_ARGS_INVALID",
                 format!("本机工具 {name} 没有凭据 {}", wanted.unwrap_or("")),
             ));
         }
         for n in &names {
             servers::forget_credential(self, &server, n).map_err(|e| {
                 Failure::new(
-                    "FAILED",
+                    "HOSTD_FAULT",
                     format!("没能在这台电脑上删掉 {name} 的凭据 {n}：{e}"),
                 )
             })?;

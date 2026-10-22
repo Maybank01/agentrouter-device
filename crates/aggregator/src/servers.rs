@@ -91,7 +91,7 @@ pub struct ServerDef {
     pub login: Option<LoginSpec>,
 }
 
-/// [`ServerDef::credentials`]: `{"name": "cookie", "fileEnv": "BILIBILI_COOKIE_FILE"}`.
+/// [`ServerDef::credentials`]: `{"name": "cookie", "fileEnv": <the variable the server reads the file path from>}`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CredentialFile {
     pub name: String,
@@ -128,13 +128,18 @@ fn valid_env_name(k: &str) -> bool {
 fn pattern(text: &str, field: &str) -> Result<String, Failure> {
     if text.is_empty() || text.len() > 300 {
         return Err(Failure::new(
-            "FAILED",
+            "HOSTD_ARGS_INVALID",
             format!("login.{field} 要是 1–300 个字符的正则"),
         ));
     }
     regex::Regex::new(text)
         .map(|_| text.to_string())
-        .map_err(|e| Failure::new("FAILED", format!("login.{field} 不是有效的正则：{e}")))
+        .map_err(|e| {
+            Failure::new(
+                "HOSTD_ARGS_INVALID",
+                format!("login.{field} 不是有效的正则：{e}"),
+            )
+        })
 }
 
 fn parse_credentials(
@@ -148,7 +153,7 @@ fn parse_credentials(
         .unwrap_or_default();
     if list.len() > CREDENTIALS_MAX {
         return Err(Failure::new(
-            "FAILED",
+            "HOSTD_ARGS_INVALID",
             format!("credentials 最多 {CREDENTIALS_MAX} 个"),
         ));
     }
@@ -158,7 +163,7 @@ fn parse_credentials(
         let file_env = str_of(&c, "fileEnv").trim().to_string();
         if !valid_credential(&name) || out.iter().any(|o| o.name == name) {
             return Err(Failure::new(
-                "FAILED",
+                "HOSTD_ARGS_INVALID",
                 format!("credentials.name {name:?} 要是不重复的小写字母、数字、_ 或 -"),
             ));
         }
@@ -167,7 +172,7 @@ fn parse_credentials(
             || env.iter().any(|(k, _)| k == &file_env)
         {
             return Err(Failure::new(
-                "FAILED",
+                "HOSTD_ARGS_INVALID",
                 format!(
                     "credentials.{name}.fileEnv {file_env:?} 要是没在 env 里用过的环境变量名（不能是 AGENTROUTER_ 开头）"
                 ),
@@ -192,7 +197,7 @@ fn parse_login(
     let credential = str_of(l, "credential").trim().to_string();
     if !credentials.iter().any(|c| c.name == credential) {
         return Err(Failure::new(
-            "FAILED",
+            "HOSTD_ARGS_INVALID",
             format!("login.credential {credential:?} 不在 credentials 里"),
         ));
     }
@@ -201,13 +206,16 @@ fn parse_login(
             "" => Ok(None),
             t if t.len() <= 128 && !t.starts_with('_') => Ok(Some(t.to_string())),
             t => Err(Failure::new(
-                "FAILED",
+                "HOSTD_ARGS_INVALID",
                 format!("login.{field} {t:?} 不是工具名"),
             )),
         }
     };
     let Some(start) = tool_name("start")? else {
-        return Err(Failure::new("FAILED", "login.start 要写登录工具的名字"));
+        return Err(Failure::new(
+            "HOSTD_ARGS_INVALID",
+            "login.start 要写登录工具的名字",
+        ));
     };
     let check = tool_name("check")?;
     let key = match str_of(l, "key") {
@@ -216,7 +224,7 @@ fn parse_login(
     };
     if check.is_some() && key.is_none() {
         return Err(Failure::new(
-            "FAILED",
+            "HOSTD_ARGS_INVALID",
             "login.check 需要 login.key（从 start 的答复里取出的登录码）",
         ));
     }
@@ -225,7 +233,7 @@ fn parse_login(
         k if valid_env_name(k) => k.to_string(),
         k => {
             return Err(Failure::new(
-                "FAILED",
+                "HOSTD_ARGS_INVALID",
                 format!("login.keyArg {k:?} 不是参数名"),
             ));
         }
@@ -1551,7 +1559,7 @@ mod tests {
             d.host_only,
             vec!["refresh".to_string(), "login".into(), "login_check".into()]
         );
-        let server = Server::new(d);
+        let server = Server::new(d, None);
         assert!(
             server.host_only("login")
                 && server.host_only("refresh")

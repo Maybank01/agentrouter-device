@@ -1,5 +1,5 @@
 {
-  "source": "agentrouter-cloud@8243fe8994b287d39e16108029a6e61b4a7992de",
+  "source": "agentrouter-cloud@315e2b430d66fcab1fcc0a92abed2ee4e005c677",
   "schema": "agentrouter.errors/v1",
   "about": "The one error catalog (#2449; owner 2026-10-21 「还有，错误那一块，是不是应该有一种统一的方式？我不想错误都散落在各处」). Adding an error = adding an entry here, then `node scripts/sync-error-catalog.mjs`. README.md has the rules.",
   "errors": [
@@ -1064,6 +1064,16 @@
       "user": "这个 Agent 还缺一个要用的空间，需要先选一个。"
     },
     {
+      "code": "AGENT_REACH_WIDENED",
+      "component": "agent-definition",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "a new version of the Agent reaches more than the version the person installed{on_target}",
+      "next": "The install stays on the version it runs. If the person agrees to the wider reach (the problem names each field), install the new version again (agent_install from: its ref); otherwise keep the old one.",
+      "user": "这个 Agent 的新版本要用更多权限，需要你同意后才会升级。"
+    },
+    {
       "code": "AGENT_SLOT_KIND_MISMATCH",
       "component": "agent-definition",
       "status": 422,
@@ -1072,6 +1082,16 @@
       "agent": "a slot is mapped to a space of another kind{on_target}",
       "next": "Map the slot to a space of the kind its agent.yaml names (the problem says which kind it wants and which the space is), or change the slot's kind in agent.yaml if the definition was wrong.",
       "user": "给这个 Agent 选的空间类型不对。"
+    },
+    {
+      "code": "AGENT_SLOT_DEFAULT_INVALID",
+      "component": "agent-definition",
+      "status": 422,
+      "retry": "never",
+      "log": "info",
+      "agent": "a slot's default content does not resolve or is not of the slot's kind{on_target}",
+      "next": "Point the slot's default at content that exists and fits its kind (the problem names the file, field, ref and what was found): self:<path> for a file or folder of the definition's own folder, <space>/<path>@<version> for another space; or drop the default so each install maps the slot.",
+      "user": "这个 Agent 自带的内容找不到了。"
     },
     {
       "code": "GRANT_EXCEEDS_REACH",
@@ -1730,6 +1750,47 @@
       "user": "本机工具还在启动，稍等再试。"
     },
     {
+      "code": "HOST_ONLY_TOOL",
+      "component": "hostd",
+      "status": 403,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}{on_target} is a tool the local server on the person's computer keeps for hostd alone (its own login or credential refresh), never callable from the cloud",
+      "next": "Do not call it again. To sign the server's account in, call link__login with the server's name: the QR code shows on that computer and on the web page.",
+      "user": "这个工具只在电脑上由 AgentRouter 自己运行。"
+    },
+    {
+      "code": "LOGIN_UNSUPPORTED",
+      "component": "hostd",
+      "status": 400,
+      "retry": "never",
+      "log": "info",
+      "agent": "The local server {target} on the person's computer declares no login, so {operation} cannot sign its account in",
+      "next": "Do not retry. Its account is set in the server's own settings on that computer; tell the person in one plain sentence.",
+      "user": "这个本机工具不支持在这里登录。"
+    },
+    {
+      "code": "LOGIN_IN_PROGRESS",
+      "component": "hostd",
+      "status": 409,
+      "retry": "always",
+      "retryAfterSeconds": 30,
+      "log": "info",
+      "agent": "A login of the local server {target} on the person's computer is already waiting for the person to scan its QR code ({operation})",
+      "next": "Do not start another one. Tell the person to scan the code already shown; link__servers shows the credential state, and a new login can start once this one ends (at most 3 minutes).",
+      "user": "登录二维码已经显示了，请扫码。"
+    },
+    {
+      "code": "LOGIN_FAILED",
+      "component": "hostd",
+      "status": 502,
+      "retry": "never",
+      "log": "warn",
+      "agent": "The login of the local server {target} on the person's computer did not work ({operation}); the server's own words are the cause",
+      "next": "If the cause says the code expired or was not scanned, start link__login once more; if the server gave no address or code, its login declaration no longer matches the server — say so in one plain sentence and stop.",
+      "user": "本机工具登录没有成功。"
+    },
+    {
       "code": "SESSION_UNKNOWN",
       "component": "hostd",
       "status": 410,
@@ -2312,6 +2373,46 @@
       "agent": "Feed {target}: items without the declared key field were skipped ({operation})",
       "next": "Set the feed's key to a field every item has (the message names the fields the items carry).",
       "user": "有些条目缺少编号，已跳过。"
+    },
+    {
+      "code": "RUNTIME_PROGRAM_UNKNOWN",
+      "component": "control",
+      "status": 400,
+      "retry": "never",
+      "log": "warn",
+      "agent": "The space's runtime.program is not a program of the catalog at that version, so its resident instance cannot start ({operation}{on_target})",
+      "next": "Set runtime.program to catalog:<id>@<version> of a catalog entry (mcp_catalog lists them with their pinned versions) and submit again.",
+      "user": "这个空间要运行的程序不在目录里。"
+    },
+    {
+      "code": "RUNTIME_SECRET_UNDECLARED",
+      "component": "control",
+      "status": 400,
+      "retry": "never",
+      "log": "warn",
+      "agent": "The space's program reads an account that the space does not declare in runtime.secrets, or the space declares a secret its program does not read ({operation}{on_target})",
+      "next": "Declare each account the program's catalog entry names as runtime.secrets: [{ name: <credential>, login: catalog:<id>@<version> }] (a program whose login fills it), remove names the program does not read, and submit again.",
+      "user": "这个空间的程序要用的账号没有声明。"
+    },
+    {
+      "code": "RUNTIME_SECRET_LOGIN_INVALID",
+      "component": "control",
+      "status": 400,
+      "retry": "never",
+      "log": "warn",
+      "agent": "A runtime secret's login program cannot fill it: it is not a catalog program at that version, declares no login for that credential, or does not write every field the space's program reads ({operation}{on_target})",
+      "next": "Set runtime.secrets[].login to catalog:<id>@<version> of an entry whose login.credential is that secret and whose credential fields cover the program's (mcp_catalog shows both), and submit again.",
+      "user": "这个空间的账号登录方式不对。"
+    },
+    {
+      "code": "RUNTIME_HOST_UNRESOLVED",
+      "component": "control",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "The space's runtime.requires.host names no computer the space's owner has linked, or several ({operation}{on_target})",
+      "next": "Set requires.host to pc:<one of the computers the message lists> (or that computer's host id); a computer that is linked but offline is used once it connects.",
+      "user": "找不到要运行这个空间的电脑。"
     },
     {
       "code": "FEED_TOOL_UNKNOWN",
