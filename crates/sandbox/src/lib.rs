@@ -30,8 +30,8 @@
 //! person's secrets and the device data folder; network = package mirrors + the server's catalog list, through
 //! srt's proxy, or the open web for a catalog preset whose list is [`OPEN_WEB`] ([`Launch::open_web`]); local ports
 //! as in the person's terminal ([`Runtime::local_binding`], #139); the person's tool configuration read-only
-//! ([`PROFILE_ENV`], #138). There is no unconfined fallback: when the sandbox cannot run, [`Unavailable`] says what
-//! to do.
+//! ([`PROFILE_ENV`], #138); file watching on macOS ([`MACOS_MACH_SERVICES`], #141). There is no unconfined
+//! fallback: when the sandbox cannot run, [`Unavailable`] says what to do.
 
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
@@ -55,6 +55,10 @@ pub const ENTRY_JS: &str = include_str!("entry.cjs");
 /// Started instead of srt's `cli.js` (same arguments) for an open-web launch: srt's own CLI, with an ask callback that
 /// allows public destinations only (see the file).
 pub const OPEN_WEB_JS: &str = include_str!("open-web.mjs");
+/// The Mach services a sandboxed process may reach on macOS beyond srt's own list (`network.allowMachLookup`): the
+/// file-system events service, which every file watcher on macOS goes through (FSEventStream; libuv's `fs.watch` on a
+/// folder; chokidar).
+const MACOS_MACH_SERVICES: &[&str] = &["com.apple.FSEvents"];
 /// The loopback ports srt's proxies may use on Windows (the WFP fence permits only these). srt's default is ten
 /// ports (two per server) and srt-win accepts at most 65; 64 ports cover far more servers than one link runs.
 pub const WINDOWS_PROXY_PORTS: (u16, u16) = (60080, 60143);
@@ -1011,6 +1015,13 @@ impl Runtime {
             // loopback, nothing to set.
             network["allowLocalBinding"] = json!(local_binding);
         }
+        if cfg!(target_os = "macos") {
+            // File watching (device #141): srt's Seatbelt profile lists the Mach services a sandboxed process may
+            // reach, and FSEvents is not among them, so every watch inside the sandbox was silently blind — the host
+            // server's change feed, and the person's own tools (`fs.watch` on a folder, chokidar, a dev server's hot
+            // reload). FSEvents only reports changed paths, never contents, and reads are open in folder mode anyway.
+            network["allowMachLookup"] = json!(MACOS_MACH_SERVICES);
+        }
         let mut policy = json!({
             "network": network,
             "filesystem": {
@@ -1746,6 +1757,14 @@ mod tests {
         }
         if !cfg!(windows) {
             assert_eq!(rt.local_binding(), cfg!(target_os = "macos"));
+        }
+        // macOS: file watchers reach FSEvents (device #141); nothing extra elsewhere.
+        let p = rt.policy_with(&launch, false).unwrap();
+        let mach = &p["network"]["allowMachLookup"];
+        if cfg!(target_os = "macos") {
+            assert_eq!(mach, &json!(["com.apple.FSEvents"]));
+        } else {
+            assert!(mach.is_null(), "{p}");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
