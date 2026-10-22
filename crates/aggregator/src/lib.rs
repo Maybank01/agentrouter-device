@@ -236,6 +236,9 @@ pub struct Config {
     /// `hostd` in a cloud sandbox (HOSTD-MCP §13.1): the sandbox is the boundary (set `full` too), the folders are the
     /// session's mounted views and stay fixed (`link__folder_add` answers `DENIED_BY_USER`), nobody is asked anything.
     pub cloud: bool,
+    /// The owner's ceiling on the environment's resource limits (`config.json` `limits`, device #127): the platform's
+    /// (`link__limits`) never go above it.
+    pub limits: agentrouter_device::limits::Limits,
 }
 
 /// The audit log of one link.
@@ -280,6 +283,8 @@ pub struct Inner {
     progress: Mutex<HashMap<ProgressKey, (Peer<RoleServer>, ProgressToken)>>,
     down_since: Mutex<Option<tokio::time::Instant>>,
     closed: CancellationToken,
+    /// The platform's limits for this environment (`link__limits`); none until it sends them.
+    platform_limits: Mutex<agentrouter_device::limits::Limits>,
 }
 
 /// The aggregator of one running link.
@@ -348,6 +353,7 @@ impl Aggregator {
             progress: Mutex::new(HashMap::new()),
             down_since: Mutex::new(None),
             closed: CancellationToken::new(),
+            platform_limits: Mutex::new(Default::default()),
         });
         let janitor = Arc::downgrade(&inner);
         let closed = inner.closed.clone();
@@ -862,6 +868,51 @@ impl Inner {
             .unwrap_or_else(|| server.to_string())
     }
 
+    /// The limits every server of this link runs under now: the platform's, capped by the owner's ceiling.
+    pub fn limits(&self) -> agentrouter_device::limits::Limits {
+        self.platform_limits
+            .lock()
+            .unwrap()
+            .capped_by(self.cfg.limits)
+    }
+
+    fn limits_view(&self) -> Value {
+        let mut v = agentrouter_device::limits::mechanism().view();
+        v["limits"] = self.limits().view();
+        v["platform"] = self.platform_limits.lock().unwrap().view();
+        v["ceiling"] = self.cfg.limits.view();
+        v
+    }
+
+    /// `link__limits`: the platform's limits for this environment, applied to every running server at once (no
+    /// restart: background jobs keep running).
+    fn set_limits(&self, args: &Value) -> Result<Value, Failure> {
+        use agentrouter_device::limits::Limits;
+        let platform = Limits::from_platform(args).map_err(|e| {
+            Failure::new("LIMITS_INVALID", e)
+                .next("按 link__limits 的参数说明改正数值后再设；null 表示不限。")
+        })?;
+        *self.platform_limits.lock().unwrap() = platform;
+        let limits = self.limits();
+        let mut failed = Vec::new();
+        for server in self.servers.lock().unwrap().values() {
+            if let Some(e) = server.enforced.lock().unwrap().as_ref()
+                && let Err(why) = e.update(limits)
+            {
+                failed.push(format!("{}：{why}", server.def.name));
+            }
+        }
+        self.record(json!({"kind": "link", "event": "limits", "link": self.cfg.link, "platform": platform.view(), "limits": limits.view(), "failed": failed}));
+        if !failed.is_empty() {
+            return Err(Failure::new(
+                "LIMITS_NOT_APPLIED",
+                format!("资源上限（{}）在这些本机工具上没设上：{}", limits.describe(), failed.join("；")),
+            )
+            .next("用 link__servers 看现在生效的上限；重启那个本机工具（link__server_remove 再 link__server_add）会按新上限启动。"));
+        }
+        Ok(self.limits_view())
+    }
+
     fn servers_view(&self) -> Value {
         let status = self.sandbox.status();
         let list: Vec<Value> = self
@@ -879,6 +930,7 @@ impl Inner {
             "readOnly": self.cfg.read_only,
             "sandbox": {"backend": status.backend, "mechanism": status.mechanism, "ready": status.ready,
                         "problems": status.problems.iter().map(|p| json!({"code": p.code, "message": p.message, "next": p.next})).collect::<Vec<_>>()},
+            "limits": self.limits_view(),
             "servers": list,
         })
     }
@@ -1249,6 +1301,7 @@ impl Inner {
                 .unwrap()
                 .insert(key.clone(), (context.peer.clone(), token));
         }
+        let called_at = std::time::Instant::now();
         let answer = tokio::select! {
             r = &mut handle.rx => Some(r),
             _ = context.ct.cancelled() => None,
@@ -1277,7 +1330,16 @@ impl Inner {
                             .to_error(),
                     );
                 }
-                let result: CallToolResult = serde_json::from_value(value).unwrap_or(result);
+                let mut result: CallToolResult = serde_json::from_value(value).unwrap_or(result);
+                // A limit reached while this call ran is part of its answer (a command the kernel ended says why).
+                let reached = server.limits_since(called_at);
+                if !reached.is_empty() {
+                    result.content.push(rmcp::model::ContentBlock::text(format!(
+                        "【这台电脑上的资源上限】这次调用期间：{}。本环境的上限：{}（link__servers 有详情）。",
+                        reached.join("；"),
+                        self.limits().describe()
+                    )));
+                }
                 Ok(CallToolResponse::Complete(result))
             }
             Ok(Ok(_)) => Err(Failure::new(
@@ -1288,16 +1350,36 @@ impl Inner {
             Ok(Err(rmcp::ServiceError::McpError(e))) => Err(e),
             Ok(Err(e)) => Err(Failure::new(
                 "SERVER_CRASHED",
-                format!("本机工具 {server_name} 在调用中断了：{e}"),
+                format!(
+                    "本机工具 {server_name} 在调用中断了：{e}{}",
+                    self.limits_note(&server, called_at)
+                ),
             )
             .next("用 link__server_logs 看它的日志。")
             .to_error()),
             Err(_) => Err(Failure::new(
                 "SERVER_CRASHED",
-                format!("本机工具 {server_name} 在调用中断了"),
+                format!(
+                    "本机工具 {server_name} 在调用中断了{}",
+                    self.limits_note(&server, called_at)
+                ),
             )
             .next("用 link__server_logs 看它的日志。")
             .to_error()),
+        }
+    }
+
+    /// 「（期间触发了资源上限：…）」 when a limit was reached on `server` since `at`.
+    fn limits_note(&self, server: &Server, at: std::time::Instant) -> String {
+        let reached = server.limits_since(at);
+        if reached.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "（期间触发了这台电脑上的资源上限：{}；上限 {}）",
+                reached.join("；"),
+                self.limits().describe()
+            )
         }
     }
 
@@ -1342,6 +1424,7 @@ impl Inner {
                 json!({"name": name, "state": server.state().label(), "lines": tail})
             }
             "package_put" => self.packages.store(args).map_err(Failure::from)?,
+            "limits" => self.set_limits(args)?,
             "folder_add" if self.cfg.cloud => {
                 self.record(json!({"kind": "link", "event": "folder_declined", "link": self.cfg.link, "folder": args.get("path").and_then(Value::as_str).unwrap_or(""), "reason": "cloud"}));
                 return Err(Failure::new(
@@ -1455,6 +1538,16 @@ pub fn link_tools() -> Vec<Tool> {
             "link__folder_add",
             "Ask the person to add another folder to this link (they answer y/N on the computer). On yes the folder becomes writable for every local server, which restart; the answer lists the folders.",
             json!({"type": "object", "properties": {"path": {"type": "string"}, "reason": {"type": "string"}}, "required": ["path"]}),
+            false,
+        ),
+        tool(
+            "link__limits",
+            "Set this environment's resource limits on the computer (every local server and everything it runs, the host server's commands, jobs and terminals included). Applied at once, no restart; the computer owner's own ceiling still caps them. Each field null = no limit. The answer shows the limits in effect and how this OS enforces them.",
+            json!({"type": "object", "properties": {
+                "memoryMb": {"type": ["integer", "null"], "minimum": agentrouter_device::limits::MEMORY_MIN_MB, "maximum": agentrouter_device::limits::MEMORY_MAX_MB},
+                "processes": {"type": ["integer", "null"], "minimum": agentrouter_device::limits::PROCESSES_MIN, "maximum": agentrouter_device::limits::PROCESSES_MAX},
+                "cpuPercent": {"type": ["integer", "null"], "minimum": 1, "maximum": 100, "description": "percent of the whole machine (all cores)"}
+            }}),
             false,
         ),
         tool(

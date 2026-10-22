@@ -32,6 +32,8 @@ const RESTART_WINDOW: Duration = Duration::from_secs(120);
 const STOP_GRACE: Duration = Duration::from_secs(3);
 /// The most servers one link runs at once.
 pub const MAX_SERVERS: usize = 12;
+/// Limit events kept per server.
+const LIMIT_EVENTS: usize = 20;
 
 fn valid_name(name: &str) -> bool {
     let mut chars = name.chars();
@@ -247,6 +249,11 @@ pub struct Server {
     pub restarts: AtomicU32,
     pub pid: Mutex<Option<u32>>,
     crashes: Mutex<VecDeque<Instant>>,
+    /// The environment's resource limits on this server's tree while it runs (device #127); dropping it on Windows
+    /// ends the tree.
+    pub enforced: Mutex<Option<agentrouter_device::limits::Enforced>>,
+    /// When a limit was reached, newest last (at most [`LIMIT_EVENTS`]).
+    pub limit_events: Mutex<VecDeque<(Instant, String)>>,
 }
 
 impl Server {
@@ -262,7 +269,20 @@ impl Server {
             restarts: AtomicU32::new(0),
             pid: Mutex::new(None),
             crashes: Mutex::new(VecDeque::new()),
+            enforced: Mutex::new(None),
+            limit_events: Mutex::new(VecDeque::new()),
         })
+    }
+
+    /// The limit lines reached since `at` (a call's start), oldest first.
+    pub fn limits_since(&self, at: Instant) -> Vec<String> {
+        self.limit_events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(t, _)| *t >= at)
+            .map(|(_, l)| l.clone())
+            .collect()
     }
 
     pub fn state(&self) -> State {
@@ -317,6 +337,7 @@ impl Server {
             "error": error,
             "tools": self.tools.lock().unwrap().len(),
             "restarts": self.restarts.load(Ordering::SeqCst),
+            "limitEvents": self.limit_events.lock().unwrap().iter().rev().take(5).map(|(_, l)| l.clone()).collect::<Vec<_>>(),
         })
     }
 }
@@ -403,7 +424,7 @@ pub async fn supervise(agg: Arc<Inner>, server: Arc<Server>) {
                     }
                 };
                 *server.peer.lock().unwrap() = None;
-                kill_tree(pid);
+                end(&server, pid);
                 if stopped {
                     break;
                 }
@@ -542,6 +563,12 @@ async fn start_once(
         (policy, confined.command, confined.pipe)
     };
     agg.audit_server_start(def, &program, &args, &policy);
+    // The environment's limits, from outside the sandbox (device #127): on Linux the command runs in its own systemd
+    // scope; the Job object (Windows) or the sampler (macOS) takes it right after the spawn.
+    let limits = agg.limits();
+    let unit = unit_name(&def.name);
+    let std_cmd = agentrouter_device::limits::command(std_cmd, &unit, &limits);
+    let limit_it = |pid: Option<u32>| enforce(agg, server, pid, &unit, limits);
     let mut cmd = tokio::process::Command::from(std_cmd);
     #[cfg(unix)]
     cmd.process_group(0);
@@ -552,7 +579,7 @@ async fn start_once(
     };
     #[cfg(windows)]
     if let Some(pipe) = pipe {
-        return piped::start(server, cmd, pipe, handler).await;
+        return piped::start(server, cmd, pipe, handler, limit_it).await;
     }
     #[cfg(not(windows))]
     let _ = pipe;
@@ -562,7 +589,73 @@ async fn start_once(
         .map_err(|e| StartError::Failed(format!("没能启动：{e}")))?;
     let pid = transport.id();
     started(server, pid, stderr);
+    limit_it(pid)?;
     handshake(server, handler, transport, pid).await
+}
+
+/// A systemd unit name for one start of a server (unique on this computer while it runs).
+fn unit_name(server: &str) -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    format!(
+        "agentrouter-{server}-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+/// Put the just-spawned server under the environment's limits. Without limits a failure is only logged (nothing to
+/// enforce yet; later limits then need a restart); with limits the start fails, so it never runs unlimited.
+fn enforce(
+    agg: &Arc<Inner>,
+    server: &Arc<Server>,
+    pid: Option<u32>,
+    unit: &str,
+    limits: agentrouter_device::limits::Limits,
+) -> Result<(), StartError> {
+    let Some(pid) = pid else {
+        return Ok(());
+    };
+    let weak_agg = Arc::downgrade(agg);
+    let weak_server = Arc::downgrade(server);
+    let on_limit: agentrouter_device::limits::OnLimit = Arc::new(move |line: String| {
+        let (Some(agg), Some(server)) = (weak_agg.upgrade(), weak_server.upgrade()) else {
+            return;
+        };
+        server.log(&format!("[agentrouter] 资源上限：{line}"));
+        {
+            let mut events = server.limit_events.lock().unwrap();
+            if events.len() >= LIMIT_EVENTS {
+                events.pop_front();
+            }
+            events.push_back((Instant::now(), line.clone()));
+        }
+        agg.server_event(&server, "limit", Some(line));
+    });
+    match agentrouter_device::limits::Enforced::start(pid, unit, limits, on_limit) {
+        Ok(enforced) => {
+            *server.enforced.lock().unwrap() = Some(enforced);
+            Ok(())
+        }
+        Err(e) if limits.is_empty() => {
+            server.log(&format!(
+                "[agentrouter] 资源上限的管控没装上（现在不限，之后设的上限要重启才生效）：{e}"
+            ));
+            Ok(())
+        }
+        Err(e) => {
+            kill_tree(Some(pid));
+            Err(StartError::Failed(format!(
+                "资源上限（{}）没能生效，所以没有启动：{e}",
+                limits.describe()
+            )))
+        }
+    }
+}
+
+/// End a server's tree and its limits (on Windows dropping the Job object ends what is in it).
+fn end(server: &Server, pid: Option<u32>) {
+    kill_tree(pid);
+    server.enforced.lock().unwrap().take();
 }
 
 /// The start line and the server's stderr into its log.
@@ -598,16 +691,16 @@ where
         r = tokio::time::timeout(HANDSHAKE, handler.serve(transport)) => match r {
             Ok(Ok(running)) => running,
             Ok(Err(e)) => {
-                kill_tree(pid);
+                end(server, pid);
                 return Err(StartError::Failed(format!("MCP 握手失败：{e}")));
             }
             Err(_) => {
-                kill_tree(pid);
+                end(server, pid);
                 return Err(StartError::Failed("MCP 握手超时".into()));
             }
         },
         _ = server.stop.cancelled() => {
-            kill_tree(pid);
+            end(server, pid);
             return Err(StartError::Failed("已停止".into()));
         }
     };
@@ -666,6 +759,7 @@ mod piped {
         mut cmd: tokio::process::Command,
         pipe: agentrouter_sandbox::StdioPipe,
         handler: Downstream,
+        enforce: impl FnOnce(Option<u32>) -> Result<(), StartError>,
     ) -> Result<(Running, Option<u32>), StartError> {
         use std::os::windows::io::IntoRawHandle;
         // SAFETY: an overlapped named pipe server end that nothing else owns (agentrouter_sandbox::StdioPipe).
@@ -679,6 +773,7 @@ mod piped {
             .map_err(|e| StartError::Failed(format!("没能启动：{e}")))?;
         let pid = child.id();
         started(server, pid, child.stderr.take());
+        enforce(pid)?;
         tokio::select! {
             r = tokio::time::timeout(HANDSHAKE, pipe.connect()) => match r {
                 Ok(Ok(())) => {}

@@ -220,7 +220,20 @@ jobs:
           Set-Service -Name seclogon -StartupType Manual
           Start-Service -Name seclogon
           Get-Service -Name seclogon
+      # #127: on people's Linux desktops a user systemd runs, and limits go in a systemd scope per server (cgroup v2).
+      # A hosted runner has none until lingering starts one.
+      - name: User systemd for the runner (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo loginctl enable-linger "$(id -un)"
+          uid=$(id -u)
+          for i in $(seq 1 50); do [ -S "/run/user/$uid/bus" ] && break; sleep 0.2; done
+          echo "XDG_RUNTIME_DIR=/run/user/$uid" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus" >> "$GITHUB_ENV"
+          cat "/sys/fs/cgroup/user.slice/user-$uid.slice/user@$uid.service/cgroup.controllers"
       - run: cargo test -p agentrouter-sandbox -- --nocapture
+      - name: Resource limits hold on a confined tree (#127)
+        run: cargo test -p agentrouter-device-core --test limits -- --nocapture
       # Windows: srt-win gives a sandboxed child an empty stdin (by design, upstream R14); a server's stdin and stdout
       # travel over a named pipe the sandbox entry connects to (#112). Both steps block on every OS.
       - name: The aggregator runs a real MCP server confined (issue #46)

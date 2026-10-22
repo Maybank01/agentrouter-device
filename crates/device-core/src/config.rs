@@ -115,6 +115,9 @@ pub struct Config {
     /// The pool the owner puts this host in (「渲染机」, `rack-2`; Cloud VISION §4 D2): a definition may admit it as
     /// `pool:<name>`. Unset = the person's default pool. 1–40 characters, no control characters (else not sent).
     pub pool: Option<String>,
+    /// The owner's ceiling on what an environment here may use (`{"memory_mb", "processes", "cpu_percent"}`, each
+    /// optional; device #127): the platform's limits never go above it. Unset = only the platform's.
+    pub limits: crate::limits::Limits,
 }
 
 impl Default for Config {
@@ -130,6 +133,7 @@ impl Default for Config {
             labels: Vec::new(),
             max_environments: None,
             pool: None,
+            limits: Default::default(),
         }
     }
 }

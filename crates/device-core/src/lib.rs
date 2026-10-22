@@ -17,6 +17,7 @@ pub mod deploy;
 pub mod exec;
 pub mod gate;
 pub mod keystore;
+pub mod limits;
 pub mod link;
 pub mod local_agent;
 pub mod lockfile;
