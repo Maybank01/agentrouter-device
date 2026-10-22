@@ -40,7 +40,8 @@ fn row(n: u64) -> NewEvent {
     NewEvent {
         space: "wrk_feed".into(),
         instance: Some("ins_feed".into()),
-        event: "feed.new".into(),
+        event: None,
+        table: Some("feed".into()),
         payload: json!({"id": n.to_string()}),
         key: Some(n.to_string()),
         cause: None,
@@ -132,7 +133,7 @@ async fn offline_entries_flush_in_order_and_leave_only_after_the_ack() {
     assert_eq!(seqs(&first), vec![1, 2, 3]);
     assert_eq!(first["items"][0]["id"], format!("{producer}:1"));
     assert_eq!(first["items"][0]["space"], "wrk_feed");
-    assert_eq!(first["items"][0]["event"], "feed.new");
+    assert_eq!(first["items"][0]["table"], "feed");
     assert_eq!(first["items"][0]["instance"], "ins_feed");
 
     // A partial ack (the platform took 1 and 2, refused nothing, could not take 3 yet): 1 and 2 leave; 3 again soon.

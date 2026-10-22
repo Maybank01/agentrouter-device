@@ -41,7 +41,8 @@ impl agentrouter_aggregator::feeds::EventSink for OutboxSink {
         let event = agentrouter_hostd_link::outbox::NewEvent {
             space: row.space.clone(),
             instance: Some(row.instance.clone()),
-            event: row.event.clone(),
+            event: None,
+            table: Some(row.table.clone()),
             payload: row.payload.clone(),
             key: Some(row.key.clone()),
             cause: Some(row.cause.clone()),

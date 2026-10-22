@@ -44,9 +44,12 @@ pub struct NewEvent {
     pub space: String,
     /// The platform instance that produced it (a space's runtime on this host), when there is one.
     pub instance: Option<String>,
-    /// A declared event of that space (`feed.new`).
-    pub event: String,
-    /// The declared payload (an object).
+    /// A declared event of that space (`job.done`), or none when the entry is a row of `table`.
+    pub event: Option<String>,
+    /// A declared table of that space the entry is a row of (a feed's `into`): the platform upserts it by the table's key
+    /// and the space raises `<table>.inserted|updated` itself when the row lands (Cloud #2739, tables engine #2762).
+    pub table: Option<String>,
+    /// The declared payload, or the row (an object).
     pub payload: Value,
     /// The item's own key at its source (a feed row's key), recorded in the event's provenance.
     pub key: Option<String>,
@@ -123,6 +126,24 @@ fn now_ms() -> i64 {
 
 fn sql(e: rusqlite::Error, path: &Path) -> String {
     format!("outbox {}: {e}", path.display())
+}
+
+/// What an entry is, for messages: `event job.done` or `row of table feed`.
+fn what(e: &NewEvent) -> String {
+    match (&e.event, &e.table) {
+        (Some(ev), _) => ev.clone(),
+        (None, Some(t)) => format!("a row of table {t}"),
+        (None, None) => "an entry".into(),
+    }
+}
+
+fn valid_table(table: &str) -> bool {
+    // The Space Server's table names: a lower-case word of [a-z0-9_], starting with a letter.
+    (1..=64).contains(&table.len())
+        && table.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+        && table
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
 fn valid_name(event: &str) -> bool {
@@ -246,7 +267,7 @@ impl Outbox {
         let Some(key) = e.key.as_deref() else {
             return Err(Refusal {
                 code: "EVENT_INVALID",
-                message: format!("{} for {} has no key to deduplicate by", e.event, e.space),
+                message: format!("{} for {} has no key to deduplicate by", what(e), e.space),
             });
         };
         if !text_ok(scope, 400) {
@@ -339,21 +360,38 @@ impl Outbox {
                 message: "space is a space id (1 to 200 characters)".into(),
             });
         }
-        if !valid_name(&e.event) {
-            return Err(Refusal {
-                code: "EVENT_INVALID",
-                message: format!(
-                    "event {:?} is not a declared event name (lower-case words joined by dots, e.g. feed.new)",
-                    e.event
-                ),
-            });
+        match (&e.event, &e.table) {
+            (Some(event), None) if valid_name(event) => {}
+            (None, Some(table)) if valid_table(table) => {}
+            (Some(event), None) => {
+                return Err(Refusal {
+                    code: "EVENT_INVALID",
+                    message: format!(
+                        "event {event:?} is not a declared event name (lower-case words joined by dots, e.g. job.done)"
+                    ),
+                });
+            }
+            (None, Some(table)) => {
+                return Err(Refusal {
+                    code: "EVENT_INVALID",
+                    message: format!(
+                        "table {table:?} is not a table name (a lower-case word of a-z, 0-9 and _)"
+                    ),
+                });
+            }
+            _ => {
+                return Err(Refusal {
+                    code: "EVENT_INVALID",
+                    message: "an entry is either an event (event) or a row of a table (table), exactly one".into(),
+                });
+            }
         }
         if !e.payload.is_object() {
             return Err(Refusal {
                 code: "EVENT_INVALID",
                 message: format!(
                     "the payload of {} is an object of its declared fields",
-                    e.event
+                    what(e)
                 ),
             });
         }
@@ -377,13 +415,15 @@ impl Outbox {
                 code: "EVENT_TOO_LARGE",
                 message: format!(
                     "the payload of {} in {} is {payload_len} bytes; an event carries at most {PAYLOAD_MAX} (put bulk data in a file and send its reference)",
-                    e.event, e.space
+                    what(e),
+                    e.space
                 ),
             });
         }
-        let mut item =
-            json!({"space": e.space, "event": e.event, "payload": e.payload, "at": now_ms()});
+        let mut item = json!({"space": e.space, "payload": e.payload, "at": now_ms()});
         for (field, v) in [
+            ("event", &e.event),
+            ("table", &e.table),
             ("instance", &e.instance),
             ("key", &e.key),
             ("cause", &e.cause),
@@ -512,7 +552,7 @@ impl Outbox {
                         .and_then(|t| serde_json::from_str(&t).ok())
                         .unwrap_or(Value::Null);
                     Ok(json!({"seq": r.get::<_, i64>(0)?, "code": r.get::<_, String>(1)?, "message": r.get::<_, String>(2)?,
-                              "space": item.get("space"), "event": item.get("event")}))
+                              "space": item.get("space"), "event": item.get("event"), "table": item.get("table")}))
                 },
             )
             .optional()
