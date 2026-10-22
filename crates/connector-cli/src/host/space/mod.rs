@@ -76,7 +76,7 @@ fn unsupported(operation: &str) -> Fail {
 
 #[cfg(not(target_os = "linux"))]
 #[derive(Default)]
-pub(super) struct Spaces;
+pub(super) struct Spaces {}
 
 #[cfg(not(target_os = "linux"))]
 impl Host {
@@ -149,7 +149,7 @@ mod linux {
             (origin, text("root"), args["exp"].as_u64(), text("t"))
         else {
             return Err(fail(
-                "INVALID_ARGUMENT",
+                "HOSTD_ARGS_INVALID",
                 "_space_mount",
                 path,
                 "origin (http/https), root, exp and t are required".into(),

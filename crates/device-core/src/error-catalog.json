@@ -1,5 +1,5 @@
 {
-  "source": "agentrouter-cloud@315e2b430d66fcab1fcc0a92abed2ee4e005c677",
+  "source": "agentrouter-cloud@a3047ef179620f1609c7dd656b3eb9d107c5d2ab",
   "schema": "agentrouter.errors/v1",
   "about": "The one error catalog (#2449; owner 2026-10-21 「还有，错误那一块，是不是应该有一种统一的方式？我不想错误都散落在各处」). Adding an error = adding an entry here, then `node scripts/sync-error-catalog.mjs`. README.md has the rules.",
   "errors": [
@@ -317,6 +317,116 @@
       "agent": "The AgentRouter app on the person's computer (hostd) could not be reached for {operation}{on_target}",
       "next": "Check list_devices: if that computer is offline, tell the person and do not resend now; otherwise try once more in a few seconds.",
       "user": "电脑暂时连不上，稍后再试。"
+    },
+    {
+      "code": "CHECKOUT_UNSUPPORTED",
+      "component": "hostd",
+      "status": 501,
+      "retry": "never",
+      "log": "info",
+      "agent": "The space checkout on the computer that runs commands (hostd) cannot mount a space on this operating system for {operation}{on_target} (only Linux mounts on demand for now)",
+      "next": "Nothing to do: the platform uses a full copy of the space on this computer instead.",
+      "user": "这台电脑先用完整拷贝。"
+    },
+    {
+      "code": "CHECKOUT_SOURCE_FAILED",
+      "component": "hostd",
+      "status": 502,
+      "retry": "always",
+      "log": "warn",
+      "agent": "The space checkout on the computer that runs commands (hostd) could not read the space version it was asked to show for {operation}{on_target}",
+      "next": "Try once more in a few seconds with a fresh checkout ticket; if it fails again, continue without the space's files and say which ones could not be read.",
+      "user": "空间文件暂时读不到，稍后再试。"
+    },
+    {
+      "code": "CHECKOUT_SOURCE_UNREACHABLE",
+      "component": "hostd",
+      "status": 503,
+      "retry": "always",
+      "log": "warn",
+      "agent": "The space checkout on the computer that runs commands (hostd) could not reach the space content service for {operation}{on_target}",
+      "next": "Try once more in a few seconds; if it keeps failing, the content service of that region is down.",
+      "user": "空间文件暂时读不到，稍后再试。"
+    },
+    {
+      "code": "CHECKOUT_SOURCE_INVALID",
+      "component": "hostd",
+      "status": 502,
+      "retry": "never",
+      "log": "warn",
+      "agent": "The space checkout on the computer that runs commands (hostd) got an answer it could not use from the space content service for {operation}{on_target} (a fault in the platform)",
+      "next": "Retrying will not help. Continue without that file and tell the person in one plain sentence which file could not be read.",
+      "user": "这个文件读取出错了，已记录。"
+    },
+    {
+      "code": "CHECKOUT_DIGEST_MISMATCH",
+      "component": "hostd",
+      "status": 502,
+      "retry": "never",
+      "log": "error",
+      "agent": "The space checkout on the computer that runs commands (hostd) received file content for {operation}{on_target} whose checksum is not the one the space version names, so it did not show it",
+      "next": "Retrying will not help. Continue without that file and tell the person in one plain sentence which file could not be read.",
+      "user": "这个文件校验没有通过，没有打开。"
+    },
+    {
+      "code": "CHECKOUT_CACHE_WRITE_FAILED",
+      "component": "hostd",
+      "status": 507,
+      "retry": "never",
+      "log": "warn",
+      "agent": "The space checkout on the computer that runs commands (hostd) could not store a fetched file in its local cache for {operation}{on_target}",
+      "next": "Free disk space in this environment (delete files you made and no longer need), then try again.",
+      "user": "空间不足，文件没有打开。"
+    },
+    {
+      "code": "CHECKOUT_MOUNT_FAILED",
+      "component": "hostd",
+      "status": 424,
+      "retry": "never",
+      "log": "warn",
+      "agent": "The space checkout on the computer that runs commands (hostd) could not mount the space at {operation}{on_target}",
+      "next": "Nothing to do: the platform falls back to a full copy of the space here.",
+      "user": "这台电脑先用完整拷贝。"
+    },
+    {
+      "code": "CHECKOUT_NOT_MOUNTED",
+      "component": "hostd",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "No space checkout is mounted for {operation}{on_target}",
+      "next": "Mount the space first, then ask for its changes.",
+      "user": "空间还没有打开。"
+    },
+    {
+      "code": "CHECKOUT_CHANGES_FAILED",
+      "component": "hostd",
+      "status": 500,
+      "retry": "always",
+      "log": "warn",
+      "agent": "The space checkout on the computer that runs commands (hostd) could not list the changes made in the space for {operation}{on_target}",
+      "next": "Try once more; if it fails again, unmount and mount the space again (the changes stay on this computer).",
+      "user": "改动暂时没能收集，稍后再试。"
+    },
+    {
+      "code": "CHECKOUT_LOWER_UNREADABLE",
+      "component": "hostd",
+      "status": 502,
+      "retry": "always",
+      "log": "warn",
+      "agent": "The space checkout on the computer that runs commands (hostd) could not read a folder of the space version while listing changes for {operation}{on_target}",
+      "next": "Try once more in a few seconds with a fresh checkout ticket.",
+      "user": "改动暂时没能收集，稍后再试。"
+    },
+    {
+      "code": "CHECKOUT_UPPER_UNREADABLE",
+      "component": "hostd",
+      "status": 500,
+      "retry": "never",
+      "log": "warn",
+      "agent": "The space checkout on the computer that runs commands (hostd) could not read a changed file while listing changes for {operation}{on_target}",
+      "next": "Check that the file is readable (it may have been made unreadable by a command), then ask for the changes again.",
+      "user": "有个改过的文件读不到，改动没能收集。"
     },
     {
       "code": "HOST_STARTING",
@@ -773,16 +883,6 @@
       "user": "任务之间的先后关系绕成了一个圈。"
     },
     {
-      "code": "TASK_REQUIRES_UNMET",
-      "component": "spaces",
-      "status": 409,
-      "retry": "never",
-      "log": "info",
-      "agent": "{operation}{on_target}: this environment lacks what the task requires (os, tools with versions, a GPU, or the host that holds the space); the message names each",
-      "next": "Run it in an environment that has it (env_use to a computer that does), or change the task's requires in .ar/space.yaml.",
-      "user": "当前环境缺少这个任务需要的工具或系统。"
-    },
-    {
       "code": "TOOLCHAIN_BUILDING",
       "component": "spaces",
       "status": 409,
@@ -852,6 +952,26 @@
       "agent": "{target} is not a space ref, so {operation} has nothing to act on",
       "next": "Call space_list and use a ref exactly as it lists it.",
       "user": "没找到这个空间。"
+    },
+    {
+      "code": "SPACE_COPY_INVALID",
+      "component": "space-copies",
+      "status": 422,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: {target} cannot be copied as asked (the cause says what is wrong: the source, the target or the size)",
+      "next": "Fix what the cause names: from is <space>[/<path>][@<version>] (a 作品 of the person's, a shared one, or platform:agents/<id>), to is one of the person's 作品 (wrk_…[/<folder>]) for file_copy; a large space is copied folder by folder with file_copy.",
+      "user": "这个复制没法按这样做，换个来源或位置再试。"
+    },
+    {
+      "code": "SPACE_COPY_FAULT",
+      "component": "space-copies",
+      "status": 500,
+      "retry": "never",
+      "log": "error",
+      "agent": "{operation}: copying {target} failed inside the platform (a bug; the cause is attached whole)",
+      "next": "Do not retry the same call; tell the person the copy did not happen and report the cause.",
+      "user": "复制没有完成，已经记录问题。"
     },
     {
       "code": "TOOL_UNREACHABLE",
@@ -929,9 +1049,9 @@
       "status": 404,
       "retry": "never",
       "log": "info",
-      "agent": "{operation}: {target} is not an Agent its author shares at that version (no active share link, someone else's private space, or a version they never published)",
-      "next": "Install from the author's current share link (agent_install from: <link>), which takes the version they publish now; or ask them to share or publish it.",
-      "user": "这个 Agent 没有被分享，或者链接已经失效。"
+      "agent": "{operation}: {target} is someone else's space that its author does not share now (no active share link: stopped, taken down or never made)",
+      "next": "Ask its author for a current share link. A recipe entry that referenced it becomes a slot to connect: point it at one of the person's spaces (slots.<name>.space in agent.yaml) or copy a space they still share (space_copy).",
+      "user": "这个空间没有被分享，或者链接已经失效。"
     },
     {
       "code": "AGENT_NO_EARLIER_VERSION",
@@ -952,16 +1072,6 @@
       "agent": "{operation}: the Agent id {target} already runs another folder",
       "next": "Unpublish the other folder on its channels first, or give this folder another id in its agent.yaml.",
       "user": "这个 Agent 名字已经被另一个 Agent 用了。"
-    },
-    {
-      "code": "AGENT_INSTALL_SPACES_UNAVAILABLE",
-      "component": "agent-registry",
-      "status": 503,
-      "retry": "transient",
-      "log": "warn",
-      "agent": "{operation}: the install's own memory space and 经验仓库 ({target}) could not be made (the cause names the store and why)",
-      "next": "Try once more in a few seconds; making them is idempotent, so a retry never makes a second pair. If it fails again, report the cause to the person: the Agent is published but cannot start a conversation until its own spaces exist.",
-      "user": "这个 Agent 自己的记忆空间还没建好，稍后再试。"
     },
     {
       "code": "AGENT_SPACE_UNSUPPORTED",
@@ -1059,19 +1169,9 @@
       "status": 422,
       "retry": "never",
       "log": "info",
-      "agent": "a required slot of the Agent is not mapped to one of the person's spaces{on_target}",
-      "next": "Map the slot to one of the person's spaces of its kind (the problem lists the closest ones): agent_publish with slots: { <slot>: <space> } (wrk_…, own:<作品 title>, memory.person …). Ask the person which one when several fit, or create it first (space_create). A slot that should be optional says optional: true in agent.yaml.",
+      "agent": "a required slot of the Agent's recipe is not connected to a space{on_target}",
+      "next": "Connect the slot in the recipe (agent.yaml): slots: { <slot>: { space: <space> } } with one of the person's spaces of its kind (the problem lists the closest ones: wrk_…, own:<作品 title>, memory.person …), written with space_write. Ask the person which one when several fit, or create it first (space_create). A slot that should be optional says optional: true.",
       "user": "这个 Agent 还缺一个要用的空间，需要先选一个。"
-    },
-    {
-      "code": "AGENT_REACH_WIDENED",
-      "component": "agent-definition",
-      "status": 409,
-      "retry": "never",
-      "log": "info",
-      "agent": "a new version of the Agent reaches more than the version the person installed{on_target}",
-      "next": "The install stays on the version it runs. If the person agrees to the wider reach (the problem names each field), install the new version again (agent_install from: its ref); otherwise keep the old one.",
-      "user": "这个 Agent 的新版本要用更多权限，需要你同意后才会升级。"
     },
     {
       "code": "AGENT_SLOT_KIND_MISMATCH",
@@ -1079,19 +1179,9 @@
       "status": 422,
       "retry": "never",
       "log": "info",
-      "agent": "a slot is mapped to a space of another kind{on_target}",
-      "next": "Map the slot to a space of the kind its agent.yaml names (the problem says which kind it wants and which the space is), or change the slot's kind in agent.yaml if the definition was wrong.",
+      "agent": "a slot is connected to a space of another kind{on_target}",
+      "next": "Connect the slot (slots.<name>.space in agent.yaml) to a space of the kind it names (the problem says which kind it wants and which the space is), or change the slot's kind if the recipe was wrong.",
       "user": "给这个 Agent 选的空间类型不对。"
-    },
-    {
-      "code": "AGENT_SLOT_DEFAULT_INVALID",
-      "component": "agent-definition",
-      "status": 422,
-      "retry": "never",
-      "log": "info",
-      "agent": "a slot's default content does not resolve or is not of the slot's kind{on_target}",
-      "next": "Point the slot's default at content that exists and fits its kind (the problem names the file, field, ref and what was found): self:<path> for a file or folder of the definition's own folder, <space>/<path>@<version> for another space; or drop the default so each install maps the slot.",
-      "user": "这个 Agent 自带的内容找不到了。"
     },
     {
       "code": "GRANT_EXCEEDS_REACH",
@@ -1192,16 +1282,6 @@
       "agent": "{target} is not a test conversation this conversation started ({operation})",
       "next": "Start a new one with agent_try ref and message, and continue it with the session that call returns.",
       "user": "找不到这次试用的对话，重新试一次。"
-    },
-    {
-      "code": "AGENT_TRY_UNAVAILABLE",
-      "component": "agent-builder",
-      "status": 409,
-      "retry": "never",
-      "log": "warn",
-      "agent": "A test conversation could not be started from this conversation ({operation}{on_target})",
-      "next": "agent_try starts from a chat that runs on the person's own key. Tell the person to open a new conversation with the Agent instead (agent: { ref }) to try it.",
-      "user": "这里没法试用这个 Agent，请新开一个和它的对话试试。"
     },
     {
       "code": "AGENT_BUILDER_FAULT",
@@ -2410,8 +2490,8 @@
       "status": 409,
       "retry": "never",
       "log": "info",
-      "agent": "The space's runtime.requires.host names no computer the space's owner has linked, or several ({operation}{on_target})",
-      "next": "Set requires.host to pc:<one of the computers the message lists> (or that computer's host id); a computer that is linked but offline is used once it connects.",
+      "agent": "The space's program runtime has no person whose computers it could run on: the space is owned by something other than a person ({operation}{on_target}); which computers fit is NO_QUALIFYING_HOST",
+      "next": "Run the program from a space a person owns (their 作品 or program space), whose requires.host names one of their computers.",
       "user": "找不到要运行这个空间的电脑。"
     },
     {
@@ -2451,7 +2531,27 @@
       "retry": "never",
       "log": "info",
       "agent": "Feed {target}: its key is not a field of the tool's items ({operation})",
-      "next": "Set key to a field the message lists from the tool's outputSchema.",
+      "next": "Set key to a column a field the message lists fills, or map the key column to the field that holds it (map: { <column>: <field> }).",
+      "user": "这个空间的数据收集设置有问题。"
+    },
+    {
+      "code": "FEED_COLUMN_UNMAPPED",
+      "component": "control",
+      "status": 400,
+      "retry": "never",
+      "log": "info",
+      "agent": "Feed {target}: a column of the table it fills is spelled otherwise than the tool's item field that matches it, and the feed does not map it ({operation})",
+      "next": "Add the map entry the message names to the feed in space.yaml (map: { <column>: <item field> }); nothing is renamed unless the feed declares it.",
+      "user": "这个空间的数据收集设置有问题。"
+    },
+    {
+      "code": "FEED_MAP_FIELD_UNKNOWN",
+      "component": "control",
+      "status": 400,
+      "retry": "never",
+      "log": "info",
+      "agent": "Feed {target}: its map names an item field the tool's items do not have ({operation})",
+      "next": "Map the column to one of the fields the message lists, or remove that map entry.",
       "user": "这个空间的数据收集设置有问题。"
     },
     {
@@ -2593,6 +2693,306 @@
       "agent": "The person paused the Agent on their computer (or is using it themselves), so {operation}{on_target} did not run",
       "next": "Wait and try again later, or ask the person when to continue. Do not resend at once.",
       "user": "你暂停了电脑上的 AI 操作。"
+    },
+    {
+      "code": "TABLE_UNKNOWN",
+      "component": "space-server",
+      "status": 404,
+      "retry": "never",
+      "log": "info",
+      "agent": "The space has no such table for {operation}{on_target}",
+      "next": "Use one of the tables the message names (space_op describe lists each table with its columns and an example); a new table is declared in the space's .ar/space.yaml under tables:.",
+      "user": "没有这张表，这一步没有执行。"
+    },
+    {
+      "code": "TABLE_COLUMN_UNKNOWN",
+      "component": "space-server",
+      "status": 400,
+      "retry": "never",
+      "log": "info",
+      "agent": "A row or a query names a column the table does not have in {operation}{on_target}",
+      "next": "Use only the columns the message lists; a new column is added to the table's columns: in .ar/space.yaml first.",
+      "user": "表里没有这一列，这一步没有执行。"
+    },
+    {
+      "code": "TABLE_VALUE_INVALID",
+      "component": "space-server",
+      "status": 400,
+      "retry": "never",
+      "log": "info",
+      "agent": "A value does not fit its column's type in {operation}{on_target}",
+      "next": "Give each column a value of its declared type (the message names the column, its type and what was given); null clears a column.",
+      "user": "有的值格式不对，这一步没有执行。"
+    },
+    {
+      "code": "TABLE_KEY_MISSING",
+      "component": "space-server",
+      "status": 400,
+      "retry": "never",
+      "log": "info",
+      "agent": "A row has no value for the table's key column in {operation}{on_target}",
+      "next": "Give every row its key column (named in the message); a key is text or a number.",
+      "user": "有一行缺少编号，这一步没有执行。"
+    },
+    {
+      "code": "TABLE_INPUT_INVALID",
+      "component": "space-server",
+      "status": 400,
+      "retry": "never",
+      "log": "info",
+      "agent": "The rows or keys of {operation}{on_target} are not a list of 1 to 500, or name a key twice",
+      "next": "Send rows as a list of maps column → value (keys as a list for delete), at most 500 per call, each key once.",
+      "user": "这次要写的行格式不对，这一步没有执行。"
+    },
+    {
+      "code": "TABLE_ROW_EXISTS",
+      "component": "space-server",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "A row with that key is already in the table ({operation}{on_target})",
+      "next": "insert only adds new keys: use upsert to change the existing row, or a different key.",
+      "user": "这一行已经存在，这一步没有执行。"
+    },
+    {
+      "code": "TABLE_ROW_NOT_FOUND",
+      "component": "space-server",
+      "status": 404,
+      "retry": "never",
+      "log": "info",
+      "agent": "No row with that key in the table ({operation}{on_target})",
+      "next": "update and delete need an existing key: open the rows view to see the keys, or use upsert to add the row.",
+      "user": "没有找到这一行，这一步没有执行。"
+    },
+    {
+      "code": "TABLE_ROW_TOO_LARGE",
+      "component": "space-server",
+      "status": 400,
+      "retry": "never",
+      "log": "info",
+      "agent": "A row is larger than a row may be (16 KiB as a row file) in {operation}{on_target}",
+      "next": "Keep large content (long text, data) in a file of the space and put its path in the row.",
+      "user": "这一行内容太多了，这一步没有执行。"
+    },
+    {
+      "code": "TABLE_FULL",
+      "component": "space-server",
+      "status": 409,
+      "retry": "never",
+      "log": "warn",
+      "agent": "The table has reached the rows this table engine holds (20 000) in {operation}{on_target}",
+      "next": "Remove rows the table no longer needs; a larger table needs the scale engine (PROJECT-SERVICE §4.5.4): say so to the person so the platform team can be told.",
+      "user": "这张表已经满了，需要先删掉一些旧的行。"
+    },
+    {
+      "code": "TABLE_ROW_UNREADABLE",
+      "component": "space-server",
+      "status": 409,
+      "retry": "never",
+      "log": "warn",
+      "agent": "A row file is no longer a row (edited outside the table ops?) in {operation}{on_target}",
+      "next": "Write the row again with upsert (all its columns); rows change only through the table ops.",
+      "user": "这一行的数据坏了，需要重新写一次。"
+    },
+    {
+      "code": "TABLE_ROW_INVALID",
+      "component": "space-server",
+      "status": 422,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}{on_target}: a row file it changes is not a row of its table (a hand edit that does not parse, a wrong type, an unknown column, a file named for another key), or a schema change leaves rows that no longer fit, so nothing was submitted; the cause names every problem by code, file and field",
+      "next": "Fix each named file in your draft (or write the rows with the table ops insert, upsert, update and delete, which check them; a row's file is tables/<table>/<hh>/<key>.json), then submit again. Your other changes stay in the draft.",
+      "user": "表格数据有错误，这次没有提交。"
+    },
+    {
+      "code": "TABLE_QUERY_INVALID",
+      "component": "space-server",
+      "status": 400,
+      "retry": "never",
+      "log": "info",
+      "agent": "The where, order or page of {operation}{on_target} is not one the table view takes",
+      "next": "where is a JSON map column → value or column → {\"contains\": text} / {\"gte\": v} / {\"lte\": v}; order is a column or -column; page from 1; per_page 1 to 200.",
+      "user": "查询条件不对，没有查到结果。"
+    },
+    {
+      "code": "HOST_RESOURCE_BUSY",
+      "component": "space-server",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: {target} needs an exclusive resource of its host (display, gpu, audio or camera) that another instance or the person holds now; the cause names each holder, its Agent and since when",
+      "next": "Do not retry at once: ask the holder's Agent (or the person) to stop it or give the resource back, use the running instance that holds it, or start this on a host whose resource is free; the platform never queues it.",
+      "user": "这台设备的屏幕或显卡正被占用，先停掉占用它的那个再试。"
+    },
+    {
+      "code": "NO_QUALIFYING_HOST",
+      "component": "control",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: no host fits {target}; the cause names every candidate host and why it was rejected (pinned elsewhere, not allowed by the definition, lacking the os, tools, gpu or labels it requires, without a resource it needs, or offline)",
+      "next": "Nothing was started. Pin one of the hosts the cause lists (requires.host: pc:<name>), change what it requires in the space's definition, or link a computer that has it; calling again unchanged will not help.",
+      "user": "没有一台设备满足它的运行要求。"
+    },
+    {
+      "code": "INSTANCE_NEEDS_CYCLE",
+      "component": "control",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: the instances {target} needs (needs.instances) lead back to a space already waiting in the chain, or nest deeper than 4 spaces; the cause names the chain",
+      "next": "Nothing was started. Remove the cycle (or flatten the chain) in needs.instances of those spaces' .ar/space.yaml; calling again unchanged will not help.",
+      "user": "它依赖的运行实例绕成了一个圈，没法启动。"
+    },
+    {
+      "code": "INSTANCE_DEPENDENCY_EXITED",
+      "component": "control",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: an instance {target} needs was started first and exited at once; the cause has its exit and its last output",
+      "next": "Nothing else was started. Fix that space's runtime (run it alone with env_run to see why it exits), then call again.",
+      "user": "它依赖的程序一启动就退出了。"
+    },
+    {
+      "code": "INSTANCE_DEPENDENCY_NOT_READY",
+      "component": "control",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: an instance {target} needs was started first but did not answer within the wait, so it was stopped again; the cause names it",
+      "next": "Start that space alone with env_run (it may need longer than this call waits); once it answers, call again: the start then joins it.",
+      "user": "它依赖的程序启动太慢，还没准备好。"
+    },
+    {
+      "code": "LAUNCH_RECIPE_UNKNOWN",
+      "component": "agent-sessions",
+      "status": 404,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: no platform Agent definition {target}; a platform recipe is named platform/<id>",
+      "next": "Name a platform definition that exists (a role of the Main Agent's team), or the person's own recipe by { ref: space/path@version }.",
+      "user": "找不到这个 Agent。"
+    },
+    {
+      "code": "LAUNCH_RECIPE_UNPINNED",
+      "component": "agent-sessions",
+      "status": 422,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: the recipe {target} is not pinned to a version, so no conversation starts from it",
+      "next": "Name the recipe at a version (space/path@version). A platform recipe is copied into one of the person's spaces first (file_copy), then the copy is tried or published.",
+      "user": "这个 Agent 还没有确定的版本，先发布或指定版本再试。"
+    },
+    {
+      "code": "LAUNCH_RECIPE_MISMATCH",
+      "component": "agent-sessions",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: conversation {target} runs another recipe than the start named; a conversation keeps its recipe for life",
+      "next": "Continue the conversation without naming another recipe, or start a new conversation with that recipe.",
+      "user": "这个对话属于另一个 Agent，请新开一个对话。"
+    },
+    {
+      "code": "LAUNCH_CONVERSATION_UNKNOWN",
+      "component": "agent-sessions",
+      "status": 404,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: {target} is not a live conversation of this person's (deleted, ended by the person, or someone else's)",
+      "next": "Start a new conversation instead, or name one of the person's live conversations.",
+      "user": "找不到这个对话。"
+    },
+    {
+      "code": "LAUNCH_PAYER_UNRESOLVED",
+      "component": "agent-sessions",
+      "status": 409,
+      "retry": "never",
+      "log": "warn",
+      "agent": "{operation}: who pays for {target} could not be resolved, so nothing started (the cause names the budget scope and why its key is missing)",
+      "next": "Nothing is charged. A person's key: they sign in again. A conversation's key: start from a conversation that runs on the person's own key. A schedule: the person re-enables the task. The platform's key: tell the operator.",
+      "user": "现在没法开始，请稍后再试或重新登录。"
+    },
+    {
+      "code": "LAUNCH_GRANTS_NO_CALLER",
+      "component": "agent-sessions",
+      "status": 422,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: grants were given without a caller to take them from; grants come only from the Agent that dispatches (why: parent), each a part of its own reach",
+      "next": "Drop the grants, or start the conversation as a dispatch from the Agent that reaches those spaces.",
+      "user": "不能给这个对话额外的空间。"
+    },
+    {
+      "code": "LAUNCH_WHERE_UNSUPPORTED",
+      "component": "agent-sessions",
+      "status": 501,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: creating an environment from a work space at start ({target}) is not built yet (#2825)",
+      "next": "Start in the default environment (where: default) or an existing one (where: environment), then create the environment from the work space once it is available.",
+      "user": "暂时不能在启动时创建这个环境。"
+    },
+    {
+      "code": "LAUNCH_LIFECYCLE_UNSUPPORTED",
+      "component": "agent-sessions",
+      "status": 501,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: a resident conversation (one that stays up while a job needs it) is not built yet; conversations end when idle and resume on their next message",
+      "next": "Start it with the default lifecycle (idle-exit); it resumes on its next message or event.",
+      "user": "暂时不能让这个对话一直保持运行。"
+    },
+    {
+      "code": "LAUNCH_LIMITS_WIDEN",
+      "component": "agent-sessions",
+      "status": 422,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: the start's limits would widen what the recipe {target} allows; a start may only narrow them",
+      "next": "Pass limits at or below the recipe's (the cause names the limit), or change the recipe itself.",
+      "user": "不能超过这个 Agent 自己的限额。"
+    },
+    {
+      "code": "LAUNCH_LINE_UNAVAILABLE",
+      "component": "agent-sessions",
+      "status": 409,
+      "retry": "never",
+      "log": "warn",
+      "agent": "{operation}: no kernel runs the model line the recipe names ({target}), so nothing started",
+      "next": "Change the recipe's model.line to a DeepSeek line the platform runs, or leave it out to run on the conversation's line.",
+      "user": "这个 Agent 指定的模型线现在不可用。"
+    },
+    {
+      "code": "LAUNCH_ENTRY_UNAVAILABLE",
+      "component": "agent-sessions",
+      "status": 501,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: entry spaces that serve visitors ({target}) are not built yet (#2818)",
+      "next": "Start the conversation for the person directly (why: message) until entry spaces are available.",
+      "user": "这个入口还没开放。"
+    },
+    {
+      "code": "AGENT_DEFINITIONS_UNAVAILABLE",
+      "component": "agent-sessions",
+      "status": 409,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: the person's own Agents (recipes) are not open to this account yet, so {target} cannot be started",
+      "next": "Start the conversation with the Main Agent instead; own Agents open with the rollout flag agentDefinitions.",
+      "user": "你的 Agent 功能还没开放。"
+    },
+    {
+      "code": "AGENT_NOT_ENTITLED",
+      "component": "agent-sessions",
+      "status": 403,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation}: the person's plan does not cover this start ({target}); the cause says which allowance is used up",
+      "next": "Nothing started and nothing is charged. Tell the person their allowance is used up; they continue after buying a card or when the cycle renews.",
+      "user": "本期额度已用完，购买月卡后继续使用。"
     }
   ]
 }
