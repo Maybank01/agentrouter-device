@@ -73,7 +73,8 @@ struct Host {
     out: Arc<out::Out>,
     ptys: pty::Ptys,
     changes: watch::Changes,
-    /// On-demand checkouts of space versions (Cloud #2767), by folder.
+    /// On-demand checkouts of space versions (Cloud #2767), by folder (Linux only for now).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     spaces: space::Spaces,
 }
 
