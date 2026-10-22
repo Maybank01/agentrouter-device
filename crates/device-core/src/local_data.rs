@@ -155,7 +155,7 @@ mod tests {
 
     #[test]
     fn the_view_says_whether_the_folder_is_there() {
-        let here = std::env::temp_dir();
+        let here = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let list = vec![
             LocalData {
                 name: "tmp".into(),
