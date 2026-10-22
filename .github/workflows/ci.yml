@@ -158,12 +158,23 @@ jobs:
           foreach ($t in 'node', 'npx', 'uvx') {
             if (Get-Command $t -ErrorAction SilentlyContinue) { throw "$t is still on PATH" }
           }
-      - name: Linux sandbox dependencies (bubblewrap, socat, ripgrep; user namespaces)
+      # #119: srt's ripgrep and socat are the device's own (`sandbox setup` provisions them); only bubblewrap is the
+      # distribution's. Any socat/rg on the runner is hidden, so nothing here can fall back to them.
+      - name: Linux sandbox dependencies (bubblewrap only; user namespaces; no socat or rg)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -q
-          sudo apt-get install -yq bubblewrap socat ripgrep
+          sudo apt-get install -yq bubblewrap
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          for tool in socat rg; do
+            { which -a "$tool" 2>/dev/null || true; } | sort -u | while read -r p; do
+              if [ -e "$p" ] || [ -L "$p" ]; then sudo mv "$p" "$p.hidden-by-ci"; fi
+            done
+          done
+          hash -r
+          for tool in socat rg; do
+            if command -v "$tool"; then echo "$tool is still on PATH"; exit 1; fi
+          done
       # srt-win starts the sandbox account's processes with CreateProcessWithLogonW, which needs Secondary Logon
       # (stopped on the hosted image; on people's PCs it starts on demand).
       - name: Windows Secondary Logon service
@@ -180,3 +191,21 @@ jobs:
         run: cargo test -p agentrouter-aggregator -- --nocapture
       - name: The whole chain through the real CLI, and the escape cases (issue #50)
         run: cargo test -p agentrouter-device-cli --test link_e2e -- --nocapture
+      # #119: without bubblewrap, setup still provisions everything else and the status names the one-line install.
+      - name: A missing bubblewrap names the install line (Linux)
+        if: runner.os == 'Linux'
+        env:
+          AGENTROUTER_DEVICE_HOME: ${{ runner.temp }}/no-bwrap/data
+        run: |
+          sudo mv /usr/bin/bwrap /usr/bin/bwrap.hidden-by-ci
+          hash -r
+          if command -v bwrap; then echo "bwrap is still on PATH"; exit 1; fi
+          cargo build -q -p agentrouter-device-cli --bin agentrouter
+          target/debug/agentrouter sandbox setup | tee setup.txt
+          set +e; target/debug/agentrouter sandbox status > status.txt; code=$?; set -e
+          cat status.txt
+          sudo mv /usr/bin/bwrap.hidden-by-ci /usr/bin/bwrap
+          test "$code" = 1
+          grep -q "准备好了 socat" setup.txt && grep -q "准备好了 ripgrep" setup.txt
+          grep -q "缺少 bubblewrap" status.txt
+          grep -q "sudo apt-get install -y bubblewrap" status.txt

@@ -9,7 +9,9 @@
 //! the device's own pinned copies ([`runtimes`], #116): the person installs nothing.
 //!
 //! - macOS: Seatbelt (`sandbox-exec`) profile; no setup.
-//! - Linux: bubblewrap + a network namespace (needs `bwrap`, `socat`, `rg` and unprivileged user namespaces).
+//! - Linux: bubblewrap + a network namespace. srt's ripgrep and socat are the device's own pinned copies (#119);
+//!   `bwrap` is the distribution's (on Ubuntu 24.04+ only the packaged one may create user namespaces), and when it is
+//!   missing [`Runtime::status`] names the one-line install command for this distribution ([`NEEDS_ADMIN`]).
 //! - Windows (alpha upstream): the command runs as the dedicated `srt-sandbox` account (one elevated setup:
 //!   [`Runtime::setup`]); write access is explicit ACEs on the folder and the scratch folder, network is a WFP
 //!   fence keyed on that account. srt-win gives the child a fresh environment and runs it through `cmd /c`, so the
@@ -54,6 +56,10 @@ pub const OPEN_WEB_JS: &str = include_str!("open-web.mjs");
 pub const WINDOWS_PROXY_PORTS: (u16, u16) = (60080, 60143);
 /// The error code a call gets when its server cannot be confined (never run unconfined instead).
 pub const UNAVAILABLE: &str = "SANDBOX_UNAVAILABLE";
+/// The sandbox needs a one-time change only the computer's administrator can make (a system package such as
+/// bubblewrap, or a kernel setting): `agentrouter sandbox setup` cannot help, the person runs the one line in `next`
+/// (Cloud error catalog).
+pub const NEEDS_ADMIN: &str = "HOSTD_SANDBOX_NEEDS_ADMIN";
 
 /// Reachable from every server (owner 2026-10-19, Q6 「可以」): package registries and their mirrors, and where uv
 /// downloads Python from. A server's own catalog list is added to this.
@@ -92,6 +98,8 @@ pub const PRIVATE_RANGES: &[&str] = &[
 /// Why a server cannot be started confined, and what the person can do about it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unavailable {
+    /// [`UNAVAILABLE`] (`agentrouter sandbox setup` fixes it) or [`NEEDS_ADMIN`] (only the line in `next` does).
+    pub code: &'static str,
     pub message: String,
     pub next: String,
 }
@@ -99,9 +107,24 @@ pub struct Unavailable {
 impl Unavailable {
     fn new(message: impl Into<String>, next: impl Into<String>) -> Unavailable {
         Unavailable {
+            code: UNAVAILABLE,
             message: message.into(),
             next: next.into(),
         }
+    }
+
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    fn needs_admin(message: impl Into<String>, next: impl Into<String>) -> Unavailable {
+        Unavailable {
+            code: NEEDS_ADMIN,
+            message: message.into(),
+            next: next.into(),
+        }
+    }
+
+    /// `agentrouter sandbox setup` can fix it (it cannot install system packages or change kernel settings).
+    pub fn setup_helps(&self) -> bool {
+        self.code != NEEDS_ADMIN
     }
 }
 
@@ -110,6 +133,11 @@ impl std::fmt::Display for Unavailable {
         write!(f, "{}（{}）", self.message, self.next)
     }
 }
+
+/// Allows capability-bearing unprivileged user namespaces now and after a restart (srt README, "Ubuntu 24.04+ note":
+/// bubblewrap and srt's seccomp layer need them; the AppArmor restriction strips their capabilities).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+const USERNS_LINE: &str = "echo kernel.apparmor_restrict_unprivileged_userns=0 | sudo tee /etc/sysctl.d/60-agentrouter-userns.conf && sudo sysctl -p /etc/sysctl.d/60-agentrouter-userns.conf";
 
 const NEXT_SETUP: &str = "请用户在这台电脑上运行 agentrouter sandbox setup（装好隔离环境；Windows 会弹一次管理员确认），然后再试。";
 
@@ -229,11 +257,11 @@ impl Runtime {
             .ok_or_else(|| "隔离环境要用的 Node.js 还没准备好".to_string())
     }
 
-    /// The program folders of the installed runtimes: first on every local tool's PATH, so `npx` runs on the
-    /// device's Node and `uvx` is the device's uv.
+    /// The program folders of the installed runtimes local tools run on ([`runtimes::TOOLS`]): first on every local
+    /// tool's PATH, so `npx` runs on the device's Node and `uvx` is the device's uv.
     pub fn runtime_bins(&self) -> Vec<PathBuf> {
         let root = self.runtimes_dir();
-        runtimes::ALL
+        runtimes::TOOLS
             .iter()
             .filter(|r| r.installed(&root))
             .map(|r| r.bin_dir(&root))
@@ -244,7 +272,7 @@ impl Runtime {
     /// installed; anything else (and those, where the device has none, e.g. a cloud sandbox image) from PATH.
     pub fn find(&self, name: &str) -> Option<PathBuf> {
         let root = self.runtimes_dir();
-        runtimes::ALL
+        runtimes::TOOLS
             .iter()
             .find_map(|r| r.program(&root, name))
             .or_else(|| find_program(name, None))
@@ -260,19 +288,26 @@ impl Runtime {
             .unwrap_or_else(|_| path.map(|p| p.to_os_string()).unwrap_or_default())
     }
 
-    /// Download and unpack the pinned runtimes that are missing ([`runtimes`]; no elevation). Node is required (srt
-    /// runs on it); without uv only `uvx` tools are missing, so that is a line, not a failure.
-    pub fn provision(&self) -> Result<Vec<String>, String> {
+    /// Download and unpack the pinned runtimes that are missing ([`runtimes`]; no elevation): what local tools run on
+    /// and, for the sandbox (`confined`), what srt runs on this OS (Linux: ripgrep and socat). A required one that
+    /// fails is the error (Node: srt runs on it; ripgrep and socat: srt cannot confine without them); without uv only
+    /// `uvx` tools are missing, so that is a line, not a failure.
+    pub fn provision(&self, confined: bool) -> Result<Vec<String>, String> {
         let root = self.runtimes_dir();
         let mut done = Vec::new();
-        for rt in runtimes::ALL {
+        let sandbox: &[&runtimes::Pinned] = if confined {
+            runtimes::sandbox_programs()
+        } else {
+            &[]
+        };
+        for rt in runtimes::TOOLS.iter().chain(sandbox) {
             match rt.ensure(&root) {
                 Ok(true) => done.push(format!(
                     "准备好了 {} {}（AgentRouter 自己用，不改这台电脑上已有的）",
                     rt.title, rt.version
                 )),
                 Ok(false) => {}
-                Err(e) if std::ptr::eq(rt, &runtimes::NODE) => return Err(e),
+                Err(e) if rt.required => return Err(e),
                 Err(e) => done.push(format!(
                     "{} 没准备好，要用它的本机工具这次起不来；下次运行 agentrouter sandbox setup 会再试（{e}）",
                     rt.title
@@ -395,10 +430,11 @@ impl Runtime {
         Ok(())
     }
 
-    /// `agentrouter sandbox setup`: the device's own Node.js and uv ([`Runtime::provision`]), srt when it is missing
-    /// and, on Windows, the sandbox account and its network fence (one UAC prompt, owner Q4). Returns what was done.
+    /// `agentrouter sandbox setup`: the device's own Node.js and uv (and on Linux ripgrep and socat,
+    /// [`Runtime::provision`]), srt when it is missing and, on Windows, the sandbox account and its network fence (one
+    /// UAC prompt, owner Q4). Returns what was done.
     pub fn setup(&self) -> Result<Vec<String>, String> {
-        let mut done = self.provision()?;
+        let mut done = self.provision(true)?;
         if !self.installed() {
             self.install()?;
             done.push(format!("装好了 {SRT_PACKAGE}@{SRT_VERSION}"));
@@ -514,14 +550,23 @@ impl Runtime {
         }
         #[cfg(target_os = "linux")]
         {
-            let missing: Vec<&str> = ["bwrap", "socat", "rg"]
-                .into_iter()
-                .filter(|p| find_program(p, None).is_none())
-                .collect();
-            if !missing.is_empty() {
+            if system_bwrap().is_none() {
+                return Err(Unavailable::needs_admin(
+                    "这台电脑缺少 bubblewrap（bwrap）：文件夹模式靠它把本机工具关在所选文件夹里，它是系统自带的隔离程序，要管理员权限才能装",
+                    format!(
+                        "请用户在终端运行这一行（会要电脑的登录密码）：{}；装好后再试，不用重启。",
+                        install_line(&os_release(), "bubblewrap")
+                    ),
+                ));
+            }
+            let root = self.runtimes_dir();
+            if let Some(rt) = runtimes::SANDBOX_LINUX
+                .iter()
+                .find(|rt| !rt.installed(&root))
+            {
                 return Err(Unavailable::new(
-                    format!("这台电脑缺少隔离要用的程序：{}", missing.join("、")),
-                    "请用户运行 sudo apt-get install bubblewrap socat ripgrep（其他发行版装同名的包）；Ubuntu 24.04 以后还要允许非特权用户命名空间：sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0。",
+                    format!("隔离环境要用的 {} 还没准备好", rt.title),
+                    NEXT_SETUP,
                 ));
             }
         }
@@ -642,10 +687,11 @@ impl Runtime {
             .get_or_init(|| {
                 let scratch = self.scratch("\u{1}probe");
                 let _ = std::fs::create_dir_all(&scratch);
-                let policy = json!({
+                let mut policy = json!({
                     "network": {"allowedDomains": [], "deniedDomains": []},
-                    "filesystem": {"denyRead": [], "allowRead": [shown(&self.package_dir())], "allowWrite": [shown(&scratch)], "denyWrite": []},
+                    "filesystem": {"denyRead": [], "allowRead": [shown(&self.package_dir()), shown(&self.runtimes_dir())], "allowWrite": [shown(&scratch)], "denyWrite": []},
                 });
+                self.linux_programs(&mut policy);
                 let file = self.root().join("policies").join("probe.json");
                 let _ = std::fs::create_dir_all(self.root().join("policies"));
                 std::fs::write(&file, policy.to_string())
@@ -682,9 +728,9 @@ impl Runtime {
                             .iter()
                             .any(|n| text.contains(n));
                         if cfg!(target_os = "linux") && userns {
-                            Err(Unavailable::new(
-                                format!("这台电脑不允许隔离环境建用户命名空间（{clipped}）"),
-                                "请用户运行 sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0（长期生效：写进 /etc/sysctl.d/），或者在信任的情况下用 agentrouter link --full。",
+                            Err(Unavailable::needs_admin(
+                                format!("这台电脑不让程序建带权限的用户命名空间（Ubuntu 24.04 起默认这样），文件夹模式的隔离靠它，起不来（{clipped}）"),
+                                format!("请用户在终端运行这一行（会要电脑的登录密码，重启后也有效）：{USERNS_LINE}；然后再试。或者在信任的情况下用 agentrouter start --full。"),
                             ))
                         } else {
                             Err(Unavailable::new(
@@ -833,7 +879,22 @@ impl Runtime {
             policy["windows"] =
                 json!({"proxyPortRange": [WINDOWS_PROXY_PORTS.0, WINDOWS_PROXY_PORTS.1]});
         }
+        self.linux_programs(&mut policy);
         Ok(policy)
+    }
+
+    /// Linux: the programs srt runs, by absolute path (#119): the device's pinned ripgrep and socat (never the
+    /// person's own, whatever version that is) and the distribution's bubblewrap. Nothing elsewhere.
+    fn linux_programs(&self, policy: &mut Value) {
+        if !cfg!(target_os = "linux") {
+            return;
+        }
+        let root = self.runtimes_dir();
+        policy["ripgrep"] = json!({"command": shown(&runtimes::RG.bin_dir(&root).join("rg"))});
+        policy["socatPath"] = json!(shown(&runtimes::SOCAT.bin_dir(&root).join("socat")));
+        if let Some(bwrap) = system_bwrap() {
+            policy["bwrapPath"] = json!(shown(&bwrap));
+        }
     }
 
     /// The confined command for one program: cwd and environment are set; the caller pipes stdio and spawns. On
@@ -1164,6 +1225,84 @@ fn home_dir() -> PathBuf {
     plain(&std::env::var_os(var).map(PathBuf::from).unwrap_or_default())
 }
 
+/// The distribution's bubblewrap: `/usr/bin/bwrap` first (on Ubuntu 24.04+ its AppArmor profile is what lets it create
+/// user namespaces), then PATH.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn system_bwrap() -> Option<PathBuf> {
+    ["/usr/bin/bwrap", "/bin/bwrap"]
+        .into_iter()
+        .map(PathBuf::from)
+        .find(|p| p.is_file())
+        .or_else(|| find_program("bwrap", None))
+}
+
+/// `/etc/os-release` (or `/usr/lib/os-release`), empty when neither is there.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn os_release() -> String {
+    ["/etc/os-release", "/usr/lib/os-release"]
+        .into_iter()
+        .find_map(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_default()
+}
+
+/// The one line that installs `package` with this distribution's package manager, from os-release's `ID` and
+/// `ID_LIKE` (the package is `bubblewrap` everywhere); a package manager on PATH when the distribution is unknown.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn install_line(os_release: &str, package: &str) -> String {
+    let field = |key: &str| -> Vec<String> {
+        os_release
+            .lines()
+            .find_map(|l| l.strip_prefix(&format!("{key}=")))
+            .map(|v| {
+                v.trim_matches(|c| c == '"' || c == '\'')
+                    .split_whitespace()
+                    .map(str::to_ascii_lowercase)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let ids: Vec<String> = field("ID").into_iter().chain(field("ID_LIKE")).collect();
+    let is = |names: &[&str]| ids.iter().any(|i| names.contains(&i.as_str()));
+    let managers: [(&[&str], &str, String); 6] = [
+        (
+            &["debian", "ubuntu"],
+            "apt-get",
+            format!("sudo apt-get install -y {package}"),
+        ),
+        (
+            &["fedora", "rhel", "centos"],
+            "dnf",
+            format!("sudo dnf install -y {package}"),
+        ),
+        (
+            &["arch", "manjaro"],
+            "pacman",
+            format!("sudo pacman -S --needed {package}"),
+        ),
+        (
+            &["opensuse", "suse", "sles"],
+            "zypper",
+            format!("sudo zypper install -y {package}"),
+        ),
+        (&["alpine"], "apk", format!("sudo apk add {package}")),
+        (
+            &["gentoo"],
+            "emerge",
+            format!("sudo emerge sys-apps/{package}"),
+        ),
+    ];
+    managers
+        .iter()
+        .find(|(names, _, _)| is(names))
+        .or_else(|| {
+            managers
+                .iter()
+                .find(|(_, program, _)| find_program(program, None).is_some())
+        })
+        .map(|(_, _, line)| line.clone())
+        .unwrap_or_else(|| format!("用这台电脑的软件包管理器装 {package}（它提供 bwrap 命令）"))
+}
+
 /// A program on PATH (and beside `near`, for npm next to node), with Windows extensions.
 pub fn find_program(name: &str, near: Option<&Path>) -> Option<PathBuf> {
     let exts: &[&str] = if cfg!(windows) {
@@ -1409,7 +1548,48 @@ mod tests {
         assert!(domains.iter().any(|d| d == "api.example.com"));
         assert!(!domains.iter().any(|d| d == "bad domain"));
         assert!(!rt.scratch(launch.key).starts_with(&rt.data_dir));
+        // Linux: srt runs the device's own ripgrep and socat (#119), never whatever is on PATH; elsewhere neither.
+        let runtimes = shown(&rt.runtimes_dir());
+        for (got, program) in [(&p["ripgrep"]["command"], "rg"), (&p["socatPath"], "socat")] {
+            if cfg!(target_os = "linux") {
+                let got = got.as_str().unwrap();
+                assert!(
+                    got.starts_with(&runtimes) && got.ends_with(program),
+                    "{got}"
+                );
+            } else {
+                assert!(got.is_null());
+            }
+        }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_bwrap_names_the_install_line_of_this_distribution() {
+        let apt = "sudo apt-get install -y bubblewrap";
+        let dnf = "sudo dnf install -y bubblewrap";
+        for (os_release, line) in [
+            ("NAME=\"Ubuntu\"\nID=ubuntu\nID_LIKE=debian\n", apt),
+            ("ID=debian\n", apt),
+            ("ID=linuxmint\nID_LIKE=\"ubuntu debian\"\n", apt),
+            ("ID=fedora\n", dnf),
+            ("ID=\"rhel\"\nID_LIKE=\"fedora\"\n", dnf),
+            ("ID=arch\n", "sudo pacman -S --needed bubblewrap"),
+            (
+                "ID=\"opensuse-tumbleweed\"\nID_LIKE=\"opensuse suse\"\n",
+                "sudo zypper install -y bubblewrap",
+            ),
+            ("ID=alpine\n", "sudo apk add bubblewrap"),
+        ] {
+            assert_eq!(install_line(os_release, "bubblewrap"), line, "{os_release}");
+        }
+        let missing = Unavailable::needs_admin("x", install_line("ID=ubuntu\n", "bubblewrap"));
+        assert_eq!(missing.code, NEEDS_ADMIN);
+        assert!(
+            !missing.setup_helps(),
+            "sandbox setup cannot install a system package"
+        );
+        assert!(Unavailable::new("x", NEXT_SETUP).setup_helps());
     }
 
     #[test]

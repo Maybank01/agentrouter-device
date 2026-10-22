@@ -526,12 +526,7 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
     let sandbox = agentrouter_sandbox::Runtime::new(&data);
     let mut status = sandbox.status();
     if !opts.full {
-        if !status.ready
-            && !status
-                .problems
-                .iter()
-                .any(|p| p.message.contains("命名空间"))
-        {
+        if !status.ready && status.problems.iter().all(|p| p.setup_helps()) {
             line(
                 "  沙箱     第一次要准备隔离环境（下载一次，约 70 MB；Windows 会弹一次管理员确认，可能要几分钟）…",
             );
@@ -551,10 +546,10 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
             }
             line("           没有沙箱时本机工具一个也不会运行（不会在沙箱外运行）。");
         }
-    } else if sandbox.runtime_bins().len() < agentrouter_sandbox::runtimes::ALL.len() {
+    } else if sandbox.runtime_bins().len() < agentrouter_sandbox::runtimes::TOOLS.len() {
         // 完全访问 runs `npx`/`uvx` tools too: the device's own Node and uv, no install for the person (#116).
         line("  运行环境 第一次要下载 AgentRouter 自己用的 Node.js 和 uv（约 70 MB）…");
-        match sandbox.provision() {
+        match sandbox.provision(false) {
             Ok(done) => done.iter().for_each(|d| line(&format!("  运行环境 {d}"))),
             Err(e) => line(&format!(
                 "  运行环境 没准备好：{e}（要用 npx 的本机工具这次起不来）"

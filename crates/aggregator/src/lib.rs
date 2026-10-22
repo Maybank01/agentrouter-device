@@ -878,7 +878,7 @@ impl Inner {
             "cloud": self.cfg.cloud,
             "readOnly": self.cfg.read_only,
             "sandbox": {"backend": status.backend, "mechanism": status.mechanism, "ready": status.ready,
-                        "problems": status.problems.iter().map(|p| json!({"message": p.message, "next": p.next})).collect::<Vec<_>>()},
+                        "problems": status.problems.iter().map(|p| json!({"code": p.code, "message": p.message, "next": p.next})).collect::<Vec<_>>()},
             "servers": list,
         })
     }
@@ -1025,8 +1025,7 @@ impl Inner {
             && let Some(problem) = status.problems.first()
         {
             return Err(
-                Failure::new(agentrouter_sandbox::UNAVAILABLE, problem.message.clone())
-                    .next(problem.next.clone()),
+                Failure::new(problem.code, problem.message.clone()).next(problem.next.clone())
             );
         }
         if let Some(pin) = &def.pin {
@@ -1055,8 +1054,7 @@ impl Inner {
         tokio::spawn(servers::supervise(self.clone(), server.clone()));
         let state = server.wait_settled(wait).await;
         if let State::Unavailable(why) = state {
-            return Err(Failure::new(agentrouter_sandbox::UNAVAILABLE, why)
-                .next("请用户在这台电脑上运行 agentrouter sandbox setup，然后再试。"));
+            return Err(Failure::new(why.code, why.message).next(why.next));
         }
         Ok(server.view())
     }
@@ -1157,8 +1155,8 @@ impl Inner {
                 .to_error());
             }
             State::Unavailable(why) => {
-                return Err(Failure::new(agentrouter_sandbox::UNAVAILABLE, why)
-                    .next("请用户在这台电脑上运行 agentrouter sandbox setup，然后再试。")
+                return Err(Failure::new(why.code, why.message)
+                    .next(why.next)
                     .to_error());
             }
             State::Crashed(why) => {
