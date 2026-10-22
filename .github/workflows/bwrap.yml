@@ -1,0 +1,132 @@
+# bubblewrap for Linux folder mode (#122): srt confines every local server with bubblewrap. The device brings its own
+# copy, as it does socat and ripgrep (crates/sandbox/src/runtimes.rs), for two reasons:
+# - the person installs nothing;
+# - on Ubuntu, where AppArmor restricts unprivileged user namespaces, `agentrouter sandbox userns install` can give
+#   exactly one root-owned copy of it the `userns` permission. The packaged /usr/bin/bwrap's profile strips
+#   capabilities from its children, and srt's seccomp helper needs them for its nested namespace.
+# Upstream publishes source only, so this workflow builds it:
+#
+# - Source: the official release tarball, SHA-256 pinned below (the digest the upstream release notes print).
+# - Build: inside a digest-pinned Alpine image, statically against musl, with libcap and without SELinux
+#   (scripts/build-bwrap-static.sh). Checked here on Ubuntu (outside Alpine): static, runs, makes the namespaces srt
+#   asks for.
+# - Publish (push to main / dispatch): pre-release `bwrap-static-<version>-r<n>`. It carries both archives, the source
+#   tarball and the build script (LGPL-2.0-or-later: the corresponding source ships beside the binary), plus SHA256SUMS.
+#   A tag that exists is never overwritten: a rebuild bumps REVISION, and the device pins the new digests.
+name: bubblewrap (static Linux)
+
+on:
+  push:
+    branches: [main]
+    paths: ["scripts/build-bwrap-static.sh", ".github/workflows/bwrap.yml"]
+  pull_request:
+    paths: ["scripts/build-bwrap-static.sh", ".github/workflows/bwrap.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bwrap-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  VERSION: 0.13.1
+  REVISION: "1"
+  SOURCE_SHA256: 0e85c8702248b8dd64144f594147553650cdd0e4c951690345faace79c217c4d
+  # alpine:3.24.3 (multi-arch index), as socat.yml.
+  ALPINE: alpine@sha256:1b7232cda4ca3dc20b5d1247bdc9bfb631f2661d15d323bdd6fccc035ed1a9e7
+
+jobs:
+  build:
+    name: bwrap ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, os: ubuntu-latest }
+          - { arch: aarch64, os: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Source (pinned SHA-256)
+        run: |
+          file="bubblewrap-${VERSION}.tar.xz"
+          curl -fsSL --retry 2 --max-time 120 -o "$file" "https://github.com/containers/bubblewrap/releases/download/v${VERSION}/${file}"
+          echo "${SOURCE_SHA256}  ${file}" | sha256sum -c -
+      - name: Build (Alpine, musl, static)
+        run: docker run --rm -v "$PWD:/w" -w /w "$ALPINE" sh scripts/build-bwrap-static.sh "bubblewrap-${VERSION}.tar.xz" build
+      - name: Static, runs, makes srt's namespaces (outside Alpine)
+        run: |
+          bin=build/bwrap
+          file "$bin"
+          file "$bin" | grep -Eq 'statically linked|static-pie linked'
+          if ldd "$bin" 2>/dev/null | grep -q '=>'; then echo "dynamically linked"; exit 1; fi
+          "$bin" --version | grep -q "bubblewrap ${VERSION}"
+          # The restriction is Ubuntu's; this check is about the binary (the device's CI checks the AppArmor path).
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          "$bin" --new-session --die-with-parent --ro-bind / / --dev /dev --unshare-net --unshare-pid --unshare-user \
+            --cap-drop ALL --proc /proc -- sh -c 'test "$(cat /proc/self/uid_map | wc -l)" = 1 && echo namespaces-ok' | grep -q namespaces-ok
+      - name: Package
+        run: |
+          name="bwrap-${VERSION}-${{ matrix.arch }}-linux-musl"
+          folder="bwrap-${VERSION}-r${REVISION}"
+          mkdir -p "pkg/${folder}" dist
+          cp build/bwrap build/COPYING "pkg/${folder}/"
+          printf '%s\n' \
+            "bubblewrap ${VERSION} (LGPL-2.0-or-later, see COPYING), one static program for Linux ${{ matrix.arch }} (musl, libcap)." \
+            "Built by AgentRouter device's .github/workflows/bwrap.yml, commit ${GITHUB_SHA}, from the official source" \
+            "bubblewrap-${VERSION}.tar.xz (SHA-256 ${SOURCE_SHA256}) with scripts/build-bwrap-static.sh." \
+            "The source tarball and the build script are attached to the same release." > "pkg/${folder}/BUILD.txt"
+          tar --sort=name --mtime='2026-01-01 00:00Z' --owner=0 --group=0 --numeric-owner -C pkg -cf - "$folder" \
+            | gzip -9n > "dist/${name}.tar.gz"
+          (cd dist && sha256sum "${name}.tar.gz" | tee "${name}.tar.gz.sha256")
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bwrap-${{ matrix.arch }}
+          path: dist/
+          retention-days: 30
+
+  publish:
+    name: Publish pre-release
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+          pattern: bwrap-*
+          merge-multiple: true
+      - name: Release bwrap-static-<version>-r<revision>
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="bwrap-static-${VERSION}-r${REVISION}"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "$tag exists; never overwritten (bump REVISION for a rebuild)"; exit 0
+          fi
+          file="bubblewrap-${VERSION}.tar.xz"
+          curl -fsSL --retry 2 --max-time 120 -o "artifacts/$file" "https://github.com/containers/bubblewrap/releases/download/v${VERSION}/${file}"
+          echo "${SOURCE_SHA256}  artifacts/${file}" | sha256sum -c -
+          cp scripts/build-bwrap-static.sh artifacts/
+          cd artifacts
+          sha256sum bwrap-*-linux-musl.tar.gz "$file" build-bwrap-static.sh > SHA256SUMS
+          cat SHA256SUMS
+          {
+            echo "bubblewrap ${VERSION} built statically against musl for Linux folder mode (agentrouter-device #122), commit ${GITHUB_SHA}."
+            echo "The device downloads these archives itself and checks the SHA-256 pinned in crates/sandbox/src/runtimes.rs."
+            echo "LGPL-2.0-or-later: the official source tarball and the build script are attached. Not a device release."
+            echo
+            echo '```'
+            cat SHA256SUMS
+            echo '```'
+          } > notes.md
+          gh release create "$tag" bwrap-*-linux-musl.tar.gz "$file" build-bwrap-static.sh SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false \
+            --title "bubblewrap ${VERSION} static (r${REVISION})" --notes-file notes.md
