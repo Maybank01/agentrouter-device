@@ -20,6 +20,7 @@ use agentrouter_aggregator::{
 };
 use agentrouter_checkpoint::{Journal, Shadow, folder_key};
 use agentrouter_device::config::Config;
+use agentrouter_device::local_data::{self, LocalData};
 use agentrouter_device::util::{data_dir, home_dir};
 use agentrouter_device::{audit, keystore, link};
 use agentrouter_hostd_link::{End, Event, LinkInfo};
@@ -149,6 +150,8 @@ struct Console {
     no_git_said: AtomicBool,
     /// The link's info and handle: `info` goes out when the folders change.
     info: Mutex<LinkInfo>,
+    /// The named local data registered on this computer (`config.json` `local_data`), for `link.localData`.
+    registered: Mutex<Vec<LocalData>>,
     handle: OnceLock<agentrouter_hostd_link::Handle>,
     /// The host's outbox, where feeds write (Cloud #2739): set once it is open.
     events: OnceLock<Arc<dyn agentrouter_aggregator::feeds::EventSink>>,
@@ -172,9 +175,23 @@ impl Console {
                 shadows.push((f.clone(), self.shadow_of(f)));
             }
         }
+        // A folder that left (a removed local data entry) gets no more checkpoints; its history stays for `undo`.
+        shadows.retain(|(g, _)| folders.contains(g));
         drop(shadows);
         let mut info = self.info.lock().unwrap();
         info.folders = folders.iter().map(|f| shown(f)).collect();
+        info.local_data = local_data_view(&self.registered.lock().unwrap(), folders);
+        if let Some(h) = self.handle.get() {
+            h.set_info(info.clone());
+        }
+    }
+
+    /// The person changed their named local data (`agentrouter data …`): the cloud gets the new `link.localData`.
+    fn set_registered(&self, list: Vec<LocalData>) {
+        *self.registered.lock().unwrap() = list;
+        let mut info = self.info.lock().unwrap();
+        let folders: Vec<PathBuf> = info.folders.iter().map(PathBuf::from).collect();
+        info.local_data = local_data_view(&self.registered.lock().unwrap(), &folders);
         if let Some(h) = self.handle.get() {
             h.set_info(info.clone());
         }
@@ -327,9 +344,20 @@ impl Hooks for Console {
     }
 
     fn folders_changed(&self, folders: &[PathBuf]) {
+        let before: Vec<PathBuf> = self
+            .info
+            .lock()
+            .unwrap()
+            .folders
+            .iter()
+            .map(PathBuf::from)
+            .collect();
         self.set_folders(folders);
-        if let Some(last) = folders.last() {
-            line(&format!("{}  加上了文件夹 {}", now(), shown(last)));
+        for f in folders.iter().filter(|f| !before.contains(f)) {
+            line(&format!("{}  加上了文件夹 {}", now(), shown(f)));
+        }
+        for f in before.iter().filter(|f| !folders.contains(f)) {
+            line(&format!("{}  拿掉了文件夹 {}", now(), shown(f)));
         }
     }
 
@@ -429,6 +457,85 @@ fn project_servers(folder: &Path) -> Vec<Value> {
         .unwrap_or_default()
 }
 
+/// `link.localData` (Cloud DEVICES §2.5): the registered entries, then each linked folder no entry names yet, under its
+/// folder name (`linked: true`; the link's unnamed folders become named entries, the registry keeps `folders` too).
+fn local_data_view(registered: &[LocalData], folders: &[PathBuf]) -> Value {
+    let mut view = local_data::view(registered);
+    if let Value::Array(items) = &mut view {
+        for f in folders {
+            let (path, name) = (shown(f), folder_name(f));
+            if registered.iter().any(|d| d.path == path)
+                || local_data::find(registered, &name).is_some()
+            {
+                continue;
+            }
+            if items.iter().any(|v| {
+                v["name"]
+                    .as_str()
+                    .is_some_and(|n| local_data::same_name(n, &name))
+            }) {
+                continue;
+            }
+            items.push(json!({"name": name, "path": path, "present": true, "linked": true}));
+        }
+    }
+    view
+}
+
+/// The folders the writable named local data adds to a folder-mode link (Cloud DEVICES §3.4 items 4 and 6): checked
+/// like a linked folder (no home, drive root or device data); one that is gone or not allowed is left out. Read-only
+/// entries add nothing: the folder sandbox already lets the link's servers read outside its folders (except hidden
+/// places) and never write there.
+fn data_folders(list: &[LocalData], data: &Path) -> Vec<PathBuf> {
+    list.iter()
+        .filter(|d| !d.read_only)
+        .filter_map(|d| agentrouter_aggregator::check_folder(Path::new(&d.path), data).ok())
+        .collect()
+}
+
+/// Named local data changes while the link runs (`agentrouter data add|remove`, checked every few seconds): the
+/// cloud gets the new list, and in folder mode the writable folders join or leave the link's grants at once (a
+/// removed one is outside the sandbox from that moment; the cloud stops the instances that required it,
+/// `LOCAL_DATA_REVOKED`). Folders chosen on the command line stay.
+async fn watch_local_data(
+    console: Arc<Console>,
+    agg: Aggregator,
+    chosen: Vec<PathBuf>,
+    mut last: Vec<LocalData>,
+    folder_mode: bool,
+) {
+    const EVERY: Duration = Duration::from_secs(5);
+    let data = data_dir();
+    loop {
+        tokio::time::sleep(EVERY).await;
+        let now_list = Config::load().local_data;
+        if now_list == last {
+            continue;
+        }
+        if folder_mode {
+            let (before, after) = (data_folders(&last, &data), data_folders(&now_list, &data));
+            for gone in before
+                .iter()
+                .filter(|f| !after.contains(f) && !chosen.contains(f))
+            {
+                agg.remove_folder(gone).await;
+            }
+            for new in after.iter().filter(|f| !before.contains(f)) {
+                if let Err(e) = agg.add_folder(new).await {
+                    line(&format!(
+                        "{}  命名文件夹 {} 没加上：{}",
+                        now(),
+                        shown(new),
+                        e.message
+                    ));
+                }
+            }
+        }
+        console.set_registered(now_list.clone());
+        last = now_list;
+    }
+}
+
 /// The folders named on the command line (or the current folder), canonical and allowed.
 pub(crate) fn chosen_folders(dirs: &[String], full: bool) -> Result<Vec<PathBuf>, String> {
     let data = data_dir();
@@ -482,6 +589,19 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
         let _ = cfg.save();
     }
     let data = data_dir();
+    // Folder mode: the writable named local data are inside the person's grants (Cloud DEVICES §3.4).
+    let chosen = folders.clone();
+    let folders = if opts.full {
+        folders
+    } else {
+        let mut all = folders;
+        for f in data_folders(&cfg.local_data, &data) {
+            if !all.contains(&f) && all.len() < agentrouter_aggregator::MAX_FOLDERS {
+                all.push(f);
+            }
+        }
+        all
+    };
     if opts.double_click {
         // start.rs printed the folder and the one access line.
     } else if opts.full {
@@ -526,6 +646,16 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
             };
             line(&format!("{label}{}{tail}", shown(f)));
         }
+    }
+    for d in &cfg.local_data {
+        let state = if !Path::new(&d.path).is_dir() {
+            "（现在找不到这个文件夹）"
+        } else if d.read_only {
+            "（只读）"
+        } else {
+            ""
+        };
+        line(&format!("  命名文件夹 {} → {}{state}", d.name, d.path));
     }
     let identity = match keystore::load() {
         Some(identity) => {
@@ -654,6 +784,7 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
         pool: cfg.pool_name(),
         resources: agentrouter_device::capacity::resources(),
         software: Value::Null,
+        local_data: local_data_view(&cfg.local_data, &folders),
     };
     let meter = Arc::new(agentrouter_device::capacity::LoadMeter::new(
         cfg.max_environments,
@@ -671,6 +802,7 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
             asking: Arc::new(tokio::sync::Mutex::new(())),
             no_git_said: AtomicBool::new(false),
             info: Mutex::new(info.clone()),
+            registered: Mutex::new(cfg.local_data.clone()),
             handle: OnceLock::new(),
             events: OnceLock::new(),
         });
@@ -752,6 +884,13 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
             let handle = handle.clone();
             std::thread::spawn(move || report_software(handle));
         }
+        tokio::spawn(watch_local_data(
+            console.clone(),
+            agg.clone(),
+            chosen.clone(),
+            cfg.local_data.clone(),
+            !opts.full,
+        ));
 
         // The link's own SSH-like server (exec/read/write, host.rs): started here, never by the cloud.
         if console.full || status.ready {

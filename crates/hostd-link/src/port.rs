@@ -217,6 +217,7 @@ mod tests {
             pool: None,
             resources: Value::Null,
             software: Value::Null,
+            local_data: Value::Null,
         };
         assert!(!allowed(&info));
         info.full = true;

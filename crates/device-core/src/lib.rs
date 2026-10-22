@@ -21,6 +21,7 @@ pub mod keystore;
 pub mod limits;
 pub mod link;
 pub mod local_agent;
+pub mod local_data;
 pub mod local_secrets;
 pub mod lockfile;
 pub mod mcp_pkg;

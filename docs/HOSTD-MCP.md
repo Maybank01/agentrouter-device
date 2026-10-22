@@ -225,6 +225,16 @@ the id.
 
   Applying a delta twice is harmless (upsert / remove by id). `status` names sources that exist on this computer but
   could not be read; it is never an error.
+- `localData` (Cloud DEVICES §2.5, `agentrouter_device::local_data`): named local data,
+  `[{name, path, readOnly?, present, linked?}]`. The person registers a folder once under a name
+  (`agentrouter data add <name> <folder> [--read-only]`, `rename`, `remove`; `config.json` `local_data`); a space
+  requires it by name (`{ local: 素材 }`), never by path. `present: false` = the folder is gone now (an unplugged
+  drive). Each linked folder no entry names yet is listed under its folder name with `linked: true` (the unnamed
+  `folders` become named entries; `folders` stays for the registry). In folder mode the writable entries join the
+  link's folders (checkpoints, undo); read-only ones add nothing — the sandbox already lets servers read outside the
+  folders (except hidden places) and never write there. A change is picked up within seconds and goes as `info`;
+  a removed entry leaves the link's folders at once (its servers restart without it), and Control stops the instances
+  that required it (`LOCAL_DATA_REVOKED`). Cloud links send none.
 
 The `load` frame goes with every heartbeat. An environment is a conversation with an open MCP session on this
 host. `load1` is null on Windows. `free_slots` = `environments` capacity minus running ones.

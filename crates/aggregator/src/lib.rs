@@ -720,6 +720,12 @@ impl Aggregator {
         Inner::add_folder(&self.inner, path).await
     }
 
+    /// Take a folder out of the writable set (a named local data entry the person removed, Cloud DEVICES §2.5): every
+    /// running server restarts without it. The first folder (home) never leaves; `false` when it was not there.
+    pub async fn remove_folder(&self, path: &std::path::Path) -> bool {
+        Inner::remove_folder(&self.inner, path).await
+    }
+
     /// Add a server of this device's own (the link's terminal server): nobody is asked.
     pub async fn add_server(&self, def: ServerDef, wait: Duration) -> Result<Value, Failure> {
         Inner::add(&self.inner, def, wait, Origin::Device).await
@@ -824,6 +830,23 @@ impl Inner {
         self.hooks.folders_changed(&folders);
         self.restart_servers().await;
         Ok(folders)
+    }
+
+    async fn remove_folder(self: &Arc<Self>, path: &std::path::Path) -> bool {
+        let folders = {
+            let mut folders = self.folders.lock().unwrap();
+            match folders.iter().position(|f| f == path) {
+                Some(i) if i > 0 => {
+                    folders.remove(i);
+                    folders.clone()
+                }
+                _ => return false,
+            }
+        };
+        self.record(json!({"kind": "link", "event": "folder_removed", "link": self.cfg.link, "folder": path.to_string_lossy(), "folders": self.folders_shown()}));
+        self.hooks.folders_changed(&folders);
+        self.restart_servers().await;
+        true
     }
 
     /// Every server again with the current folders (its sandbox policy is fixed when it starts).

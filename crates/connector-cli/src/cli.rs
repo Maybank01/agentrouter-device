@@ -45,6 +45,10 @@ link 启动 hostd（宿主守护进程）；agentrouter hostd 是同一条命令
                                 不让平台看到某一项（id 见 software list）/ 取消隐藏
   agentrouter software source <来源> on|off
                                 打开或关掉一个来源（steam、epic、windows-uninstall、msix、gog、macos-apps、dpkg、rpm、pacman、flatpak、snap）
+  agentrouter data add <名字> <文件夹> [--read-only]
+                                给一个文件夹起名字（素材、游戏存档）：Agent 和空间按名字用它，不写路径；--read-only 只让读
+  agentrouter data list | rename <旧名字> <新名字> | remove <名字>
+                                看、改名、拿掉命名文件夹（拿掉后 Agent 立刻用不到它）
   agentrouter sandbox setup|status|remove
                                 本机工具的隔离环境（Windows 会弹一次管理员确认）
   sudo agentrouter sandbox userns install|remove
@@ -123,6 +127,9 @@ pub fn main() {
     }
     if command == "software" {
         std::process::exit(cmd_software(&args[1..]));
+    }
+    if command == "data" {
+        std::process::exit(cmd_data(&args[1..]));
     }
     let flags = match parse(&args[1..]) {
         Ok(f) => f,
@@ -455,6 +462,136 @@ fn print_sandbox_status(st: &agentrouter_sandbox::Status) {
     for p in st.problems.iter().chain(&st.notes) {
         println!("  {}", p.message);
         println!("  {}", p.next);
+    }
+}
+
+/// `agentrouter data list|add|rename|remove` (Cloud `docs/development/DEVICES.md` §2.5): named local data — a folder
+/// registered once under a name that spaces require by name (`{ local: 素材 }`), never by path. Saved in `config.json`;
+/// a running link reports the change and, in folder mode, adds or takes the folder out of its grants within seconds.
+fn cmd_data(args: &[String]) -> i32 {
+    use agentrouter_device::config::Config;
+    use agentrouter_device::local_data::{self, LocalData};
+    const USE: &str = "用法：agentrouter data add <名字> <文件夹> [--read-only] | list | rename <旧名字> <新名字> | remove <名字>";
+    let mut cfg = Config::load();
+    let save = |cfg: &Config, done: &str| match cfg.save() {
+        Ok(()) => {
+            println!("{done}");
+            0
+        }
+        Err(e) => {
+            eprintln!("没保存：{e}（{}）", Config::path().display());
+            1
+        }
+    };
+    match args.first().map(String::as_str) {
+        None | Some("list") => {
+            if cfg.local_data.is_empty() {
+                println!("还没有命名文件夹。{USE}");
+                return 0;
+            }
+            println!("命名文件夹（Agent 按名字用，平台按名字找有它的电脑）：");
+            for d in &cfg.local_data {
+                let state = if !std::path::Path::new(&d.path).is_dir() {
+                    " · 现在找不到"
+                } else if d.read_only {
+                    " · 只读"
+                } else {
+                    ""
+                };
+                println!("  {} → {}{state}", d.name, d.path);
+            }
+            0
+        }
+        Some("add") => {
+            let mut read_only = false;
+            let mut positional = Vec::new();
+            for a in &args[1..] {
+                match a.as_str() {
+                    "--read-only" => read_only = true,
+                    other if other.starts_with("--") => {
+                        eprintln!("不认识的选项：{other}\n{USE}");
+                        return 2;
+                    }
+                    other => positional.push(other.to_string()),
+                }
+            }
+            let [name, folder] = positional.as_slice() else {
+                eprintln!("{USE}");
+                return 2;
+            };
+            let real = match agentrouter_aggregator::check_folder(
+                std::path::Path::new(folder),
+                &agentrouter_device::util::data_dir(),
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("{e}");
+                    return 1;
+                }
+            };
+            let path = real.to_string_lossy().into_owned();
+            if let Some(other) = cfg
+                .local_data
+                .iter()
+                .find(|d| d.path == path && !local_data::same_name(&d.name, name))
+            {
+                eprintln!(
+                    "{path} 已经叫 {} 了（改名用 agentrouter data rename）。",
+                    other.name
+                );
+                return 1;
+            }
+            let entry = LocalData {
+                name: name.clone(),
+                path: path.clone(),
+                read_only,
+            };
+            if let Err(e) = local_data::upsert(&mut cfg.local_data, entry) {
+                eprintln!("{e}");
+                return 2;
+            }
+            let mode = if read_only { "（只读）" } else { "" };
+            save(&cfg, &format!("加上了 {} → {path}{mode}。", name.trim()))
+        }
+        Some("rename") => {
+            let (Some(from), Some(to)) = (args.get(1), args.get(2)) else {
+                eprintln!("{USE}");
+                return 2;
+            };
+            if let Err(e) = local_data::rename(&mut cfg.local_data, from, to) {
+                eprintln!("{e}");
+                return 1;
+            }
+            save(
+                &cfg,
+                &format!(
+                    "{} 改名为 {}（用旧名字的空间要跟着改）。",
+                    from.trim(),
+                    to.trim()
+                ),
+            )
+        }
+        Some("remove") => {
+            let Some(name) = args.get(1) else {
+                eprintln!("{USE}");
+                return 2;
+            };
+            if !local_data::remove(&mut cfg.local_data, name) {
+                eprintln!("没有叫 {} 的命名文件夹。", name.trim());
+                return 1;
+            }
+            save(
+                &cfg,
+                &format!(
+                    "拿掉了 {}：Agent 从现在起用不到它，用着它的 Agent 会被停下。",
+                    name.trim()
+                ),
+            )
+        }
+        Some(other) => {
+            eprintln!("没有 data {other}。{USE}");
+            2
+        }
     }
 }
 
