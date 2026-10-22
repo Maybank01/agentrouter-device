@@ -577,19 +577,27 @@ on Node.js, `uvx` servers (serena, §13.2) on uv, so the device provisions both 
 start and the first `link` run), and `--full` provisions them too:
 
 - One pinned version each (Node.js 22 LTS, uv; Node 24 refuses the Unix socket path srt uses under the macOS data folder, longer than 104 bytes), the project's official portable archive per OS and architecture, the
-  SHA-256 in source (`crates/sandbox/src/runtimes.rs`; Node's from the release's signed `SHASUMS256.txt`). Sources in
-  order: the project's own host, then one mirror (npmmirror for Node, GitHub for uv); a source that stays too slow is
-  left for the next. An archive that does not match is deleted, never unpacked.
+  SHA-256 in source (`crates/sandbox/src/runtimes.rs`; Node's from the release's signed `SHASUMS256.txt`). Every
+  runtime has an official source and one that is fast from mainland China (device #154; there GitHub, nodejs.org,
+  releases.astral.sh and registry.npmjs.org gave 8–20 KB/s, the first link took 21 min): Node from npmmirror, uv as
+  Astral's own PyPI wheels of the same release from the Tsinghua and Huawei PyPI mirrors (the wheels' SHA-256 pinned
+  too), ripgrep from npmmirror, socat and bubblewrap from our npm package `@agentrouter-top/sandbox-tools-linux` (the
+  same archives, `.github/workflows/sandbox-tools.yml`). Order: the official host first, left after 8 s below
+  256 KiB/s or when it does not answer within seconds; then the mirrors; the last source is never left for being slow.
+  Once an official host failed or was left, mirrors go first on that computer (`<runtimes>/.prefer-mirrors`), and
+  srt's `npm ci` uses npmmirror first too (npm's own configuration otherwise, npmmirror as the fallback). A file that
+  does not match is deleted, never unpacked.
 - Downloaded in-process (no curl, PowerShell or installer) into `<data>-shared/runtimes/<name>-<version>/`, never
   through the temp folder; the old version's folder is removed after the new one is in place (docs/AV-HYGIENE.md, the
   one exception to "gateway only"). Windows: the sandbox account gets read+execute on that folder, like on srt's.
 - One path: srt, the Windows sandbox entry, `npm ci` (as `node npm-cli.js`, no `npm.cmd`), `npx` and `uvx` use these,
   never the person's own installs; they go first on every local server's PATH. Without uv only `uvx` tools are
   missing (a line in setup, `RUNTIME_MISSING` on start). A cloud placement provisions nothing (its image has them).
-- Linux also gets srt's **ripgrep** (15.2.0, the official static musl build), **socat** (1.8.1.3) and **bubblewrap**
-  (0.13.1). socat and bubblewrap are built statically from the official source by `.github/workflows/socat.yml` and
-  `bwrap.yml` and published with that source, because upstream has no maintained static build. They come from GitHub,
-  in `sandbox setup` only (`--full` does not need them). srt gets their paths; they are not put on a server's PATH.
+- Linux also gets srt's **ripgrep** (the VS Code build `@vscode/ripgrep-linux-<arch>` 1.18.0 = ripgrep 15.0.0, static
+  musl, from the npm registry and npmmirror; #154), **socat** (1.8.1.3) and **bubblewrap** (0.13.1). socat and
+  bubblewrap are built statically from the official source by `.github/workflows/socat.yml` and `bwrap.yml` and
+  published with that source, because upstream has no maintained static build. They come from GitHub or our npm
+  package, in `sandbox setup` only (`--full` does not need them). srt gets their paths; they are not put on a server's PATH.
   Where Ubuntu restricts user namespaces, the bubblewrap that runs is the root-owned copy of the same pin (§6.3).
 
 ### 6.6 Resource limits per environment (Cloud VISION §4 D10, device #127)

@@ -6,25 +6,37 @@
 //! AppArmor restricts unprivileged user namespaces (Ubuntu 23.10+), the bubblewrap that runs is a root-owned copy of
 //! the same pin that one AppArmor profile names (`crate::userns`, one admin line).
 //!
-//! - **Pinned:** one version per runtime and the project's official portable archive per OS and architecture, its
-//!   SHA-256 written here. Node: from the release's `SHASUMS256.txt`, whose signature was checked against the Node.js
-//!   release keys (`nodejs/release-keys`) when the pin was set. uv and ripgrep: the release's `.sha256` files (uv's
-//!   are the same on GitHub and on Astral's mirror). socat and bubblewrap: our own static builds of the official source
-//!   (`.github/workflows/socat.yml`, `bwrap.yml`; upstream publishes no maintained static build), digests from their
-//!   releases' SHA256SUMS. An archive that does not match is deleted, never unpacked.
-//! - **Sources:** the project's own download host first, then a mirror (npmmirror for Node, GitHub for uv); a source
-//!   that stays too slow is left for the next one. The download is in-process (no curl, PowerShell or installer
-//!   program) and lands in `<data>-shared/runtimes/` beside the data folder, never in the temp folder
-//!   (docs/AV-HYGIENE.md).
+//! - **Pinned:** one version per runtime and one archive per OS and architecture, its SHA-256 written here. Node: the
+//!   official archive, from the release's `SHASUMS256.txt`, whose signature was checked against the Node.js release keys
+//!   (`nodejs/release-keys`) when the pin was set. uv: the release's `.sha256` files (the same on GitHub and on
+//!   Astral's mirror), and the SHA-256 PyPI lists for the wheels of the same release ([`UV_WHEELS`]). ripgrep: the VS
+//!   Code build (`@vscode/ripgrep-linux-<arch>`, Microsoft, MIT, a static musl build of ripgrep 15.0.0), digest of the
+//!   npm tarball (its registry `integrity` checked too when the pin was set). socat and bubblewrap: our own static
+//!   builds of the official source (`.github/workflows/socat.yml`, `bwrap.yml`; upstream publishes no maintained
+//!   static build), digests from their releases' SHA256SUMS. A file that does not match is deleted, never unpacked.
+//! - **Sources (device #154):** every runtime has a source that is fast from mainland China and one that is official.
+//!   Measured on a China network 2026-10-22: nodejs.org 17 KB/s and npmmirror 17 MB/s; releases.astral.sh 10 KB/s,
+//!   GitHub 8–20 KB/s and the Tsinghua PyPI mirror 11 MB/s; registry.npmjs.org ~17 KB/s. Order: the official host
+//!   first (elsewhere it is the fast and authoritative one), given up after [`SLOW_AFTER`] below [`SLOW_RATE`] or when
+//!   it does not answer within seconds; then the mirrors; the last source is never given up for being slow. Once an
+//!   official host failed or was given up, mirrors go first for every later download (this run and later ones,
+//!   [`prefer_mirrors`]): the network is evidently one where they are faster, so each later runtime costs no stall
+//!   window. Node: npmmirror's copy of the archive. uv: Astral's PyPI wheels of the same release from the Tsinghua and
+//!   Huawei PyPI mirrors ([`Source::Wheel`]). ripgrep: npmmirror's copy of the npm tarball. socat and bubblewrap: our
+//!   npm package [`CARRIER`] (the same archives inside; npmmirror syncs it from npm), until it is published only GitHub
+//!   serves them (~350 KB). The download is in-process (no curl, PowerShell or installer program) and lands in
+//!   `<data>-shared/runtimes/` beside the data folder, never in the temp folder (docs/AV-HYGIENE.md).
 //! - **One path:** srt, the Windows sandbox entry, `npm ci`, and `npx`/`uvx` servers use these runtimes, never the
 //!   person's own Node or uv (whatever version that is, if any). [`TOOLS`] go first on a server's PATH; srt gets the
 //!   absolute paths of [`SANDBOX_LINUX`] in its settings (`ripgrep.command`, `socatPath`, `bwrapPath`), never the
 //!   person's own.
-//! - **Bumping a pin:** the new version and all six digests, re-vetted (licence, release notes). The new folder is put
-//!   in place first; the old version's folder is removed after.
+//! - **Bumping a pin:** the new version and all its digests (uv: the wheels too; socat, bubblewrap: a new
+//!   [`CARRIER`] version), re-vetted (licence, release notes). The new folder is put in place first; the old version's
+//!   folder is removed after.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
@@ -37,8 +49,8 @@ pub struct Pinned {
     /// The folder prefix (`node`, `uv`).
     pub name: &'static str,
     pub version: &'static str,
-    /// Download URLs in order; `{version}` and `{file}` are filled in.
-    pub sources: &'static [&'static str],
+    /// Where the archive comes from, in order (see the module docs; [`prefer_mirrors`] reorders).
+    pub sources: &'static [Source],
     pub archives: &'static [Archive],
     /// The folder with the programs, inside the unpacked runtime, per OS family (`""` is the runtime folder itself).
     pub bin_windows: &'static str,
@@ -49,7 +61,7 @@ pub struct Pinned {
     pub required: bool,
 }
 
-/// The official archive for one OS and architecture (`std::env::consts` names).
+/// The pinned archive for one OS and architecture (`std::env::consts` names).
 #[derive(Debug)]
 pub struct Archive {
     pub os: &'static str,
@@ -57,6 +69,44 @@ pub struct Archive {
     pub file: &'static str,
     pub sha256: &'static str,
 }
+
+/// One place a runtime's archive comes from. URLs are `https://` templates: `{version}`, `{file}` and `{npm_arch}`
+/// (npm's name of the architecture: `x64`, `arm64`) are filled in.
+#[derive(Debug)]
+pub enum Source {
+    /// The pinned archive itself. `mirror`: a copy someone else serves (the same file, so the same digest).
+    Archive { url: &'static str, mirror: bool },
+    /// The project's own PyPI wheel of the same build (uv publishes its binaries there too); `{path}` is the wheel's
+    /// [`Wheel::path`]. The wheel's own digest is checked, and its `<name>.data/scripts/` folder is the runtime.
+    Wheel {
+        url: &'static str,
+        wheels: &'static [Wheel],
+        mirror: bool,
+    },
+    /// The pinned archive inside our npm package [`CARRIER`] (`package/<file>`), from this registry: our own builds
+    /// that have no public mirror (socat, bubblewrap). The archive's digest is checked as from any other source.
+    Carrier { registry: &'static str },
+}
+
+/// A PyPI wheel of a pinned runtime, per OS and architecture.
+#[derive(Debug)]
+pub struct Wheel {
+    pub os: &'static str,
+    pub arch: &'static str,
+    /// Its path under a PyPI file host's `/packages/` (the same on PyPI and its mirrors).
+    pub path: &'static str,
+    pub sha256: &'static str,
+}
+
+/// Our npm package that carries the socat and bubblewrap archives (both architectures) and their corresponding
+/// source, so a registry mirror (npmmirror) serves them where GitHub is slow. Built from these pins by
+/// `cargo run -p agentrouter-sandbox --example sandbox-tools-package` (`.github/workflows/sandbox-tools.yml`) and
+/// published to npm by a maintainer; a new socat or bubblewrap pin needs a new version here.
+pub const CARRIER: (&str, &str) = ("@agentrouter-top/sandbox-tools-linux", "2026.10.22");
+
+const NPM_REGISTRY: &str = "https://registry.npmjs.org";
+/// npmmirror (Alibaba Cloud), the npm registry mirror for mainland China.
+pub const NPM_MIRROR: &str = "https://registry.npmmirror.com";
 
 /// Node.js 22 LTS ("Jod", maintained until 2027-04; srt needs 22.12+). 22.23.4 is the 2026-10-20 security release;
 /// SHASUMS256.txt signed by release key 5BE8A3F6C8A5C01D106C0AD820B1A390B168D356 (Antoine du Hamel), verified
@@ -67,8 +117,14 @@ pub const NODE: Pinned = Pinned {
     name: "node",
     version: "22.23.4",
     sources: &[
-        "https://nodejs.org/dist/v{version}/{file}",
-        "https://cdn.npmmirror.com/binaries/node/v{version}/{file}",
+        Source::Archive {
+            url: "https://nodejs.org/dist/v{version}/{file}",
+            mirror: false,
+        },
+        Source::Archive {
+            url: "https://cdn.npmmirror.com/binaries/node/v{version}/{file}",
+            mirror: true,
+        },
     ],
     archives: &[
         Archive {
@@ -114,14 +170,76 @@ pub const NODE: Pinned = Pinned {
     required: true,
 };
 
+/// uv 0.13.4's wheels on PyPI (the same build as the archives; `pypi.org/pypi/uv/0.13.4/json`, 2026-10-22). Linux:
+/// the musllinux wheels, whose programs are the same static musl builds as the archives.
+pub const UV_WHEELS: &[Wheel] = &[
+    Wheel {
+        os: "windows",
+        arch: "x86_64",
+        path: "2f/b9/b526eab6c72eacc705a58378f6850fde046b28c86fed01bd42da61367c6b/uv-0.13.4-py3-none-win_amd64.whl",
+        sha256: "b2ff80397273fff0e02c20eacae6882834c811827d6fc08f658db156fe754386",
+    },
+    Wheel {
+        os: "windows",
+        arch: "aarch64",
+        path: "7c/f7/4d5fa89d3d10ff6a84e547ef6e02c45b2f2d50e66682da778acf60db63f1/uv-0.13.4-py3-none-win_arm64.whl",
+        sha256: "deffa5a4afdb48f3e44fb26e80377d256b330ddcad0373daff4b54f6162b43a4",
+    },
+    Wheel {
+        os: "macos",
+        arch: "x86_64",
+        path: "21/f2/0cb77a1ae43959772f8f7873eb1f4061907fbb1694ce55c79b231f639b1d/uv-0.13.4-py3-none-macosx_10_12_x86_64.whl",
+        sha256: "b4bbacea78c9db136cd2ec3147cbfd9ed910b4db5e1877109bd74d0e73bb2eaf",
+    },
+    Wheel {
+        os: "macos",
+        arch: "aarch64",
+        path: "26/44/5a8733dd1b2e8d6f9cffd1ff6428a3e11dcc7e146a7657e32cfb8d9fb4a4/uv-0.13.4-py3-none-macosx_11_0_arm64.whl",
+        sha256: "95f4eb2b991b53b50ec2b18ab612fca8ba1e7a75a47af0331fb8bcd21da3eb03",
+    },
+    Wheel {
+        os: "linux",
+        arch: "x86_64",
+        path: "1e/ec/f352ca2cc3b4b6191bb4ec8cdf4bc190eed0ba8bda4c33b7fd66c5d33cec/uv-0.13.4-py3-none-musllinux_1_1_x86_64.whl",
+        sha256: "52b5c753a7c2d5f8323a70bb4c93118988356331d0758afa6446c81f974e7196",
+    },
+    Wheel {
+        os: "linux",
+        arch: "aarch64",
+        path: "f8/39/be14f051bf34a1822d634819890a2d0cba3b69101e633fb7b9f54d7b4020/uv-0.13.4-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.musllinux_1_1_aarch64.whl",
+        sha256: "e90ab42825587821096cb0d071e387468da38cfa22818c91f9c0b3c0453048e8",
+    },
+];
+
 /// uv (Astral, MIT/Apache-2.0), for `uvx` servers. 0.13.4, released 2026-10-20; Linux uses the static musl build.
 pub const UV: Pinned = Pinned {
     title: "uv",
     name: "uv",
     version: "0.13.4",
     sources: &[
-        "https://releases.astral.sh/github/uv/releases/download/{version}/{file}",
-        "https://github.com/astral-sh/uv/releases/download/{version}/{file}",
+        Source::Archive {
+            url: "https://releases.astral.sh/github/uv/releases/download/{version}/{file}",
+            mirror: false,
+        },
+        Source::Wheel {
+            url: "https://pypi.tuna.tsinghua.edu.cn/packages/{path}",
+            wheels: UV_WHEELS,
+            mirror: true,
+        },
+        Source::Wheel {
+            url: "https://repo.huaweicloud.com/repository/pypi/packages/{path}",
+            wheels: UV_WHEELS,
+            mirror: true,
+        },
+        Source::Archive {
+            url: "https://github.com/astral-sh/uv/releases/download/{version}/{file}",
+            mirror: false,
+        },
+        Source::Wheel {
+            url: "https://files.pythonhosted.org/packages/{path}",
+            wheels: UV_WHEELS,
+            mirror: false,
+        },
     ],
     archives: &[
         Archive {
@@ -167,29 +285,40 @@ pub const UV: Pinned = Pinned {
     required: false,
 };
 
-/// ripgrep (BurntSushi, MIT/Unlicense), srt's scan for dangerous files below a folder on Linux. 15.2.0, released
-/// 2026-07-15; the static musl builds (aarch64 musl is new in 15.2.0).
+/// ripgrep (MIT/Unlicense), srt's scan for dangerous files below a folder on Linux: the VS Code build,
+/// `@vscode/ripgrep-linux-<arch>` 1.18.0 (Microsoft, MIT, 2026-05-07; ripgrep 15.0.0, static musl), an npm tarball
+/// whose registry `integrity` matched on npmjs and npmmirror (2026-10-22). Not BurntSushi's GitHub archive any more
+/// (#154): GitHub has no mirror in China, the npm registry does. The version is the npm package's.
 pub const RG: Pinned = Pinned {
     title: "ripgrep",
     name: "rg",
-    version: "15.2.0",
-    sources: &["https://github.com/BurntSushi/ripgrep/releases/download/{version}/{file}"],
+    version: "1.18.0",
+    sources: &[
+        Source::Archive {
+            url: "https://registry.npmjs.org/@vscode/ripgrep-linux-{npm_arch}/-/{file}",
+            mirror: false,
+        },
+        Source::Archive {
+            url: "https://registry.npmmirror.com/@vscode/ripgrep-linux-{npm_arch}/-/{file}",
+            mirror: true,
+        },
+    ],
     archives: &[
         Archive {
             os: "linux",
             arch: "x86_64",
-            file: "ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz",
-            sha256: "33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c",
+            file: "ripgrep-linux-x64-1.18.0.tgz",
+            sha256: "8cc06e25e29f9c258ee9a09eecd7707c1ea2e99d9e76151e53dbe39f8d6b4a09",
         },
         Archive {
             os: "linux",
             arch: "aarch64",
-            file: "ripgrep-15.2.0-aarch64-unknown-linux-musl.tar.gz",
-            sha256: "800b1e7206afe799dfb5a6901f23147cfaabe0e52210538100f61e86e1740915",
+            file: "ripgrep-linux-arm64-1.18.0.tgz",
+            sha256: "2d65504a71ea421d1c457177ebefcbe0d2d3a1f60f9709b6337f1d933553064b",
         },
     ],
     bin_windows: "",
-    bin_unix: "",
+    bin_unix: "bin",
     programs: &["rg"],
     required: true,
 };
@@ -202,7 +331,16 @@ pub const SOCAT: Pinned = Pinned {
     name: "socat",
     version: "1.8.1.3-r1",
     sources: &[
-        "https://github.com/Maybank01/agentrouter-device/releases/download/socat-static-{version}/{file}",
+        Source::Archive {
+            url: "https://github.com/Maybank01/agentrouter-device/releases/download/socat-static-{version}/{file}",
+            mirror: false,
+        },
+        Source::Carrier {
+            registry: NPM_MIRROR,
+        },
+        Source::Carrier {
+            registry: NPM_REGISTRY,
+        },
     ],
     archives: &[
         Archive {
@@ -233,7 +371,16 @@ pub const BWRAP: Pinned = Pinned {
     name: "bwrap",
     version: "0.13.1-r1",
     sources: &[
-        "https://github.com/Maybank01/agentrouter-device/releases/download/bwrap-static-{version}/{file}",
+        Source::Archive {
+            url: "https://github.com/Maybank01/agentrouter-device/releases/download/bwrap-static-{version}/{file}",
+            mirror: false,
+        },
+        Source::Carrier {
+            registry: NPM_MIRROR,
+        },
+        Source::Carrier {
+            registry: NPM_REGISTRY,
+        },
     ],
     archives: &[
         Archive {
@@ -255,6 +402,32 @@ pub const BWRAP: Pinned = Pinned {
     required: true,
 };
 
+/// The corresponding source [`CARRIER`] ships beside socat's and bubblewrap's archives (GPL-2.0 / LGPL): the official
+/// source tarballs and our build scripts, as attached to their GitHub releases (`SHA256SUMS` there), each with its
+/// digest. `(runtime, file, sha256)`.
+pub const CARRIER_SOURCE: &[(&Pinned, &str, &str)] = &[
+    (
+        &SOCAT,
+        "socat-1.8.1.3.tar.gz",
+        "06602ffd591e98c75b3dc1d66f0f19136cc666b0b2d95caad987d6ab2cb28097",
+    ),
+    (
+        &SOCAT,
+        "build-socat-static.sh",
+        "f4f5fdbe7d9c3fd9b13af4f3bbbaf98a229f9b6cbaa212aaea5ddbe1b1a68be7",
+    ),
+    (
+        &BWRAP,
+        "bubblewrap-0.13.1.tar.xz",
+        "0e85c8702248b8dd64144f594147553650cdd0e4c951690345faace79c217c4d",
+    ),
+    (
+        &BWRAP,
+        "build-bwrap-static.sh",
+        "95e5cfb71965d8604e80bccbb89e7dabcec3d3d53383204f026c34e2ad0cc25d",
+    ),
+];
+
 /// What local tools run on, on every OS (first on their PATH), in the order `sandbox setup` provisions them.
 pub const TOOLS: [&Pinned; 2] = [&NODE, &UV];
 
@@ -270,21 +443,132 @@ pub fn sandbox_programs() -> &'static [&'static Pinned] {
     }
 }
 
-/// The largest archive accepted (Node's macOS archive is ~50 MB).
+/// The largest download accepted (Node's macOS archive is ~50 MB).
 const ARCHIVE_MAX: u64 = 256 << 20;
 /// A source that has not delivered [`SLOW_RATE`] bytes per second on average after [`SLOW_AFTER`] is given up for the
-/// next one (the last source is never given up for being slow).
-const SLOW_AFTER: Duration = Duration::from_secs(30);
-const SLOW_RATE: u64 = 128 << 10;
-/// Written into an unpacked runtime: the archive digest it came from (a changed pin reinstalls).
+/// next one (the last source is never given up for being slow). 8 s at 256 KiB/s: an official host from mainland China
+/// (10–20 KB/s) is left within seconds, a working one elsewhere (MB/s) is never.
+const SLOW_AFTER: Duration = Duration::from_secs(8);
+const SLOW_RATE: u64 = 256 << 10;
+/// Written into an unpacked runtime: the archive digest of its pin (a changed pin reinstalls), whichever source it
+/// came from.
 const MARKER: &str = ".agentrouter-runtime";
+/// In the runtimes root once an official host proved slow on this computer ([`prefer_mirrors`]).
+const PREFER_MIRRORS_FILE: &str = ".prefer-mirrors";
+
+static PREFER_MIRRORS: AtomicBool = AtomicBool::new(false);
+
+/// Whether mirrors go first on this computer: an official host failed or was given up for being slow, in this run or
+/// an earlier one (remembered in the runtimes root). `npm ci` of srt uses the npm mirror then too (`crate::Runtime`).
+pub fn prefer_mirrors(root: &Path) -> bool {
+    PREFER_MIRRORS.load(Ordering::Relaxed) || root.join(PREFER_MIRRORS_FILE).is_file()
+}
+
+/// Remember that mirrors go first (best effort: without the file only this run knows).
+pub fn set_prefer_mirrors(root: &Path) {
+    PREFER_MIRRORS.store(true, Ordering::Relaxed);
+    let _ = std::fs::write(
+        root.join(PREFER_MIRRORS_FILE),
+        "An official download host was slow or unreachable here; mirrors go first (agentrouter-device #154).\n",
+    );
+}
+
+/// npm's name of this computer's architecture (`x64`, `arm64`).
+fn npm_arch(arch: &str) -> &'static str {
+    match arch {
+        "x86_64" => "x64",
+        "aarch64" => "arm64",
+        _ => "unknown",
+    }
+}
+
+/// One resolved download: the URL, what it serves, and the digest it must have.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Attempt {
+    pub url: String,
+    pub form: Form,
+    pub mirror: bool,
+    pub sha256: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Form {
+    /// The pinned archive.
+    Archive,
+    /// A PyPI wheel (a zip with `<name>.data/scripts/`).
+    Wheel,
+    /// The pinned archive as `package/<file>` inside an npm tarball.
+    Member(String),
+}
+
+impl Attempt {
+    /// The host it downloads from (shown to the person).
+    pub fn host(&self) -> &str {
+        self.url
+            .trim_start_matches("https://")
+            .split('/')
+            .next()
+            .unwrap_or("")
+    }
+}
 
 impl Pinned {
     /// This computer's archive.
     pub fn archive(&self) -> Option<&'static Archive> {
-        self.archives
+        self.archive_for(std::env::consts::OS, std::env::consts::ARCH)
+    }
+
+    fn archive_for(&self, os: &str, arch: &str) -> Option<&'static Archive> {
+        self.archives.iter().find(|a| a.os == os && a.arch == arch)
+    }
+
+    /// The downloads for one archive, in the order of [`Pinned::sources`]; mirrors first when `mirrors_first`.
+    pub fn attempts(&self, archive: &Archive, mirrors_first: bool) -> Vec<Attempt> {
+        let fill = |url: &str| {
+            url.replace("{version}", self.version)
+                .replace("{file}", archive.file)
+                .replace("{npm_arch}", npm_arch(archive.arch))
+        };
+        let mut out: Vec<Attempt> = self
+            .sources
             .iter()
-            .find(|a| a.os == std::env::consts::OS && a.arch == std::env::consts::ARCH)
+            .filter_map(|source| match source {
+                Source::Archive { url, mirror } => Some(Attempt {
+                    url: fill(url),
+                    form: Form::Archive,
+                    mirror: *mirror,
+                    sha256: archive.sha256,
+                }),
+                Source::Wheel {
+                    url,
+                    wheels,
+                    mirror,
+                } => wheels
+                    .iter()
+                    .find(|w| w.os == archive.os && w.arch == archive.arch)
+                    .map(|w| Attempt {
+                        url: url.replace("{path}", w.path),
+                        form: Form::Wheel,
+                        mirror: *mirror,
+                        sha256: w.sha256,
+                    }),
+                Source::Carrier { registry } => {
+                    let (package, version) = CARRIER;
+                    let short = package.rsplit('/').next().unwrap_or(package);
+                    Some(Attempt {
+                        url: format!("{registry}/{package}/-/{short}-{version}.tgz"),
+                        form: Form::Member(archive.file.to_string()),
+                        mirror: true,
+                        sha256: archive.sha256,
+                    })
+                }
+            })
+            .collect();
+        if mirrors_first {
+            // Stable: mirrors in their order, then the official hosts in theirs.
+            out.sort_by_key(|a| !a.mirror);
+        }
+        out
     }
 
     /// `node-22.23.4`: the runtime's folder under the runtimes root.
@@ -327,11 +611,12 @@ impl Pinned {
             && program_in(&self.bin_dir(root), self.programs[0]).is_some()
     }
 
-    /// Install the pinned version under `root` when it is not there: download (in order of [`Pinned::sources`]),
-    /// check the SHA-256, unpack, put in place, then remove older versions. Returns whether anything was done.
-    pub fn ensure(&self, root: &Path) -> Result<bool, String> {
+    /// Install the pinned version under `root` when it is not there: download (in the order of [`Pinned::attempts`]),
+    /// check the SHA-256, unpack, put in place, then remove older versions. Returns the host it came from when anything
+    /// was done.
+    pub fn ensure(&self, root: &Path) -> Result<Option<String>, String> {
         if self.installed(root) {
-            return Ok(false);
+            return Ok(None);
         }
         let archive = self.archive().ok_or_else(|| {
             format!(
@@ -344,35 +629,50 @@ impl Pinned {
         std::fs::create_dir_all(root).map_err(|e| format!("建不了 {}：{e}", root.display()))?;
         let tag = random_tag();
         let file = root.join(format!(".{}.{tag}.download", archive.file));
+        let attempts = self.attempts(archive, prefer_mirrors(root));
         let mut failures = Vec::new();
-        let mut fetched = false;
-        for (i, source) in self.sources.iter().enumerate() {
-            let url = source
-                .replace("{version}", self.version)
-                .replace("{file}", archive.file);
-            let last = i + 1 == self.sources.len();
-            match download(&url, &file, archive.sha256, !last) {
+        let mut fetched = None;
+        for (i, attempt) in attempts.iter().enumerate() {
+            let last = i + 1 == attempts.len();
+            match download(attempt, &file, !last) {
                 Ok(()) => {
-                    fetched = true;
+                    fetched = Some(attempt);
                     break;
                 }
                 Err(e) => {
                     let _ = std::fs::remove_file(&file);
-                    failures.push(format!("{url}：{e}"));
+                    if !attempt.mirror {
+                        set_prefer_mirrors(root);
+                    }
+                    failures.push(format!("{}：{e}", attempt.url));
                 }
             }
         }
-        if !fetched {
+        let Some(attempt) = fetched else {
             return Err(format!(
-                "{} {} 没下载下来（{}）",
+                "{} {}（{}）从 {} 个地址都没下载下来，网络通了以后运行 agentrouter sandbox setup 会再试（{}）",
                 self.title,
                 self.version,
+                archive.file,
+                attempts.len(),
                 failures.join("；")
             ));
-        }
+        };
         let unpacked = root.join(format!(".{}.{tag}.unpack", self.folder()));
-        let placed = unpack(&file, archive.file, &unpacked).and_then(|()| {
-            let content = single_folder(&unpacked).unwrap_or_else(|| unpacked.clone());
+        let format = match attempt.form {
+            Form::Wheel => "wheel.whl",
+            _ => archive.file,
+        };
+        let placed = unpack(&file, format, &unpacked).and_then(|()| {
+            let content = match attempt.form {
+                Form::Wheel => wheel_scripts(&unpacked).ok_or_else(|| {
+                    format!(
+                        "{} 的 wheel（{}）里没有 *.data/scripts",
+                        self.title, attempt.url
+                    )
+                })?,
+                _ => single_folder(&unpacked).unwrap_or_else(|| unpacked.clone()),
+            };
             std::fs::write(content.join(MARKER), archive.sha256)
                 .map_err(|e| format!("写不了 {}：{e}", content.display()))?;
             self.put_in_place(root, &content)
@@ -392,7 +692,7 @@ impl Pinned {
                 }
             }
         }
-        Ok(true)
+        Ok(Some(attempt.host().to_string()))
     }
 
     fn put_in_place(&self, root: &Path, content: &Path) -> Result<(), String> {
@@ -431,10 +731,12 @@ fn random_tag() -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
-fn agent() -> ureq::Agent {
+/// `quick`: a source that is not the last one must answer within seconds (the next one is waiting).
+fn agent(quick: bool) -> ureq::Agent {
+    let (connect, response) = if quick { (5, 10) } else { (15, 30) };
     let config = ureq::Agent::config_builder()
-        .timeout_connect(Some(Duration::from_secs(15)))
-        .timeout_recv_response(Some(Duration::from_secs(30)))
+        .timeout_connect(Some(Duration::from_secs(connect)))
+        .timeout_recv_response(Some(Duration::from_secs(response)))
         .timeout_global(Some(Duration::from_secs(30 * 60)));
     // The system's TLS with the system's roots (Windows' store, as every program on the PC): ureq's default with
     // native-tls is Mozilla's list only, and Schannel then rejects nodejs.org's chain ("unable to find any
@@ -455,56 +757,108 @@ fn agent() -> ureq::Agent {
     config.build().new_agent()
 }
 
-/// Stream `url` into `to` while hashing it; the file stays only when its SHA-256 is `sha256`.
-fn download(url: &str, to: &Path, sha256: &str, give_up_when_slow: bool) -> Result<(), String> {
-    if !url.starts_with("https://") {
-        return Err("只用 https 下载".into());
+/// A response body that fails once it has been too slow ([`SLOW_AFTER`], [`SLOW_RATE`]) when `give_up` is set.
+struct Metered<R> {
+    inner: R,
+    started: Instant,
+    total: u64,
+    give_up: bool,
+}
+
+impl<R: Read> Read for Metered<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.total += n as u64;
+        let elapsed = self.started.elapsed();
+        if self.give_up && elapsed > SLOW_AFTER && self.total < SLOW_RATE * elapsed.as_secs() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!(
+                    "太慢了（{} 秒只下了 {} KB），换下一个地址",
+                    elapsed.as_secs(),
+                    self.total >> 10
+                ),
+            ));
+        }
+        Ok(n)
     }
-    let mut response = agent().get(url).call().map_err(|e| e.to_string())?;
-    let mut body = response
-        .body_mut()
-        .with_config()
-        .limit(ARCHIVE_MAX)
-        .reader();
-    let mut out = std::fs::File::create(to).map_err(|e| format!("写不了 {}：{e}", to.display()))?;
+}
+
+/// Copy `from` into `out` while hashing it.
+fn copy_hashing(
+    from: &mut impl Read,
+    out: &mut std::fs::File,
+    to: &Path,
+) -> Result<String, String> {
     let mut hash = Sha256::new();
     let mut buf = vec![0u8; 256 << 10];
-    let started = Instant::now();
-    let mut total: u64 = 0;
     loop {
-        let n = body.read(&mut buf).map_err(|e| e.to_string())?;
+        let n = from.read(&mut buf).map_err(|e| e.to_string())?;
         if n == 0 {
             break;
         }
         hash.update(&buf[..n]);
         out.write_all(&buf[..n])
             .map_err(|e| format!("写不了 {}：{e}", to.display()))?;
-        total += n as u64;
-        let elapsed = started.elapsed();
-        if give_up_when_slow && elapsed > SLOW_AFTER && total < SLOW_RATE * elapsed.as_secs() {
-            return Err(format!(
-                "太慢了（{} 秒只下了 {} KB），换下一个地址",
-                elapsed.as_secs(),
-                total >> 10
-            ));
-        }
     }
     out.sync_all().map_err(|e| e.to_string())?;
-    let got: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
-    if got != sha256 {
+    Ok(hash.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Stream one attempt into `to` while hashing it; the file stays only when its SHA-256 is the attempt's.
+pub fn download(attempt: &Attempt, to: &Path, give_up_when_slow: bool) -> Result<(), String> {
+    if !attempt.url.starts_with("https://") {
+        return Err("只用 https 下载".into());
+    }
+    let mut response = agent(give_up_when_slow)
+        .get(&attempt.url)
+        .call()
+        .map_err(|e| e.to_string())?;
+    let body = response
+        .body_mut()
+        .with_config()
+        .limit(ARCHIVE_MAX)
+        .reader();
+    let mut body = Metered {
+        inner: body,
+        started: Instant::now(),
+        total: 0,
+        give_up: give_up_when_slow,
+    };
+    let mut out = std::fs::File::create(to).map_err(|e| format!("写不了 {}：{e}", to.display()))?;
+    let got = match &attempt.form {
+        Form::Member(file) => {
+            let want = Path::new("package").join(file);
+            let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(body));
+            let mut got = None;
+            for entry in tar.entries().map_err(|e| e.to_string())? {
+                let mut entry = entry.map_err(|e| e.to_string())?;
+                if entry.path().map_err(|e| e.to_string())? == want {
+                    got = Some(copy_hashing(&mut entry, &mut out, to)?);
+                    break;
+                }
+            }
+            got.ok_or_else(|| format!("包里没有 package/{file}"))?
+        }
+        Form::Archive | Form::Wheel => copy_hashing(&mut body, &mut out, to)?,
+    };
+    if got != attempt.sha256 {
+        drop(out);
+        let _ = std::fs::remove_file(to);
         return Err(format!(
-            "校验值对不上（应为 {sha256}，下到的是 {got}），已丢弃"
+            "校验值对不上（应为 {}，下到的是 {got}），已丢弃",
+            attempt.sha256
         ));
     }
     Ok(())
 }
 
-/// Unpack a `.zip` or `.tar.gz` into `into` (created). Entries that would land outside it are refused.
+/// Unpack a `.zip`/`.whl` or `.tar.gz`/`.tgz` into `into` (created). Entries that would land outside it are refused.
 fn unpack(archive: &Path, name: &str, into: &Path) -> Result<(), String> {
     std::fs::create_dir_all(into).map_err(|e| format!("建不了 {}：{e}", into.display()))?;
     let file = std::fs::File::open(archive).map_err(|e| e.to_string())?;
     let failed = |e: &dyn std::fmt::Display| format!("解不开 {name}：{e}");
-    if name.ends_with(".zip") {
+    if name.ends_with(".zip") || name.ends_with(".whl") {
         let mut zip = zip::ZipArchive::new(file).map_err(|e| failed(&e))?;
         for i in 0..zip.len() {
             let mut entry = zip.by_index(i).map_err(|e| failed(&e))?;
@@ -532,7 +886,7 @@ fn unpack(archive: &Path, name: &str, into: &Path) -> Result<(), String> {
             }
         }
         Ok(())
-    } else if name.ends_with(".tar.gz") {
+    } else if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
         let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(file));
         tar.set_preserve_permissions(true);
         tar.set_overwrite(true);
@@ -553,23 +907,95 @@ fn single_folder(dir: &Path) -> Option<PathBuf> {
     Some(first.path())
 }
 
+/// A wheel's `<name>-<version>.data/scripts/` folder (where its programs are).
+fn wheel_scripts(dir: &Path) -> Option<PathBuf> {
+    std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .find(|e| e.file_name().to_string_lossy().ends_with(".data"))
+        .map(|e| e.path().join("scripts"))
+        .filter(|p| p.is_dir())
+}
+
+/// Fetch one pinned file for packaging (the `sandbox-tools-package` example): from the non-carrier sources of `rt`, in
+/// order, checked against `sha256`; `file` replaces `{file}`.
+pub fn fetch_for_package(
+    rt: &Pinned,
+    file: &str,
+    sha256: &'static str,
+    to: &Path,
+) -> Result<(), String> {
+    let mut failures = Vec::new();
+    for source in rt.sources {
+        let Source::Archive { url, mirror } = source else {
+            continue;
+        };
+        let attempt = Attempt {
+            url: url.replace("{version}", rt.version).replace("{file}", file),
+            form: Form::Archive,
+            mirror: *mirror,
+            sha256,
+        };
+        match download(&attempt, to, false) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                let _ = std::fs::remove_file(to);
+                failures.push(format!("{}：{e}", attempt.url));
+            }
+        }
+    }
+    Err(format!("{file}: {}", failures.join("; ")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn well_formed(rt: &Pinned, a: &Archive) {
-        assert_eq!(a.sha256.len(), 64, "{}", a.file);
+    fn hex64(digest: &str, what: &str) {
+        assert_eq!(digest.len(), 64, "{what}");
         assert!(
-            a.sha256
+            digest
                 .bytes()
                 .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
-            "{}",
-            a.file
+            "{what}"
         );
-        let ext = if a.os == "windows" { ".zip" } else { ".tar.gz" };
-        assert!(a.file.ends_with(ext), "{}", a.file);
+    }
+
+    fn well_formed(rt: &Pinned, a: &Archive) {
+        hex64(a.sha256, a.file);
+        let ok = if a.os == "windows" {
+            a.file.ends_with(".zip")
+        } else {
+            a.file.ends_with(".tar.gz") || a.file.ends_with(".tgz")
+        };
+        assert!(ok, "{}", a.file);
         for s in rt.sources {
-            assert!(s.starts_with("https://") && s.contains("{file}"), "{s}");
+            match s {
+                Source::Archive { url, .. } => {
+                    assert!(
+                        url.starts_with("https://") && url.contains("{file}"),
+                        "{url}"
+                    )
+                }
+                Source::Wheel { url, wheels, .. } => {
+                    assert!(
+                        url.starts_with("https://") && url.contains("{path}"),
+                        "{url}"
+                    );
+                    let w = wheels
+                        .iter()
+                        .find(|w| w.os == a.os && w.arch == a.arch)
+                        .unwrap_or_else(|| panic!("{} has no wheel for {}", rt.name, a.file));
+                    hex64(w.sha256, w.path);
+                    assert!(w.path.ends_with(".whl"), "{}", w.path);
+                    assert!(
+                        w.path.contains(&format!("/{}-{}-", rt.name, rt.version)),
+                        "{}",
+                        w.path
+                    );
+                }
+                Source::Carrier { registry } => assert!(registry.starts_with("https://")),
+            }
         }
     }
 
@@ -580,9 +1006,7 @@ mod tests {
             for os in ["windows", "macos", "linux"] {
                 for arch in ["x86_64", "aarch64"] {
                     let a = rt
-                        .archives
-                        .iter()
-                        .find(|a| a.os == os && a.arch == arch)
+                        .archive_for(os, arch)
                         .unwrap_or_else(|| panic!("{} has no {os} {arch}", rt.name));
                     well_formed(rt, a);
                 }
@@ -593,12 +1017,14 @@ mod tests {
             assert_eq!(rt.archives.len(), 2, "{}", rt.name);
             for arch in ["x86_64", "aarch64"] {
                 let a = rt
-                    .archives
-                    .iter()
-                    .find(|a| a.os == "linux" && a.arch == arch)
+                    .archive_for("linux", arch)
                     .unwrap_or_else(|| panic!("{} has no linux {arch}", rt.name));
                 well_formed(rt, a);
-                assert!(a.file.contains(arch), "{}", a.file);
+                assert!(
+                    a.file.contains(arch) || a.file.contains(&format!("-{}-", npm_arch(arch))),
+                    "{}",
+                    a.file
+                );
             }
             assert_eq!(
                 rt.archive().is_some(),
@@ -613,7 +1039,10 @@ mod tests {
             assert!(a.file.starts_with(&format!("node-v{}-", NODE.version)));
         }
         for a in RG.archives {
-            assert!(a.file.starts_with(&format!("ripgrep-{}-", RG.version)));
+            assert_eq!(
+                a.file,
+                format!("ripgrep-linux-{}-{}.tgz", npm_arch(a.arch), RG.version)
+            );
         }
         let socat_release = SOCAT.version.split("-r").next().unwrap();
         for a in SOCAT.archives {
@@ -623,40 +1052,141 @@ mod tests {
         for a in BWRAP.archives {
             assert!(a.file.starts_with(&format!("bwrap-{bwrap_release}-")));
         }
+        for (rt, file, sha256) in CARRIER_SOURCE {
+            hex64(sha256, file);
+            assert!(SANDBOX_LINUX.iter().any(|r| r.name == rt.name), "{file}");
+        }
     }
 
-    /// Only the projects' own hosts and their well-known mirrors (docs/AV-HYGIENE.md).
-    #[test]
-    fn downloads_come_from_the_official_hosts_only() {
-        let hosts: Vec<&str> = TOOLS
+    fn hosts(rt: &Pinned, mirrors_first: bool) -> Vec<String> {
+        let a = rt.archive_for("linux", "x86_64").unwrap();
+        rt.attempts(a, mirrors_first)
             .iter()
-            .chain(SANDBOX_LINUX.iter())
-            .flat_map(|rt| rt.sources.iter())
-            .map(|s| s.trim_start_matches("https://").split('/').next().unwrap())
-            .collect();
+            .map(|a| a.host().to_string())
+            .collect()
+    }
+
+    /// Only the projects' own hosts, their registries and the well-known mirrors of those (docs/AV-HYGIENE.md); the
+    /// official host first, unless mirrors go first on this computer (#154).
+    #[test]
+    fn downloads_come_from_official_hosts_and_their_mirrors_only() {
+        assert_eq!(hosts(&NODE, false), ["nodejs.org", "cdn.npmmirror.com"]);
+        assert_eq!(hosts(&NODE, true), ["cdn.npmmirror.com", "nodejs.org"]);
         assert_eq!(
-            hosts,
+            hosts(&UV, false),
             [
-                "nodejs.org",
-                "cdn.npmmirror.com",
                 "releases.astral.sh",
+                "pypi.tuna.tsinghua.edu.cn",
+                "repo.huaweicloud.com",
                 "github.com",
-                "github.com",
-                "github.com",
-                "github.com"
+                "files.pythonhosted.org"
             ]
         );
-        // On GitHub: the projects' own release pages (ripgrep's; the static socat and bubblewrap builds are ours,
-        // beside their source).
-        assert!(
-            RG.sources[0].starts_with("https://github.com/BurntSushi/ripgrep/releases/download/")
+        assert_eq!(
+            hosts(&UV, true),
+            [
+                "pypi.tuna.tsinghua.edu.cn",
+                "repo.huaweicloud.com",
+                "releases.astral.sh",
+                "github.com",
+                "files.pythonhosted.org"
+            ]
         );
-        assert!(SOCAT.sources[0].starts_with(
-            "https://github.com/Maybank01/agentrouter-device/releases/download/socat-static-"
-        ));
-        assert!(BWRAP.sources[0].starts_with(
-            "https://github.com/Maybank01/agentrouter-device/releases/download/bwrap-static-"
-        ));
+        assert_eq!(
+            hosts(&RG, false),
+            ["registry.npmjs.org", "registry.npmmirror.com"]
+        );
+        for rt in [&SOCAT, &BWRAP] {
+            assert_eq!(
+                hosts(rt, false),
+                ["github.com", "registry.npmmirror.com", "registry.npmjs.org"]
+            );
+            assert_eq!(
+                hosts(rt, true),
+                ["registry.npmmirror.com", "registry.npmjs.org", "github.com"]
+            );
+        }
+        // The static socat and bubblewrap builds are ours, beside their source; the npm package carries the same files.
+        let a = SOCAT.archive_for("linux", "aarch64").unwrap();
+        let tries = SOCAT.attempts(a, false);
+        assert_eq!(
+            tries[0].url,
+            "https://github.com/Maybank01/agentrouter-device/releases/download/socat-static-1.8.1.3-r1/socat-1.8.1.3-aarch64-linux-musl.tar.gz"
+        );
+        assert_eq!(
+            tries[1].url,
+            format!(
+                "https://registry.npmmirror.com/@agentrouter-top/sandbox-tools-linux/-/sandbox-tools-linux-{}.tgz",
+                CARRIER.1
+            )
+        );
+        assert_eq!(tries[1].form, Form::Member(a.file.to_string()));
+        assert!(tries.iter().all(|t| t.sha256 == a.sha256));
+        let a = RG.archive_for("linux", "aarch64").unwrap();
+        assert_eq!(
+            RG.attempts(a, true)[0].url,
+            "https://registry.npmmirror.com/@vscode/ripgrep-linux-arm64/-/ripgrep-linux-arm64-1.18.0.tgz"
+        );
+        // uv's wheels: their own digests, the same path on PyPI and its mirrors.
+        let a = UV.archive_for("windows", "aarch64").unwrap();
+        let tries = UV.attempts(a, false);
+        assert_eq!(tries[0].form, Form::Archive);
+        assert_eq!(tries[0].sha256, a.sha256);
+        assert_eq!(tries[1].form, Form::Wheel);
+        assert_eq!(
+            tries[1].url,
+            "https://pypi.tuna.tsinghua.edu.cn/packages/7c/f7/4d5fa89d3d10ff6a84e547ef6e02c45b2f2d50e66682da778acf60db63f1/uv-0.13.4-py3-none-win_arm64.whl"
+        );
+        assert_eq!(
+            tries[1].sha256,
+            "deffa5a4afdb48f3e44fb26e80377d256b330ddcad0373daff4b54f6162b43a4"
+        );
+        assert!(!tries[4].mirror && tries[4].form == Form::Wheel);
+    }
+
+    #[test]
+    fn mirrors_go_first_once_remembered() {
+        let root = temp("prefer");
+        assert!(!root.join(PREFER_MIRRORS_FILE).exists());
+        set_prefer_mirrors(&root);
+        assert!(prefer_mirrors(&root));
+        assert!(root.join(PREFER_MIRRORS_FILE).is_file());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_wheel_unpacks_to_its_scripts_folder() {
+        let dir = temp("whl");
+        let whl = dir.join("uv.whl");
+        {
+            let mut w = zip::ZipWriter::new(std::fs::File::create(&whl).unwrap());
+            let exe = zip::write::SimpleFileOptions::default().unix_permissions(0o755);
+            for e in ["uv/__init__.py", "uv-1.0.dist-info/RECORD"] {
+                w.start_file(e, zip::write::SimpleFileOptions::default())
+                    .unwrap();
+                w.write_all(b"x").unwrap();
+            }
+            for e in ["uv-1.0.data/scripts/uv", "uv-1.0.data/scripts/uvx"] {
+                w.start_file(e, exe).unwrap();
+                w.write_all(b"#!/bin/sh\n").unwrap();
+            }
+            w.finish().unwrap();
+        }
+        let into = dir.join("out");
+        unpack(&whl, "wheel.whl", &into).unwrap();
+        let scripts = wheel_scripts(&into).unwrap();
+        assert!(scripts.ends_with("uv-1.0.data/scripts"));
+        assert!(program_in(&scripts, "uvx").is_some() || cfg!(windows));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(scripts.join("uv"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o111, 0o111);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn temp(name: &str) -> PathBuf {

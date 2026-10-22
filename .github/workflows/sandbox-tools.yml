@@ -1,0 +1,72 @@
+# The npm package that carries socat and bubblewrap for Linux folder mode (#154): `@agentrouter-top/sandbox-tools-linux`
+# (`runtimes::CARRIER` in crates/sandbox/src/runtimes.rs). GitHub is slow from mainland China (8–20 KB/s) and has no
+# mirror there; npmmirror syncs every npm package, so the device takes the same pinned archives from it.
+#
+# - Build: `cargo run --example sandbox-tools-package` downloads both archives of each from their GitHub releases and
+#   the corresponding source (`runtimes::CARRIER_SOURCE`), each checked against the SHA-256 pinned in runtimes.rs, and
+#   writes the package; `npm pack` makes the tarball (uploaded as an artifact, its SHA-256 and npm integrity in the
+#   summary).
+# - Publish: by a maintainer, like the CLI packages (no npm token in CI): `npm publish <tgz> --access public`. A
+#   published version is never overwritten: a new socat or bubblewrap pin bumps `CARRIER`'s version.
+name: sandbox tools (npm)
+
+on:
+  push:
+    branches: [main]
+    paths: ["crates/sandbox/src/runtimes.rs", "crates/sandbox/examples/sandbox-tools-package.rs", ".github/workflows/sandbox-tools.yml"]
+  pull_request:
+    paths: ["crates/sandbox/src/runtimes.rs", "crates/sandbox/examples/sandbox-tools-package.rs", ".github/workflows/sandbox-tools.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sandbox-tools-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  pack:
+    name: Pack @agentrouter-top/sandbox-tools-linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Package folder (pinned files, checked)
+        run: cargo run --locked -q -p agentrouter-sandbox --example sandbox-tools-package -- "$RUNNER_TEMP/sandbox-tools"
+      - name: npm pack
+        run: |
+          mkdir -p dist
+          npm pack "$RUNNER_TEMP/sandbox-tools" --pack-destination dist
+          cd dist
+          tgz=$(ls *.tgz)
+          name=$(node -p "require('$RUNNER_TEMP/sandbox-tools/package.json').name")
+          version=$(node -p "require('$RUNNER_TEMP/sandbox-tools/package.json').version")
+          integrity="sha512-$(openssl dgst -sha512 -binary "$tgz" | base64 -w0)"
+          published=$(npm view "${name}@${version}" dist.integrity 2>/dev/null || true)
+          {
+            echo "### ${name}@${version}"
+            echo
+            echo '```'
+            sha256sum "$tgz"
+            echo "integrity ${integrity}"
+            tar -tzvf "$tgz"
+            echo '```'
+            if [ -z "$published" ]; then
+              echo "Not on npm yet: download the artifact and run \`npm publish ${tgz} --access public\` (maintainer)."
+            elif [ "$published" = "$integrity" ]; then
+              echo "On npm with the same integrity."
+            else
+              echo "On npm with a different tarball (${published}); the device checks the archives inside, not the tarball."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sandbox-tools-linux
+          path: dist/*.tgz
+          retention-days: 30
