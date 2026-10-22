@@ -210,9 +210,14 @@ fn a_linked_folder_end_to_end_and_the_boundary_holds() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let (ws_tx, ws_rx) = mpsc::channel();
+    let (port_tx, port_rx) = mpsc::channel();
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let head = peek_head(&stream);
+            if head.starts_with("GET /device/v2/port/") {
+                let _ = port_tx.send(tungstenite::accept(stream).unwrap());
+                continue;
+            }
             if head.starts_with("POST /device/v1/challenge") {
                 answer_http(stream, &json!({"challenge": "c.1.2.3"}));
             } else if head.starts_with("POST /device/v1/token") {
@@ -478,6 +483,70 @@ fn a_linked_folder_end_to_end_and_the_boundary_holds() {
         true,
     );
     assert!(!ok(&refused) && !host_escape.exists(), "{refused}");
+
+    // A preview stream into the sandbox (device #136): on Linux the sandbox has its own network namespace and the host
+    // server bridges a port there (a server the Agent started inside, reached from outside); macOS and Windows still
+    // answer PORT_SANDBOXED.
+    let port = 47000 + (std::process::id() % 1000) as u16;
+    if cfg!(target_os = "linux") {
+        let node = agentrouter_sandbox::Runtime::new(&data).node().unwrap();
+        let script = format!(
+            "require('http').createServer((q,r)=>r.end('bridged-'+q.url)).listen({port},'127.0.0.1')"
+        );
+        let started = call(
+            &mut ws,
+            130,
+            "tools/call",
+            host(
+                "job_start",
+                json!({"command": format!("\"{}\" -e \"{script}\"", node.display())}),
+            ),
+            true,
+        );
+        assert!(ok(&started), "{started}");
+        std::thread::sleep(Duration::from_secs(3));
+    }
+    let id = format!("pst_{}", "a".repeat(32));
+    ws.send(Message::text(
+        json!({"op": "port_open", "id": id, "port": port, "ticket": "ticket-e2e-0123456789"})
+            .to_string(),
+    ))
+    .unwrap();
+    if cfg!(target_os = "linux") {
+        let mut pws = port_rx
+            .recv_timeout(Duration::from_secs(60))
+            .expect("the device dials the stream through the bridge");
+        pws.send(Message::binary(
+            b"GET /x HTTP/1.0\r\nHost: a\r\n\r\n".to_vec(),
+        ))
+        .unwrap();
+        let mut got = Vec::new();
+        while let Ok(msg) = pws.read() {
+            match msg {
+                Message::Binary(b) => got.extend_from_slice(&b),
+                Message::Close(_) => break,
+                _ => {}
+            }
+        }
+        let text = String::from_utf8_lossy(&got);
+        assert!(text.contains("bridged-/x"), "through the bridge: {text}");
+    } else {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            assert!(
+                Instant::now() < deadline,
+                "no port_error for the folder-mode stream"
+            );
+            let frame = ws.read().unwrap();
+            let Ok(v) = serde_json::from_str::<Value>(frame.to_text().unwrap_or("")) else {
+                continue;
+            };
+            if v["op"] == "port_error" && v["id"] == id.as_str() {
+                assert_eq!(v["code"], "PORT_SANDBOXED", "{v}");
+                break;
+            }
+        }
+    }
 
     // A forged call (arguments changed after signing) is refused.
     let mut forged = control_forged(
