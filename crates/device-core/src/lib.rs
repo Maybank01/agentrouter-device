@@ -23,6 +23,7 @@ pub mod local_agent;
 pub mod lockfile;
 pub mod mcp_pkg;
 pub mod net;
+pub mod ports;
 pub mod protocol;
 pub mod shell;
 pub mod shell_env;

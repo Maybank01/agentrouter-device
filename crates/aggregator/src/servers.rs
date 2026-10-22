@@ -590,8 +590,20 @@ async fn start_once(
     let prepared = prepared.map(|(enforced, _)| enforced);
     let limit_it = move |pid: Option<u32>| enforce(agg, server, pid, &unit, limits, prepared);
     let mut cmd = tokio::process::Command::from(std_cmd);
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     cmd.process_group(0);
+    // macOS: a session of its own (also its own process group, as on Linux): a dev server whose starting shell exited
+    // keeps the session, which is how a preview stream knows it is the link's (#139, `ports::in_trees`).
+    #[cfg(target_os = "macos")]
+    // SAFETY: setsid is async-signal-safe and touches only the child.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
     cmd.kill_on_drop(true);
     let handler = Downstream {
         name: def.name.clone(),

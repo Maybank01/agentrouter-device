@@ -20,6 +20,8 @@ sha2 = "0.11"
 agentrouter-sandbox.workspace = true
 ureq = { version = "3", default-features = false, features = ["json"] }
 sysinfo = { version = "0.39", default-features = false, features = ["system", "disk"] }
+# Who listens on a loopback port (preview streams in folder mode, #139). MIT, GyulyVGC/listeners.
+listeners = "0.6"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -370,6 +370,7 @@ gateway → device  {"op":"port_open","id":"pst_<32 hex>","port":5173,"ticket":"
 device            connect 127.0.0.1:5173 (then [::1]:5173)
 device → gateway  WebSocket wss://<gateway>/device/v2/port/<id>, Authorization: Bearer <ticket>; binary both ways
 device → gateway  {"op":"port_error","id","code"}   PORT_CLOSED | PORT_DIAL_FAILED | PORT_BUSY | PORT_SANDBOXED
+                                                    | PORT_NOT_IN_SANDBOX
 ```
 
 - One WebSocket per TCP connection: MCP frames on the link never wait behind preview bytes; each stream has its own
@@ -381,8 +382,14 @@ device → gateway  {"op":"port_error","id","code"}   PORT_CLOSED | PORT_DIAL_FA
   Agents); it connects to `127.0.0.1:<port>` (then `[::1]`) there, answers `PORT_CLOSED` when nothing listens, and moves
   the bytes over the FIFOs (no sockets inside the sandbox: seccomp refuses `AF_UNIX`, and the namespace has no route
   out). Only the sandbox's own ports exist there, so the person's own local services are never reachable this way.
-  **Windows and macOS** share the computer's loopback and answer `PORT_SANDBOXED` until their own step (Windows: only
-  ports whose listener is in the link's Job object, #129; macOS: srt's `allowLocalBinding`).
+  **Windows and macOS** (device #139) share the computer's loopback, so hostd dials the port itself, but only when
+  every TCP listener on it (bound to loopback or to every address) is a process of the link's own servers: on Windows
+  a pid in their Job objects (#129), on macOS a process whose parent chain, or whose session leader's, reaches a
+  server's pid (servers start in sessions of their own, so a dev server whose shell exited still counts). The OS socket
+  table comes from the `listeners` crate (MIT). A port the person's own program listens on answers
+  `PORT_NOT_IN_SANDBOX`; when the owner cannot be told, `PORT_SANDBOXED`. This keeps a preview from opening the
+  person's services by a guessed port; it is not a wall against a command that relays such a port itself, since
+  loopback is open to the sandbox's commands there (§6.1).
 - The gateway checks the ticket (one use, short-lived, bound to `id` and link) and splices the stream to Control's
   internal request; it never reads the bytes. Evaluated and not used: frp, chisel, wstunnel (separate programs with
   their own servers), yamux over the link (one TCP stream for everything; no maintained JS side).
@@ -455,6 +462,8 @@ anything from the folder** (no git in the folder, no hooks, no folder config).
 | Write inside the folder, denied anyway | `.git/hooks/**`, `.git/config` (planting code that the person's own git would later run at full rights) |
 | Read | Allowed broadly (tools need runtimes and system libraries) **except** a deny list: `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.azure`, `~/.kube`, `~/.docker/config.json`, `~/.config/gh`, `~/.git-credentials`, `~/.npmrc`, browser profile roots, OS credential stores, the AgentRouter device data dir |
 | Network | Allow-list per server from the catalog (`network: [domains]`) plus the package mirrors; custom servers get registries only unless the local `y` included network. **Open web** (owner Q7, 2026-10-20): a pinned catalog preset whose list is `["*"]` (the browser presets `browser`, `browser-firefox`) may reach any public host on any port; loopback/`localhost`, link-local (incl. `169.254.169.254`), multicast, cloud-metadata endpoints, private ranges (`10/8`, `172.16/12`, `192.168/16`, `100.64/10`, `fc00::/7`) and this computer's own addresses stay closed, by name and by IP literal. `*` from a custom server, the project's `.agentrouter/mcp.json` or any other local definition is dropped; no local flag or env var widens it. Mechanism: srt (0.0.81) has no `*` allow entry, so the device starts srt's own CLI through `open-web.mjs`, which passes srt's documented ask callback (`SandboxManager.initialize(config, askCallback)`): it allows public destinations and judges IP literals with srt's resolved-address guard; `network.deniedResolvedAddresses` adds the private ranges to that guard for names. Enforced through the sandbox's egress proxy |
+| Local ports (device #139) | A command reaches a dev server it (or another command of the link) started on `localhost`, as in the person's own terminal. Linux: the sandbox's own network namespace and loopback (the person's local services are not there). macOS and Windows: srt's `network.allowLocalBinding` — loopback is shared, so the person's own local services (a database, a local admin page) are reachable to commands too, as on macOS with srt's setting on. On Windows this is a machine-wide mode of srt-win's WFP fence: `sandbox setup` installs it with `--allow-loopback` (an existing install is re-installed once with `--force`, one UAC prompt); every session asks for the installed mode (`srt-win status` → `wfp.allow_loopback`, or the setup's own record when that is unreadable without elevation), and `sandbox status` notes a machine still installed closed. Everything beyond this computer still goes through the allow-list. Preview streams open only the link's own listeners (§3.8) |
+| The person's tool configuration (device #138) | The sandbox's home is not the person's (Windows: the sandbox account's own profile; macOS/Linux: `HOME` = scratch), so tools would not find their user configuration — git had no identity. The device points each tool at the person's own file, read-only, with srt-win's list of variables: `GIT_CONFIG_GLOBAL` (`~/.gitconfig`, else the XDG `git/config`), `NPM_CONFIG_USERCONFIG`, `PIP_CONFIG_FILE`, `MAVEN_ARGS`, `RUSTUP_HOME`, `CARGO_HOME`. Windows: what `srt-win profile status` offers (`env`); macOS/Linux: the same names found under the person's home. A file on the read deny list (e.g. `~/.npmrc`) is never named; a variable the server's environment (or, for commands, the person's terminal environment, #95) sets wins. `git config --global` inside the sandbox therefore fails (the file is read-only); repository config is unaffected |
 | Processes | Whole tree in the sandbox; killed with the link (job object / process group) |
 
 ### 6.2 Tool choice

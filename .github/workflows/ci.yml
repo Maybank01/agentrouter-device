@@ -231,6 +231,9 @@ jobs:
           echo "XDG_RUNTIME_DIR=/run/user/$uid" >> "$GITHUB_ENV"
           echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus" >> "$GITHUB_ENV"
           cat "/sys/fs/cgroup/user.slice/user-$uid.slice/user@$uid.service/cgroup.controllers"
+      # #138: the person's git identity in their own global config, which git inside the sandbox must see (read-only).
+      - name: The person's git identity
+        run: git config --global user.email sandbox-person@ci.invalid
       - run: cargo test -p agentrouter-sandbox -- --nocapture
       # #129: on Windows the sandbox entry joins the limits' Job object with the device program; the limits and
       # aggregator tests below name it (built once here; link_e2e reuses it).

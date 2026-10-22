@@ -28,8 +28,10 @@
 //! Policy (§6.1): write = folders + scratch (TEMP and the npm/uv/pip caches point there); `.git/hooks` and
 //! `.git/config` stay unwritable (srt's mandatory denies, plus explicit ones); reads are allowed except the
 //! person's secrets and the device data folder; network = package mirrors + the server's catalog list, through
-//! srt's proxy, or the open web for a catalog preset whose list is [`OPEN_WEB`] ([`Launch::open_web`]). There is no
-//! unconfined fallback: when the sandbox cannot run, [`Unavailable`] says what to do.
+//! srt's proxy, or the open web for a catalog preset whose list is [`OPEN_WEB`] ([`Launch::open_web`]); local ports
+//! as in the person's terminal ([`Runtime::local_binding`], #139); the person's tool configuration read-only
+//! ([`PROFILE_ENV`], #138). There is no unconfined fallback: when the sandbox cannot run, [`Unavailable`] says what
+//! to do.
 
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
@@ -84,6 +86,20 @@ pub const PACKAGE_MIRRORS: &[&str] = &[
 /// The catalog `network` entry that asks for the open web (owner 2026-10-20 「可以开放到完整的互联网」, the browser
 /// presets). The device honours it only for a pinned catalog preset; anywhere else it is dropped.
 pub const OPEN_WEB: &str = "*";
+
+/// Variables that point a tool at the person's own configuration when the sandbox's home is not theirs (device #138):
+/// on Windows the sandbox account has its own profile, on macOS and Linux `HOME` is the server's scratch folder. The
+/// list srt-win offers (`srt-win profile status` → `env`; srt README "Readable files that can contain package-feed
+/// tokens"): on Windows taken from there, on macOS and Linux found the same way here ([`Runtime::profile_env`]). The
+/// files stay read-only; a file on the read deny list is never named; a variable the server's environment sets wins.
+pub const PROFILE_ENV: &[&str] = &[
+    "NPM_CONFIG_USERCONFIG",
+    "GIT_CONFIG_GLOBAL",
+    "PIP_CONFIG_FILE",
+    "MAVEN_ARGS",
+    "RUSTUP_HOME",
+    "CARGO_HOME",
+];
 
 /// What the open web never includes beyond srt's own resolved-address deny set (loopback, link-local, multicast,
 /// cloud metadata, this host's addresses): private-use space, so the LAN stays closed (srt README
@@ -218,6 +234,9 @@ pub struct Status {
     pub ready: bool,
     /// What is missing, each with what to do.
     pub problems: Vec<Unavailable>,
+    /// What works less than it could, without stopping anything (Windows: loopback still closed to the sandbox, so a
+    /// command cannot reach a dev server it started; `agentrouter sandbox setup` opens it, device #139).
+    pub notes: Vec<Unavailable>,
 }
 
 /// The installed runtime and the device data folder it protects.
@@ -234,6 +253,12 @@ struct Ready {
     /// The sandbox account (`srt-win status`).
     #[cfg(windows)]
     sid: String,
+    /// The machine's loopback mode ([`Runtime::local_binding`]); every session asks for the installed one.
+    #[cfg(windows)]
+    loopback: bool,
+    /// `srt-win profile status` → `env` ([`PROFILE_ENV`]).
+    #[cfg(windows)]
+    profile_env: Vec<(String, String)>,
 }
 
 /// A confined stdio server ([`Runtime::stdio_command`]): its command and, on Windows, the pipe its stdin and stdout
@@ -484,12 +509,17 @@ impl Runtime {
         #[cfg(windows)]
         {
             let before = windows_install(&self.srt_win())?;
-            if before.sid.is_none() || before.stale {
+            let closed = !before.loopback.unwrap_or_else(|| self.loopback_marked());
+            if before.sid.is_none() || before.stale || closed {
                 let range = format!("{}-{}", WINDOWS_PROXY_PORTS.0, WINDOWS_PROXY_PORTS.1);
-                let out = Command::new(self.srt_win())
-                    .args(["install", "--proxy-port-range", &range])
-                    .output()
-                    .map_err(|e| format!("srt-win 起不来：{e}"))?;
+                let mut cmd = Command::new(self.srt_win());
+                // Loopback open to the sandbox (device #139): a command reaches the dev server it started, as in the
+                // person's own terminal and as on macOS. Machine-wide; changing an existing install needs --force.
+                cmd.args(["install", "--proxy-port-range", &range, "--allow-loopback"]);
+                if before.sid.is_some() && !before.stale {
+                    cmd.arg("--force");
+                }
+                let out = cmd.output().map_err(|e| format!("srt-win 起不来：{e}"))?;
                 match out.status.code() {
                     Some(0) => {}
                     Some(10) => return Err("管理员确认被取消了，什么都没改".into()),
@@ -501,11 +531,16 @@ impl Runtime {
                         ));
                     }
                 }
-                done.push(if before.stale {
+                done.push(if before.sid.is_none() {
+                    "建好了 Windows 隔离账户 srt-sandbox 和它的网络限制（命令能连本机端口，比如自己起的开发服务器）".into()
+                } else if before.stale {
                     "更新了 Windows 隔离账户和它的网络限制".into()
                 } else {
-                    "建好了 Windows 隔离账户 srt-sandbox 和它的网络限制".into()
+                    "隔离环境里的命令现在能连本机端口了（比如自己起的开发服务器）".into()
                 });
+                let marker = self.loopback_marker();
+                std::fs::write(&marker, "open\n")
+                    .map_err(|e| format!("写不了 {}：{e}", shown(&marker)))?;
             }
             let after = windows_install(&self.srt_win())?;
             let sid = after
@@ -514,7 +549,7 @@ impl Runtime {
                 .ok_or_else(|| "隔离账户没建成（srt-win status 仍然没有它）".to_string())?;
             self.windows_runtime_readable(&sid)?;
             // Also a refresh: what was created in the profile since the last run becomes readable.
-            let first = windows_profile_state(&self.srt_win())? != "current";
+            let first = windows_profile_state(&self.srt_win())?.0 != "current";
             self.windows_profile_grant()?;
             if first {
                 done.push(
@@ -570,16 +605,56 @@ impl Runtime {
         } else {
             "bubblewrap"
         };
-        let problems = match self.ready() {
-            Ok(_) => Vec::new(),
-            Err(e) => vec![e],
+        let (problems, notes) = match self.ready() {
+            #[cfg(windows)]
+            Ok(ready) if !ready.loopback => (
+                Vec::new(),
+                vec![Unavailable::new(
+                    "这台电脑的隔离环境还不让命令连本机端口，命令连不上自己起的开发服务器",
+                    "请用户在这台电脑上运行 agentrouter sandbox setup（会弹一次管理员确认），再重新链接。",
+                )],
+            ),
+            Ok(_) => (Vec::new(), Vec::new()),
+            Err(e) => (vec![e], Vec::new()),
         };
         Status {
             backend: Runtime::backend(),
             mechanism,
             ready: problems.is_empty(),
             problems,
+            notes,
         }
+    }
+
+    /// Whether sandboxed commands may use local ports directly (srt `network.allowLocalBinding`, device #139): a dev
+    /// server binds and the command that started it connects to it, as in the person's own terminal. macOS: yes
+    /// (without it a server cannot even bind). Windows: the machine's installed mode, which every session must ask
+    /// for (srt: `wfp_loopback_mismatch` otherwise) — `srt-win status` when it can read the filters, else what this
+    /// device's setup installed. Linux: not used (the sandbox has its own network namespace and loopback).
+    pub fn local_binding(&self) -> bool {
+        #[cfg(windows)]
+        {
+            windows_install(&self.srt_win())
+                .ok()
+                .and_then(|i| i.loopback)
+                .unwrap_or_else(|| self.loopback_marked())
+        }
+        #[cfg(not(windows))]
+        {
+            cfg!(target_os = "macos")
+        }
+    }
+
+    /// Written by [`Runtime::setup`] after it installed the Windows fence with loopback open; read when `srt-win
+    /// status` cannot see the filter set (no elevation).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn loopback_marker(&self) -> PathBuf {
+        self.root().join("windows-loopback-open")
+    }
+
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn loopback_marked(&self) -> bool {
+        self.loopback_marker().is_file()
     }
 
     fn ready(&self) -> Result<Ready, Unavailable> {
@@ -624,23 +699,30 @@ impl Runtime {
             };
             self.windows_runtime_readable(&sid)
                 .map_err(|e| Unavailable::new(e, NEXT_SETUP))?;
-            match windows_profile_state(&self.srt_win()) {
-                Ok(state) if state == "current" => {}
-                Ok(state) => {
+            let profile_env = match windows_profile_state(&self.srt_win()) {
+                Ok((state, env)) if state == "current" => env,
+                Ok((state, _)) => {
                     return Err(Unavailable::new(
                         format!("隔离账户还不能读你的用户文件夹（{state}）"),
                         NEXT_SETUP,
                     ));
                 }
                 Err(e) => return Err(Unavailable::new(e, NEXT_SETUP)),
-            }
-            sid
+            };
+            let loopback = install.loopback.unwrap_or_else(|| self.loopback_marked());
+            (sid, loopback, profile_env)
         };
+        #[cfg(windows)]
+        let (sid, loopback, profile_env) = sid;
         Ok(Ready {
             node,
             cli: self.cli(),
             #[cfg(windows)]
             sid,
+            #[cfg(windows)]
+            loopback,
+            #[cfg(windows)]
+            profile_env,
         })
     }
 
@@ -784,6 +866,15 @@ impl Runtime {
             .clone()
     }
 
+    /// On the read deny list (§6.1): the person's secrets and the device data folder.
+    fn read_denied(&self, path: &Path) -> bool {
+        let path = plain(path);
+        secret_paths(&home_dir())
+            .into_iter()
+            .chain(std::iter::once(self.data_dir.clone()))
+            .any(|d| path.starts_with(plain(&d)))
+    }
+
     /// The scratch folder of one server.
     pub fn scratch(&self, key: &str) -> PathBuf {
         let digest = Sha256::digest(key.as_bytes());
@@ -824,6 +915,11 @@ impl Runtime {
 
     /// The srt settings for one launch (written to the device data folder, which no sandbox can read or write).
     pub fn policy(&self, launch: &Launch) -> Result<Value, Unavailable> {
+        self.policy_with(launch, self.local_binding())
+    }
+
+    /// [`Runtime::policy`] with the loopback mode already known ([`Runtime::local_binding`]).
+    fn policy_with(&self, launch: &Launch, local_binding: bool) -> Result<Value, Unavailable> {
         let home = home_dir();
         let mut writable: Vec<PathBuf> = launch.folders.iter().map(|f| plain(f)).collect();
         let cwd = plain(launch.cwd);
@@ -909,6 +1005,12 @@ impl Runtime {
         if launch.open_web {
             network["deniedResolvedAddresses"] = json!(PRIVATE_RANGES);
         }
+        if !cfg!(target_os = "linux") {
+            // Every loopback port, the person's own local services included (srt README "Local servers on
+            // Windows"); the domain list still decides everything beyond this computer. Linux: the sandbox's own
+            // loopback, nothing to set.
+            network["allowLocalBinding"] = json!(local_binding);
+        }
         let mut policy = json!({
             "network": network,
             "filesystem": {
@@ -964,7 +1066,10 @@ impl Runtime {
 
     fn confined(&self, launch: &Launch, stdio_pipe: bool) -> Result<Confined, Unavailable> {
         let ready = self.ready()?;
-        let policy = self.policy(launch)?;
+        #[cfg(windows)]
+        let policy = self.policy_with(launch, ready.loopback)?;
+        #[cfg(not(windows))]
+        let policy = self.policy_with(launch, self.local_binding())?;
         let scratch = self.scratch(launch.key);
         let mut env: Vec<(String, String)> = launch.env.to_vec();
         for (k, v) in self.scratch_env(launch.key) {
@@ -977,13 +1082,18 @@ impl Runtime {
                 let _ = std::fs::create_dir_all(v);
             }
         }
-        // With HOME in scratch, git still finds the person's identity (read-only).
-        let gitconfig = home_dir().join(".gitconfig");
-        if !cfg!(windows)
-            && gitconfig.is_file()
-            && !env.iter().any(|(k, _)| k == "GIT_CONFIG_GLOBAL")
-        {
-            env.push(("GIT_CONFIG_GLOBAL".to_string(), shown(&gitconfig)));
+        // The person's own tool configuration, read-only (git identity, npm/pip/Maven settings, rustup and cargo
+        // homes, #138): the sandbox's home is not theirs on any OS.
+        #[cfg(windows)]
+        let found = ready.profile_env.clone();
+        #[cfg(not(windows))]
+        let found = profile_env_of(&home_dir(), |k| std::env::var_os(k));
+        for (k, v) in found {
+            let set = env.iter().any(|(e, _)| e.eq_ignore_ascii_case(&k))
+                || (!cfg!(windows) && std::env::var_os(&k).is_some());
+            if !set && (k == "MAVEN_ARGS" || !self.read_denied(Path::new(&v))) {
+                env.push((k, v));
+            }
         }
         std::fs::create_dir_all(&scratch).map_err(|e| {
             Unavailable::new(format!("建不了 {}：{e}", shown(&scratch)), NEXT_SETUP)
@@ -1221,6 +1331,54 @@ fn random<const N: usize>() -> [u8; N] {
     out
 }
 
+/// [`PROFILE_ENV`] on macOS and Linux, where `HOME` inside the sandbox is the server's scratch folder: each variable
+/// that `var` (the device's own environment) does not set already, pointing at the person's file or folder under `home`
+/// when it exists — the places each tool reads by default.
+#[cfg_attr(windows, allow(dead_code))]
+fn profile_env_of(
+    home: &Path,
+    var: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Vec<(String, String)> {
+    let xdg = var("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| home.join(".config"));
+    let file = |c: &[PathBuf]| c.iter().find(|p| p.is_file()).map(|p| shown(p));
+    let dir = |p: PathBuf| p.is_dir().then(|| shown(&p));
+    let mut pip = vec![
+        xdg.join("pip").join("pip.conf"),
+        home.join(".pip").join("pip.conf"),
+    ];
+    if cfg!(target_os = "macos") {
+        pip.insert(0, home.join("Library/Application Support/pip/pip.conf"));
+    }
+    let m2 = home.join(".m2");
+    let maven = file(&[m2.join("settings.xml")])
+        .filter(|s| !s.contains(char::is_whitespace))
+        .map(|s| {
+            let security = m2.join("settings-security.xml");
+            match file(&[security]).filter(|t| !t.contains(char::is_whitespace)) {
+                Some(t) => format!("-s {s} -Dsettings.security={t}"),
+                None => format!("-s {s}"),
+            }
+        });
+    [
+        ("NPM_CONFIG_USERCONFIG", file(&[home.join(".npmrc")])),
+        (
+            "GIT_CONFIG_GLOBAL",
+            file(&[home.join(".gitconfig"), xdg.join("git").join("config")]),
+        ),
+        ("PIP_CONFIG_FILE", file(&pip)),
+        ("MAVEN_ARGS", maven),
+        ("RUSTUP_HOME", dir(home.join(".rustup"))),
+        ("CARGO_HOME", dir(home.join(".cargo"))),
+    ]
+    .into_iter()
+    .filter(|(k, _)| var(k).is_none())
+    .filter_map(|(k, v)| v.map(|v| (k.to_string(), v)))
+    .collect()
+}
+
 /// The person's secrets (§6.1 read deny list) under `home`, for this OS.
 fn secret_paths(home: &Path) -> Vec<PathBuf> {
     let mut list: Vec<PathBuf> = [
@@ -1340,15 +1498,22 @@ struct WindowsInstall {
     /// Set up by another srt release (its setup version differs from this one's): srt-win refuses to run on it until
     /// `srt-win install` runs again.
     stale: bool,
+    /// The fence's loopback mode (`wfp.allow_loopback`, srt README "Local servers on Windows"), when `srt-win status`
+    /// could read the filter set (it may not without elevation): `Some(true)` = loopback open to the sandbox.
+    loopback: Option<bool>,
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
 fn windows_install_of(v: &Value) -> Result<WindowsInstall, String> {
     let user = &v["user"];
+    let loopback = (v["wfp"]["state"] == "installed")
+        .then(|| v["wfp"]["allow_loopback"].as_bool())
+        .flatten();
     if user["user"]["exists"] != true || user["cred_present"] != true {
         return Ok(WindowsInstall {
             sid: None,
             stale: false,
+            loopback: None,
         });
     }
     let sid = user["user"]["sid"]
@@ -1365,6 +1530,7 @@ fn windows_install_of(v: &Value) -> Result<WindowsInstall, String> {
     Ok(WindowsInstall {
         sid: Some(sid),
         stale,
+        loopback,
     })
 }
 
@@ -1374,16 +1540,39 @@ fn windows_install(srt_win: &Path) -> Result<WindowsInstall, String> {
         return Ok(WindowsInstall {
             sid: None,
             stale: false,
+            loopback: None,
         });
     }
     windows_install_of(&srt_win_json(srt_win, &["status"])?)
 }
 
-/// `srt-win profile status`'s `state`: `current` is the only one a session can rely on.
+/// `srt-win profile status`'s `state` (`current` is the only one a session can rely on) and, when current, the
+/// variables that point the person's tools at their own configuration files ([`PROFILE_ENV`]).
 #[cfg(windows)]
-fn windows_profile_state(srt_win: &Path) -> Result<String, String> {
-    let v = srt_win_json(srt_win, &["profile", "status"])?;
-    Ok(v["state"].as_str().unwrap_or("unknown").to_string())
+fn windows_profile_state(srt_win: &Path) -> Result<(String, Vec<(String, String)>), String> {
+    Ok(windows_profile_of(&srt_win_json(
+        srt_win,
+        &["profile", "status"],
+    )?))
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_profile_of(v: &Value) -> (String, Vec<(String, String)>) {
+    let state = v["state"].as_str().unwrap_or("unknown").to_string();
+    let env = if state == "current" {
+        PROFILE_ENV
+            .iter()
+            .filter_map(|name| {
+                v["env"][*name]
+                    .as_str()
+                    .filter(|value| !value.is_empty())
+                    .map(|value| (name.to_string(), value.to_string()))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    (state, env)
 }
 
 #[cfg(windows)]
@@ -1444,13 +1633,121 @@ mod tests {
             none,
             WindowsInstall {
                 sid: None,
-                stale: false
+                stale: false,
+                loopback: None,
             }
         );
         assert!(
             windows_install_of(&json!({"user": {"user": {"exists": true}, "cred_present": true}}))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn the_loopback_mode_is_read_only_from_an_installed_fence() {
+        let status = |wfp: Value| {
+            json!({"user": {"user": {"exists": true, "sid": "S-1-5-21-1-2-3-1001"}, "cred_present": true},
+                "wfp": wfp})
+        };
+        let mode = |wfp: Value| windows_install_of(&status(wfp)).unwrap().loopback;
+        assert_eq!(
+            mode(json!({"state": "installed", "allow_loopback": true})),
+            Some(true)
+        );
+        assert_eq!(
+            mode(json!({"state": "installed", "allow_loopback": false})),
+            Some(false)
+        );
+        // Without elevation the filter set may be unreadable: unknown, never a guess.
+        assert_eq!(mode(json!({"state": "cannot-read"})), None);
+        assert_eq!(mode(Value::Null), None);
+    }
+
+    #[test]
+    fn the_profile_env_is_srt_wins_list_and_only_when_the_grant_is_current() {
+        let (state, env) = windows_profile_of(&json!({"state": "current", "env": {
+            "GIT_CONFIG_GLOBAL": "C:\\Users\\p\\.gitconfig", "CARGO_HOME": "", "PATH": "C:\\evil"}}));
+        assert_eq!(state, "current");
+        assert_eq!(
+            env,
+            vec![(
+                "GIT_CONFIG_GLOBAL".to_string(),
+                "C:\\Users\\p\\.gitconfig".to_string()
+            )]
+        );
+        let (state, env) =
+            windows_profile_of(&json!({"state": "outdated", "env": {"GIT_CONFIG_GLOBAL": "x"}}));
+        assert_eq!(state, "outdated");
+        assert!(env.is_empty());
+    }
+
+    #[test]
+    fn the_person_s_tool_config_is_found_under_their_home() {
+        let home = temp("profile-home");
+        std::fs::create_dir_all(home.join(".config").join("git")).unwrap();
+        std::fs::write(
+            home.join(".config").join("git").join("config"),
+            "[user]\nname = P\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(home.join(".rustup")).unwrap();
+        std::fs::create_dir_all(home.join(".cargo")).unwrap();
+        let none = |_: &str| None;
+        let env = profile_env_of(&home, none);
+        let get = |env: &[(String, String)], k: &str| {
+            env.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone())
+        };
+        // Only the XDG file exists: it is the global config (git reads it when ~/.gitconfig is missing).
+        assert_eq!(
+            get(&env, "GIT_CONFIG_GLOBAL"),
+            Some(shown(&home.join(".config").join("git").join("config")))
+        );
+        assert_eq!(get(&env, "RUSTUP_HOME"), Some(shown(&home.join(".rustup"))));
+        assert_eq!(get(&env, "CARGO_HOME"), Some(shown(&home.join(".cargo"))));
+        assert_eq!(get(&env, "NPM_CONFIG_USERCONFIG"), None);
+        // ~/.gitconfig wins over the XDG file, as for git with both present.
+        std::fs::write(home.join(".gitconfig"), "[user]\nname = Q\n").unwrap();
+        assert_eq!(
+            get(&profile_env_of(&home, none), "GIT_CONFIG_GLOBAL"),
+            Some(shown(&home.join(".gitconfig")))
+        );
+        // What the device's environment sets already is left alone.
+        let set = |k: &str| (k == "CARGO_HOME").then(|| std::ffi::OsString::from("/elsewhere"));
+        assert_eq!(get(&profile_env_of(&home, set), "CARGO_HOME"), None);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn local_ports_are_open_on_macos_and_windows_only() {
+        let dir = temp("loopback");
+        let (rt, folder) = launch_in(&dir);
+        let folders = vec![folder.clone()];
+        let launch = Launch {
+            key: "host\u{1}work",
+            program: Path::new("node"),
+            args: &[],
+            env: &[],
+            cwd: &folder,
+            folders: &folders,
+            network: &[],
+            readable: &[],
+            read_only: false,
+            open_web: false,
+            job: None,
+        };
+        for open in [true, false] {
+            let p = rt.policy_with(&launch, open).unwrap();
+            let got = &p["network"]["allowLocalBinding"];
+            if cfg!(target_os = "linux") {
+                assert!(got.is_null(), "Linux: the sandbox's own loopback");
+            } else {
+                assert_eq!(got, &json!(open));
+            }
+        }
+        if !cfg!(windows) {
+            assert_eq!(rt.local_binding(), cfg!(target_os = "macos"));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

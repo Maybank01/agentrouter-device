@@ -1,6 +1,7 @@
-name: Parity bench (Windows)
+name: Parity bench (PC)
 
-# The PC parity bench (Cloud deploy/maintenance/parity-bench, umbrella Cloud #2383) on a GitHub-hosted Windows runner:
+# The PC parity bench (Cloud deploy/maintenance/parity-bench, umbrella Cloud #2383) on a GitHub-hosted Windows or macOS
+# runner (device #139 added macOS):
 # a Dev conversation whose environment is this runner's `agentrouter link` in folder mode (arm C), tasks T1–T9, each
 # judged by a checker that reads the folder afterwards (#132). On demand only — never on a push or a pull request,
 # never in a loop.
@@ -13,6 +14,11 @@ name: Parity bench (Windows)
 on:
   workflow_dispatch:
     inputs:
+      os:
+        description: The PC
+        type: choice
+        options: [windows, macos]
+        default: windows
       tasks:
         description: Tasks to run (comma-separated)
         default: T1,T2,T3,T4,T5,T6,T7,T8,T9
@@ -25,19 +31,19 @@ permissions:
 
 # One test account: one run at a time.
 concurrency:
-  group: parity-windows
+  group: parity-bench
   cancel-in-progress: false
 
 jobs:
   bench:
-    name: Parity bench (Windows, folder mode)
+    name: Parity bench (${{ inputs.os }}, folder mode)
     if: github.repository == 'Maybank01/agentrouter-device'
-    runs-on: windows-latest
+    runs-on: ${{ inputs.os == 'macos' && 'macos-latest' || 'windows-latest' }}
     environment: dev-bench
     timeout-minutes: 150
     env:
       PB_HOSTD_MODE: folder
-      PB_COMPUTER: gh-win-${{ github.run_id }}-${{ github.run_attempt }}
+      PB_COMPUTER: gh-${{ inputs.os == 'macos' && 'mac' || 'win' }}-${{ github.run_id }}-${{ github.run_attempt }}
       PB_TASKS: ${{ inputs.tasks }}
     steps:
       # The fixture's files and their hashes must be the same bytes as on any other PC (T3 packs them).
@@ -75,6 +81,7 @@ jobs:
           persist-credentials: false
       # srt-win starts the sandbox account's processes with CreateProcessWithLogonW (ci.yml, Sandbox (Windows)).
       - name: Windows Secondary Logon service
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           Set-Service -Name seclogon -StartupType Manual
@@ -83,7 +90,8 @@ jobs:
         shell: pwsh
         run: |
           if ($env:PB_TASKS -notmatch '^T[1-9](,T[1-9])*$') { throw "tasks: comma-separated T1..T9, got '$env:PB_TASKS'" }
-          $hostd = Join-Path $env:GITHUB_WORKSPACE 'target\release\agentrouter.exe'
+          $exe = if ($IsWindows) { 'agentrouter.exe' } else { 'agentrouter' }
+          $hostd = Join-Path $env:GITHUB_WORKSPACE (Join-Path 'target' (Join-Path 'release' $exe))
           $home_ = Join-Path $env:RUNNER_TEMP 'device-home'
           $root = Join-Path $env:RUNNER_TEMP 'pb'
           New-Item -ItemType Directory -Force $home_, $root | Out-Null
@@ -99,12 +107,14 @@ jobs:
           SMOKE_ORIGIN: ${{ secrets.PB_SMOKE_ORIGIN }}
           SMOKE_USER: ${{ secrets.PB_SMOKE_USER }}
           SMOKE_PASSWORD: ${{ secrets.PB_SMOKE_PASSWORD }}
+        shell: pwsh
         run: node cloud/deploy/maintenance/parity-bench/bench.mjs pair --name "$env:PB_COMPUTER" --root "$env:PB_ROOT"
       - name: Bench, arm C
         env:
           SMOKE_ORIGIN: ${{ secrets.PB_SMOKE_ORIGIN }}
           SMOKE_USER: ${{ secrets.PB_SMOKE_USER }}
           SMOKE_PASSWORD: ${{ secrets.PB_SMOKE_PASSWORD }}
+        shell: pwsh
         run: node cloud/deploy/maintenance/parity-bench/bench.mjs run C --root "$env:PB_ROOT" --tasks "$env:PB_TASKS"
       - name: Report
         if: always()
@@ -120,11 +130,12 @@ jobs:
           SMOKE_ORIGIN: ${{ secrets.PB_SMOKE_ORIGIN }}
           SMOKE_USER: ${{ secrets.PB_SMOKE_USER }}
           SMOKE_PASSWORD: ${{ secrets.PB_SMOKE_PASSWORD }}
+        shell: pwsh
         run: node cloud/deploy/maintenance/parity-bench/bench.mjs unpair --name "$env:PB_COMPUTER"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: parity-windows-${{ github.run_id }}
+          name: parity-${{ inputs.os }}-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/pb/C-results.json
             ${{ runner.temp }}/pb/parity-report.*
