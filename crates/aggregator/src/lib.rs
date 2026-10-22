@@ -1490,7 +1490,7 @@ impl Inner {
     /// tool (never listed to the cloud), shows the address as a QR on this console, answers with the address for the
     /// web page, and waits for the server's check tool in the background; the credential file the server then writes
     /// is kept on this computer ([`servers::sync_credentials`]). Docs: HOSTD-MCP.md §13.7.
-    async fn login(self: &Arc<Self>, args: &Value) -> Result<Value, Failure> {
+    pub(crate) async fn login(self: &Arc<Self>, args: &Value) -> Result<Value, Failure> {
         let name = args.get("name").and_then(Value::as_str).unwrap_or("");
         let server = self
             .servers
@@ -1601,6 +1601,15 @@ impl Inner {
             "url": url,
             "next": "把这个地址做成二维码给用户扫（这台电脑的终端里也显示了）；用 link__servers 看凭据状态。",
         }))
+    }
+
+    /// A login that could not start by itself: said once on the console and in `link__servers`.
+    pub(crate) fn feed_login_problem(&self, name: &str, message: &str) {
+        let server = self.servers.lock().unwrap().get(name).cloned();
+        if let Some(server) = server {
+            server.cred.lock().unwrap().last_error = Some(message.to_string());
+            self.server_event(&server, "login_failed", Some(message.to_string()));
+        }
     }
 
     /// `link__logout`: forget a server's credential on this computer and restart it without it.

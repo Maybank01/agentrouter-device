@@ -814,6 +814,23 @@ pub async fn supervise(agg: Arc<Inner>, server: Arc<Server>) {
                 server.set_state(State::Ready);
                 agg.server_event(&server, "ready", None);
                 agg.notify_tools_changed().await;
+                // Not logged in yet: the login shows on this computer at once (HOSTD-MCP §13.7), so installing a
+                // server that needs an account is enough for the person to see the QR; `link__login` starts it again.
+                if let Some(login) = &server.def.login
+                    && !server
+                        .cred
+                        .lock()
+                        .unwrap()
+                        .kept
+                        .contains_key(&login.credential)
+                {
+                    let (agg, name) = (agg.clone(), server.def.name.clone());
+                    tokio::spawn(async move {
+                        if let Err(f) = agg.login(&json!({ "name": name })).await {
+                            agg.feed_login_problem(&name, &f.message);
+                        }
+                    });
+                }
                 let ct = running.cancellation_token();
                 let mut waiting = Box::pin(running.waiting());
                 let stopped = tokio::select! {

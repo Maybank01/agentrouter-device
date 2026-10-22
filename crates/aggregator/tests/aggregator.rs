@@ -619,6 +619,7 @@ process.stdin.on('data', (d) => {
         if (m.params.name === 'login') text(m.id, 'Scan:\nhttps://login.example.test/qr?c=1\n{ "loginKey": "K123" }');
         else if (m.params.name === 'login_check') {
           if (a.loginKey !== 'K123') text(m.id, 'wrong key ' + a.loginKey, true);
+          else if (!fs.existsSync(process.env.FAKE_SCANNED)) text(m.id, 'not scanned', true);
           else { fs.writeFileSync(file, JSON.stringify({ sessdata: 's3cr3t-value-1', uid: '7' })); text(m.id, 'logged in'); }
         } else text(m.id, 'cookie: ' + fs.readFileSync(file, 'utf8'));
       } catch (e) { text(m.id, 'failed: ' + (e.code || e.message), true); }
@@ -651,7 +652,9 @@ async fn a_server_logs_in_on_this_computer_and_its_credential_stays_here() {
         .setup()
         .expect("sandbox setup on the runner");
     h.open("mcs_1", "ags_a").await;
+    let scanned = base.join("scanned");
     let def = json!({"name": "site", "command": "node", "args": [fake.to_string_lossy()], "waitMs": 120000,
+        "env": {"FAKE_SCANNED": scanned.to_string_lossy()},
         "credentials": [{"name": "cookie", "fileEnv": "SITE_COOKIE_FILE"}],
         "login": {"credential": "cookie", "start": "login", "url": "https://\\S+",
                   "key": "\"loginKey\": \"([^\"]+)\"", "check": "login_check", "keyArg": "loginKey"}});
@@ -685,6 +688,7 @@ async fn a_server_logs_in_on_this_computer_and_its_credential_stays_here() {
     assert_eq!(code_of(&refused), "HOST_ONLY_TOOL", "{refused}");
 
     // The person logs in on this computer: the address is shown here and answered; the check runs in the background.
+    std::fs::write(&scanned, "yes").unwrap();
     let login = h
         .call("mcs_1", 5, "ags_a", "link__login", json!({"name": "site"}))
         .await;
@@ -751,7 +755,8 @@ async fn a_server_logs_in_on_this_computer_and_its_credential_stays_here() {
     );
     assert!(!h.audit().contains("s3cr3t-value-1"), "never in the audit");
 
-    // Logging out forgets it on this computer.
+    // Logging out forgets it on this computer (nobody scans the login the restart shows).
+    std::fs::remove_file(&scanned).unwrap();
     let out = h
         .call(
             "mcs_1",

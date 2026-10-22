@@ -1104,7 +1104,9 @@ server that reads its account from a file; nothing here names a service.
 - **Blanked:** every kept value and each JSON / cookie value of 8+ characters inside it reads `[secret]` in results,
   logs and the audit, like `secretEnv`.
 - **Host-only tools:** never in the cloud's `tools/list`; a call is `HOST_ONLY_TOOL`.
-- **`link__login {name}`:** runs `start`, shows the address as a QR on this console (`Feed::Login`; a cloud host logs
+- **The login shows by itself:** when a server that declares `login` is ready and this computer keeps no value for
+  its credential, `hostd` starts the login at once — installing it is enough for the person to see the QR here.
+- **`link__login {name}`** (starts it again): runs `start`, shows the address as a QR on this console (`Feed::Login`; a cloud host logs
   only that a login started), answers `{state: waiting_login, url}` for the web page, then waits up to 180 s for
   `check` in the background → `login_ok` or `login_failed` (its words in `lastError`). Errors: `LOGIN_UNSUPPORTED`,
   `SERVER_NOT_READY`, `LOGIN_IN_PROGRESS`, `LOGIN_FAILED`.
