@@ -56,6 +56,7 @@ mod tests {
         "COREPACK_HOME",
         "CSV",
         "DENO_DIR",
+        "DISPLAY", // env var (capacity.rs display probe)
         "EINTEGRITY",
         "ERROR",
         "ERR_MODULE_NOT_FOUND",
@@ -90,6 +91,7 @@ mod tests {
         "USERDOMAIN",
         "USERNAME",
         "USERPROFILE",
+        "WAYLAND_DISPLAY",
         "ZDOTDIR",
     ];
     /// Families of environment variable names.

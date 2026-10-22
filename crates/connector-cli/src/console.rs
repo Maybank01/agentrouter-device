@@ -652,6 +652,8 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
         },
         labels: agentrouter_device::capacity::labels(&cfg.labels),
         pool: cfg.pool_name(),
+        resources: agentrouter_device::capacity::resources(),
+        software: Value::Null,
     };
     let meter = Arc::new(agentrouter_device::capacity::LoadMeter::new(
         cfg.max_environments,
@@ -746,6 +748,10 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
         });
         let _ = handle_cell.set(handle.clone());
         let _ = console.handle.set(handle.clone());
+        {
+            let handle = handle.clone();
+            std::thread::spawn(move || report_software(handle));
+        }
 
         // The link's own SSH-like server (exec/read/write, host.rs): started here, never by the cloud.
         if console.full || status.ready {
@@ -1115,5 +1121,38 @@ pub fn terminal_qr(text: &str) -> String {
             .quiet_zone(true)
             .build(),
         Err(_) => String::new(),
+    }
+}
+
+/// Installed software (Cloud `docs/development/DEVICES.md` §2.3): discovered at link start, again every hour and
+/// whenever the person's `config.json` `software` settings change (`agentrouter software add|hide`, a source turned
+/// off); only a change goes out (`{"op":"software", added, removed, changed, status}`), every later `hello` carries the list.
+fn report_software(handle: agentrouter_hostd_link::Handle) {
+    use agentrouter_device::software;
+    const EVERY: std::time::Duration = std::time::Duration::from_secs(3600);
+    const CONFIG_CHECK: std::time::Duration = std::time::Duration::from_secs(60);
+    let mut sent: Option<Vec<software::Software>> = None;
+    let mut settings: Option<software::SoftwareConfig> = None;
+    let mut last_run: Option<std::time::Instant> = None;
+    loop {
+        let current = Config::load().software;
+        let due =
+            last_run.is_none_or(|t| t.elapsed() >= EVERY) || settings.as_ref() != Some(&current);
+        if due {
+            let found = software::discover(&current);
+            let before = sent.as_deref().unwrap_or(&[]);
+            let delta = software::delta(before, &found.software);
+            if sent.is_none() || !delta.is_empty() {
+                let list = serde_json::to_value(&found.software).unwrap_or(Value::Null);
+                let mut frame = serde_json::to_value(&delta).unwrap_or_else(|_| json!({}));
+                // Sources that exist here but could not be read, for the device page (never an error).
+                frame["status"] = json!(found.status);
+                handle.set_software(list, frame);
+                sent = Some(found.software);
+            }
+            settings = Some(current);
+            last_run = Some(std::time::Instant::now());
+        }
+        std::thread::sleep(CONFIG_CHECK);
     }
 }

@@ -100,6 +100,12 @@ pub struct LinkInfo {
     /// The pool the host's owner put it in (`config.json` `pool`, Cloud VISION §4 D2, #2576); none = the person's
     /// default pool. Sent only when set.
     pub pool: Option<String>,
+    /// Peripherals (Cloud DEVICES §2.4, `agentrouter_device::capacity::resources`): `{display, audio_out, audio_in,
+    /// camera}`; null when not measured (a cloud sandbox).
+    pub resources: Value,
+    /// Installed software (Cloud DEVICES §2.3): the full list, `[{id, name, version, source, path, …}]`; null until the
+    /// first discovery finished. Owned by [`Handle::set_software`]: [`Handle::set_info`] keeps the current list.
+    pub software: Value,
 }
 
 impl LinkInfo {
@@ -121,6 +127,12 @@ impl LinkInfo {
         });
         if let Some(pool) = &self.pool {
             v["pool"] = json!(pool);
+        }
+        if !self.resources.is_null() {
+            v["resources"] = self.resources.clone();
+        }
+        if !self.software.is_null() {
+            v["software"] = self.software.clone();
         }
         v
     }
@@ -252,6 +264,8 @@ enum Out {
         code: &'static str,
     },
     Instances(Value),
+    /// `{"op":"software", added, removed, changed}` (Cloud DEVICES §2.3).
+    Software(Value),
 }
 
 type SharedInfo = std::sync::Arc<std::sync::Mutex<LinkInfo>>;
@@ -280,8 +294,20 @@ impl Handle {
 
     /// New info for this link (same id): sent now as `{"op":"info"}` and used by every later `hello`.
     pub fn set_info(&self, info: LinkInfo) {
-        *self.info.lock().unwrap() = info;
+        let mut current = self.info.lock().unwrap();
+        let software = std::mem::take(&mut current.software);
+        *current = info;
+        current.software = software;
+        drop(current);
         let _ = self.out.send(Out::Info);
+    }
+
+    /// The installed software changed: `list` is the full list every later `hello` carries; `delta`
+    /// (`{added, removed, changed}`) goes now as `{"op":"software", …}`. Applying a delta twice is harmless (upsert by
+    /// id, remove by id), so one queued across a reconnect is fine.
+    pub fn set_software(&self, list: Value, delta: Value) {
+        self.info.lock().unwrap().software = list;
+        let _ = self.out.send(Out::Software(delta));
     }
 
     /// Close the link for good ([`End::Stopped`]).
@@ -567,6 +593,10 @@ async fn connection(
                     Out::Info => json!({"op": "info", "link": info.lock().unwrap().to_json()}),
                     Out::PortError { id, code } => json!({"op": "port_error", "id": id, "code": code}),
                     Out::Instances(list) => json!({"op": "instances", "instances": list}),
+                    Out::Software(mut delta) => {
+                        delta["op"] = json!("software");
+                        delta
+                    }
                 };
                 let text = frame.to_string();
                 if text.len() > FRAME_MAX {

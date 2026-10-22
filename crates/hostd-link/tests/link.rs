@@ -31,6 +31,8 @@ fn info() -> LinkInfo {
         capacity: serde_json::Value::Null,
         labels: serde_json::Value::Null,
         pool: Some("渲染机".into()),
+        resources: serde_json::Value::Null,
+        software: serde_json::Value::Null,
     }
 }
 

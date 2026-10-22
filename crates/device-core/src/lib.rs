@@ -29,6 +29,7 @@ pub mod ports;
 pub mod protocol;
 pub mod shell;
 pub mod shell_env;
+pub mod software;
 pub mod util;
 pub mod workspace;
 pub mod worktree;
