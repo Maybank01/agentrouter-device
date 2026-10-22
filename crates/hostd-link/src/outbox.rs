@@ -1,0 +1,632 @@
+//! The host's outbox (Cloud PROJECT-SERVICE §9.8.2, Cloud #2739 step 1): every event this host produces for a space —
+//! a feed row, a runtime's event, later a device space's file change — is written here first, on disk, with the host's
+//! own monotonic sequence number and a globally unique event id, and leaves only after the platform acknowledged it.
+//!
+//! - **Store:** one SQLite database per link in hostd's own data directory (`rusqlite`, bundled SQLite; WAL with
+//!   `synchronous=FULL`, so an accepted event survives a crash, a sleep or a power cut). `AUTOINCREMENT` never reuses a
+//!   sequence number, also after the entries below it left.
+//! - **Event ids:** `<producer>:<seq>`, where the producer is the link id plus a random id the database was created
+//!   with: a reinstalled hostd (a new database) can never repeat an earlier event id, so the platform's dedupe by event
+//!   id never swallows a new event.
+//! - **Flush:** the link layer sends `{"op":"events","host":<producer>,"items":[…]}` in seq order after every welcome,
+//!   one batch at a time; the platform answers `{"op":"events_ack","host","seq":<highest contiguous seq it is done
+//!   with>,"refused":[{seq,code,message}]}`. Entries up to `seq` leave the outbox; refused ones (the platform will never
+//!   take them: an undeclared event, a payload that does not fit) are kept in a bounded `refused` table for the status.
+//!   A batch nobody acknowledged is sent again (the platform dedupes by event id).
+//! - **Bounded, never lossy:** past the disk cap [`Outbox::append`] refuses with `OUTBOX_FULL`; the producer pauses
+//!   (a feed stops polling and says so in its status). Nothing accepted is dropped.
+
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use rusqlite::{Connection, OptionalExtension, params};
+use serde_json::{Value, json};
+use tokio::sync::Notify;
+
+/// A payload is at most this much JSON (the Space Server's event payload cap, project-service `PAYLOAD_MAX`).
+pub const PAYLOAD_MAX: usize = 32 * 1024;
+/// Default disk cap of one outbox (a `config.json` setting may lower or raise it).
+pub const DEFAULT_CAP_BYTES: u64 = 256 << 20;
+/// One `events` frame carries at most this many items …
+pub const BATCH_ITEMS: usize = 200;
+/// … and at most this much JSON (well under the 8 MiB frame).
+pub const BATCH_BYTES: usize = 1 << 20;
+/// Refusals kept for the status (the oldest leave first).
+const REFUSED_KEEP: i64 = 500;
+
+/// One event a producer on this host hands to the outbox.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NewEvent {
+    /// The space the event belongs to (the platform checks that this host may write it).
+    pub space: String,
+    /// The platform instance that produced it (a space's runtime on this host), when there is one.
+    pub instance: Option<String>,
+    /// A declared event of that space (`feed.new`).
+    pub event: String,
+    /// The declared payload (an object).
+    pub payload: Value,
+    /// The item's own key at its source (a feed row's key), recorded in the event's provenance.
+    pub key: Option<String>,
+    /// What led to it (an event id or a tool call), the provenance `cause`.
+    pub cause: Option<String>,
+}
+
+/// Why an event was not accepted; `code` is a catalog code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refusal {
+    pub code: &'static str,
+    pub message: String,
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.code, self.message)
+    }
+}
+
+/// One refusal the platform answered for an entry (`events_ack.refused[]`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refused {
+    pub seq: u64,
+    pub code: String,
+    pub message: String,
+}
+
+/// What the outbox holds, for the status of the producers on this host.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Status {
+    pub producer: String,
+    pub pending: u64,
+    pub bytes: u64,
+    pub cap: u64,
+    pub full: bool,
+    /// The newest seq handed out (0: none yet) and the highest the platform acknowledged.
+    pub last_seq: u64,
+    pub acked: u64,
+    pub refused: u64,
+    pub last_refused: Option<Value>,
+}
+
+impl Status {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "producer": self.producer, "pending": self.pending, "bytes": self.bytes, "cap": self.cap, "full": self.full,
+            "lastSeq": self.last_seq, "acked": self.acked, "refused": self.refused, "lastRefused": self.last_refused,
+        })
+    }
+}
+
+/// The on-disk outbox of one link. Cheap to share (`Arc<Outbox>`); every method is short and synchronous.
+pub struct Outbox {
+    db: Mutex<Db>,
+    producer: String,
+    cap: u64,
+    path: PathBuf,
+    wake: Notify,
+}
+
+struct Db {
+    conn: Connection,
+    bytes: u64,
+    acked: u64,
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+fn sql(e: rusqlite::Error, path: &Path) -> String {
+    format!("outbox {}: {e}", path.display())
+}
+
+fn valid_name(event: &str) -> bool {
+    // Lower-case words of [a-z0-9_] joined by dots, each starting with a letter (the Space Server's event names).
+    !event.is_empty()
+        && event.len() <= 120
+        && event.split('.').all(|w| {
+            w.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+                && w.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        })
+}
+
+fn text_ok(v: &str, max: usize) -> bool {
+    !v.is_empty() && v.len() <= max && !v.chars().any(char::is_control)
+}
+
+impl Outbox {
+    /// `<data dir>/outbox/<link>.sqlite`.
+    pub fn path_for(data_dir: &Path, link: &str) -> PathBuf {
+        data_dir.join("outbox").join(format!("{link}.sqlite"))
+    }
+
+    /// Opens (or creates) the outbox of `link` at `path` with a disk cap of `cap` bytes.
+    pub fn open(path: &Path, link: &str, cap: u64) -> Result<Outbox, String> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("outbox {}: {e}", dir.display()))?;
+        }
+        let conn = Connection::open(path).map_err(|e| sql(e, path))?;
+        conn.pragma_update(None, "journal_mode", "WAL")
+            .map_err(|e| sql(e, path))?;
+        // FULL: a commit is on disk before append returns (power cut, sleep), not only on the next checkpoint.
+        conn.pragma_update(None, "synchronous", "FULL")
+            .map_err(|e| sql(e, path))?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(|e| sql(e, path))?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS outbox (seq INTEGER PRIMARY KEY AUTOINCREMENT, item TEXT NOT NULL,
+                                                bytes INTEGER NOT NULL, at INTEGER NOT NULL);
+             CREATE TABLE IF NOT EXISTS refused (seq INTEGER PRIMARY KEY, item TEXT, code TEXT NOT NULL,
+                                                 message TEXT NOT NULL, at INTEGER NOT NULL);",
+        )
+        .map_err(|e| sql(e, path))?;
+        let stored: Option<String> = conn
+            .query_row("SELECT v FROM meta WHERE k='producer'", [], |r| r.get(0))
+            .optional()
+            .map_err(|e| sql(e, path))?;
+        let producer = match stored {
+            Some(p) if p.starts_with(&format!("{link}.")) => p,
+            Some(p) => {
+                return Err(format!(
+                    "outbox {} belongs to {p}, not to link {link}",
+                    path.display()
+                ));
+            }
+            None => {
+                let mut r = [0u8; 8];
+                getrandom::fill(&mut r).map_err(|e| format!("outbox: no randomness: {e}"))?;
+                let id: String = r.iter().map(|b| format!("{b:02x}")).collect();
+                let p = format!("{link}.{id}");
+                conn.execute("INSERT INTO meta (k, v) VALUES ('producer', ?1)", [&p])
+                    .map_err(|e| sql(e, path))?;
+                p
+            }
+        };
+        let bytes: i64 = conn
+            .query_row("SELECT COALESCE(SUM(bytes), 0) FROM outbox", [], |r| {
+                r.get(0)
+            })
+            .map_err(|e| sql(e, path))?;
+        let acked: Option<String> = conn
+            .query_row("SELECT v FROM meta WHERE k='acked'", [], |r| r.get(0))
+            .optional()
+            .map_err(|e| sql(e, path))?;
+        let outbox = Outbox {
+            db: Mutex::new(Db {
+                conn,
+                bytes: bytes.max(0) as u64,
+                acked: acked.and_then(|a| a.parse().ok()).unwrap_or(0),
+            }),
+            producer,
+            cap,
+            path: path.to_path_buf(),
+            wake: Notify::new(),
+        };
+        if outbox.status().pending > 0 {
+            outbox.wake.notify_one();
+        }
+        Ok(outbox)
+    }
+
+    /// `<link>.<random id of this database>`: the `host` of every `events` frame and the prefix of every event id.
+    pub fn producer(&self) -> &str {
+        &self.producer
+    }
+
+    /// The event id of an entry.
+    pub fn event_id(&self, seq: u64) -> String {
+        format!("{}:{seq}", self.producer)
+    }
+
+    /// Writes one event; returns its seq once it is on disk. Refuses an event the platform could never take
+    /// (`EVENT_INVALID`, `EVENT_TOO_LARGE`) and, past the disk cap, `OUTBOX_FULL` (pause the producer; retry later).
+    pub fn append(&self, e: &NewEvent) -> Result<u64, Refusal> {
+        if !text_ok(&e.space, 200) {
+            return Err(Refusal {
+                code: "EVENT_INVALID",
+                message: "space is a space id (1 to 200 characters)".into(),
+            });
+        }
+        if !valid_name(&e.event) {
+            return Err(Refusal {
+                code: "EVENT_INVALID",
+                message: format!(
+                    "event {:?} is not a declared event name (lower-case words joined by dots, e.g. feed.new)",
+                    e.event
+                ),
+            });
+        }
+        if !e.payload.is_object() {
+            return Err(Refusal {
+                code: "EVENT_INVALID",
+                message: format!(
+                    "the payload of {} is an object of its declared fields",
+                    e.event
+                ),
+            });
+        }
+        for (field, v) in [
+            ("instance", &e.instance),
+            ("key", &e.key),
+            ("cause", &e.cause),
+        ] {
+            if let Some(v) = v
+                && !text_ok(v, 400)
+            {
+                return Err(Refusal {
+                    code: "EVENT_INVALID",
+                    message: format!("{field} is a text of 1 to 400 characters"),
+                });
+            }
+        }
+        let payload_len = e.payload.to_string().len();
+        if payload_len > PAYLOAD_MAX {
+            return Err(Refusal {
+                code: "EVENT_TOO_LARGE",
+                message: format!(
+                    "the payload of {} in {} is {payload_len} bytes; an event carries at most {PAYLOAD_MAX} (put bulk data in a file and send its reference)",
+                    e.event, e.space
+                ),
+            });
+        }
+        let mut item =
+            json!({"space": e.space, "event": e.event, "payload": e.payload, "at": now_ms()});
+        for (field, v) in [
+            ("instance", &e.instance),
+            ("key", &e.key),
+            ("cause", &e.cause),
+        ] {
+            if let Some(v) = v {
+                item[field] = json!(v);
+            }
+        }
+        let text = item.to_string();
+        let size = text.len() as u64;
+        let mut db = self.db.lock().unwrap();
+        if db.bytes + size > self.cap {
+            return Err(Refusal {
+                code: "OUTBOX_FULL",
+                message: format!(
+                    "this computer's outbox holds {} of {} bytes waiting for the platform; producers pause until the link takes them",
+                    db.bytes, self.cap
+                ),
+            });
+        }
+        db.conn
+            .execute(
+                "INSERT INTO outbox (item, bytes, at) VALUES (?1, ?2, ?3)",
+                params![text, size as i64, now_ms()],
+            )
+            .map_err(|err| Refusal {
+                code: "OUTBOX_WRITE_FAILED",
+                message: sql(err, &self.path),
+            })?;
+        let seq = db.conn.last_insert_rowid() as u64;
+        db.bytes += size;
+        drop(db);
+        self.wake.notify_one();
+        Ok(seq)
+    }
+
+    /// The next `events` frame: entries after `after`, in seq order, within [`BATCH_ITEMS`] / [`BATCH_BYTES`]; None when
+    /// nothing waits.
+    pub fn batch(&self, after: u64) -> Option<Value> {
+        let db = self.db.lock().unwrap();
+        let mut stmt = db
+            .conn
+            .prepare_cached("SELECT seq, item FROM outbox WHERE seq > ?1 ORDER BY seq LIMIT ?2")
+            .ok()?;
+        let rows = stmt
+            .query_map(params![after as i64, BATCH_ITEMS as i64], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            })
+            .ok()?;
+        let mut items = Vec::new();
+        let mut bytes = 0;
+        for row in rows.flatten() {
+            let (seq, text) = row;
+            if !items.is_empty() && bytes + text.len() > BATCH_BYTES {
+                break;
+            }
+            bytes += text.len();
+            let mut item: Value = serde_json::from_str(&text).unwrap_or(json!({}));
+            item["seq"] = json!(seq);
+            item["id"] = json!(self.event_id(seq as u64));
+            items.push(item);
+        }
+        (!items.is_empty()).then(|| json!({"op": "events", "host": self.producer, "items": items}))
+    }
+
+    /// The platform is done with every entry up to `upto`: they leave; the refused ones among them are kept in the
+    /// bounded `refused` table. Returns how many entries left.
+    pub fn ack(&self, upto: u64, refused: &[Refused]) -> usize {
+        let mut db = self.db.lock().unwrap();
+        let acked = db.acked.max(upto);
+        let Ok(tx) = db.conn.transaction() else {
+            return 0;
+        };
+        for r in refused.iter().filter(|r| r.seq <= upto) {
+            let _ = tx.execute(
+                "INSERT OR REPLACE INTO refused (seq, item, code, message, at)
+                 SELECT ?1, (SELECT item FROM outbox WHERE seq = ?1), ?2, ?3, ?4",
+                params![r.seq as i64, r.code, r.message, now_ms()],
+            );
+        }
+        let _ = tx.execute(
+            "DELETE FROM refused WHERE seq NOT IN (SELECT seq FROM refused ORDER BY seq DESC LIMIT ?1)",
+            [REFUSED_KEEP],
+        );
+        let left_bytes: i64 = tx
+            .query_row(
+                "SELECT COALESCE(SUM(bytes), 0) FROM outbox WHERE seq <= ?1",
+                [upto as i64],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        let left = tx
+            .execute("DELETE FROM outbox WHERE seq <= ?1", [upto as i64])
+            .unwrap_or(0);
+        let _ = tx.execute(
+            "INSERT OR REPLACE INTO meta (k, v) VALUES ('acked', ?1)",
+            [acked.to_string()],
+        );
+        if tx.commit().is_ok() {
+            db.bytes = db.bytes.saturating_sub(left_bytes.max(0) as u64);
+            db.acked = acked;
+            left
+        } else {
+            0
+        }
+    }
+
+    /// What the outbox holds now.
+    pub fn status(&self) -> Status {
+        let db = self.db.lock().unwrap();
+        let one = |q: &str| -> i64 { db.conn.query_row(q, [], |r| r.get(0)).unwrap_or(0) };
+        let pending = one("SELECT COUNT(*) FROM outbox").max(0) as u64;
+        let last_seq =
+            one("SELECT COALESCE(MAX(seq), 0) FROM sqlite_sequence WHERE name = 'outbox'").max(0)
+                as u64;
+        let refused = one("SELECT COUNT(*) FROM refused").max(0) as u64;
+        let last_refused = db
+            .conn
+            .query_row(
+                "SELECT seq, code, message, item FROM refused ORDER BY seq DESC LIMIT 1",
+                [],
+                |r| {
+                    let item: Option<String> = r.get(3)?;
+                    let item: Value = item
+                        .and_then(|t| serde_json::from_str(&t).ok())
+                        .unwrap_or(Value::Null);
+                    Ok(json!({"seq": r.get::<_, i64>(0)?, "code": r.get::<_, String>(1)?, "message": r.get::<_, String>(2)?,
+                              "space": item.get("space"), "event": item.get("event")}))
+                },
+            )
+            .optional()
+            .ok()
+            .flatten();
+        Status {
+            producer: self.producer.clone(),
+            pending,
+            bytes: db.bytes,
+            cap: self.cap,
+            full: db.bytes >= self.cap,
+            last_seq,
+            acked: db.acked,
+            refused,
+            last_refused,
+        }
+    }
+
+    /// Whether any entry waits for the platform.
+    pub fn has_pending(&self) -> bool {
+        let db = self.db.lock().unwrap();
+        db.conn
+            .query_row("SELECT EXISTS(SELECT 1 FROM outbox)", [], |r| {
+                r.get::<_, bool>(0)
+            })
+            .unwrap_or(false)
+    }
+
+    /// Whether a producer should pause: the outbox is at least 90 % full.
+    pub fn nearly_full(&self) -> bool {
+        let db = self.db.lock().unwrap();
+        db.bytes.saturating_mul(10) >= self.cap.saturating_mul(9)
+    }
+
+    /// Resolves once an append happened since the last call (or right away when one is pending).
+    pub async fn appended(&self) {
+        self.wake.notified().await;
+    }
+}
+
+/// Reads `events_ack.refused[]`.
+pub fn parse_refused(v: Option<&Value>) -> Vec<Refused> {
+    v.and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|r| {
+                    Some(Refused {
+                        seq: r.get("seq")?.as_u64()?,
+                        code: r
+                            .get("code")
+                            .and_then(Value::as_str)
+                            .unwrap_or("REFUSED")
+                            .chars()
+                            .take(64)
+                            .collect(),
+                        message: r
+                            .get("message")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .chars()
+                            .take(500)
+                            .collect(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp(name: &str) -> PathBuf {
+        let mut r = [0u8; 6];
+        getrandom::fill(&mut r).unwrap();
+        let id: String = r.iter().map(|b| format!("{b:02x}")).collect();
+        std::env::temp_dir()
+            .join(format!("ar-outbox-{name}-{id}"))
+            .join("o.sqlite")
+    }
+
+    fn ev(n: u64) -> NewEvent {
+        NewEvent {
+            space: "wrk_feed".into(),
+            instance: Some("ins_1".into()),
+            event: "feed.new".into(),
+            payload: json!({"id": n.to_string(), "title": format!("item {n}")}),
+            key: Some(n.to_string()),
+            cause: None,
+        }
+    }
+
+    #[test]
+    fn seqs_survive_reopen_and_acks_remove_only_up_to_the_ack() {
+        let path = tmp("reopen");
+        let link = "lnk_0123456789abcdef0123456789abcdef";
+        let producer;
+        {
+            let o = Outbox::open(&path, link, DEFAULT_CAP_BYTES).unwrap();
+            producer = o.producer().to_string();
+            assert!(producer.starts_with(&format!("{link}.")));
+            for n in 1..=5 {
+                assert_eq!(o.append(&ev(n)).unwrap(), n);
+            }
+            let batch = o.batch(0).unwrap();
+            assert_eq!(batch["op"], "events");
+            assert_eq!(batch["host"], producer.as_str());
+            let items = batch["items"].as_array().unwrap();
+            assert_eq!(items.len(), 5);
+            assert_eq!(items[0]["seq"], 1);
+            assert_eq!(items[0]["id"], format!("{producer}:1"));
+            assert_eq!(items[0]["key"], "1");
+            assert_eq!(items[0]["instance"], "ins_1");
+            assert_eq!(o.ack(2, &[]), 2);
+        }
+        // A restart (or a power cut after the commit): the rest is still there, the seq continues, the producer stays.
+        let o = Outbox::open(&path, link, DEFAULT_CAP_BYTES).unwrap();
+        assert_eq!(o.producer(), producer);
+        let s = o.status();
+        assert_eq!((s.pending, s.acked, s.last_seq), (3, 2, 5));
+        assert_eq!(o.batch(0).unwrap()["items"][0]["seq"], 3);
+        assert_eq!(o.append(&ev(6)).unwrap(), 6);
+        // Everything acknowledged: the seq still never goes back (AUTOINCREMENT).
+        o.ack(6, &[]);
+        assert!(o.batch(0).is_none());
+        assert_eq!(o.append(&ev(7)).unwrap(), 7);
+        // Another link's database is refused, not reused.
+        assert!(
+            Outbox::open(
+                &path,
+                "lnk_ffffffffffffffffffffffffffffffff",
+                DEFAULT_CAP_BYTES
+            )
+            .is_err()
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_new_database_never_repeats_an_event_id() {
+        let link = "lnk_0123456789abcdef0123456789abcdef";
+        let a = tmp("ida");
+        let b = tmp("idb");
+        let oa = Outbox::open(&a, link, DEFAULT_CAP_BYTES).unwrap();
+        let ob = Outbox::open(&b, link, DEFAULT_CAP_BYTES).unwrap();
+        oa.append(&ev(1)).unwrap();
+        ob.append(&ev(1)).unwrap();
+        assert_ne!(oa.event_id(1), ob.event_id(1));
+        let _ = std::fs::remove_dir_all(a.parent().unwrap());
+        let _ = std::fs::remove_dir_all(b.parent().unwrap());
+    }
+
+    #[test]
+    fn refused_entries_leave_and_are_kept_for_the_status() {
+        let path = tmp("refused");
+        let o = Outbox::open(
+            &path,
+            "lnk_0123456789abcdef0123456789abcdef",
+            DEFAULT_CAP_BYTES,
+        )
+        .unwrap();
+        for n in 1..=3 {
+            o.append(&ev(n)).unwrap();
+        }
+        let refused = parse_refused(Some(
+            &json!([{"seq": 2, "code": "EVENT_UNDECLARED", "message": "wrk_feed declares no event feed.new"}]),
+        ));
+        assert_eq!(o.ack(3, &refused), 3);
+        let s = o.status();
+        assert_eq!((s.pending, s.refused), (0, 1));
+        let last = s.last_refused.unwrap();
+        assert_eq!(last["code"], "EVENT_UNDECLARED");
+        assert_eq!(last["event"], "feed.new");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn the_cap_pauses_producers_and_bad_events_are_refused_at_once() {
+        let path = tmp("cap");
+        let o = Outbox::open(&path, "lnk_0123456789abcdef0123456789abcdef", 600).unwrap();
+        let mut accepted = 0;
+        let full = loop {
+            match o.append(&ev(accepted + 1)) {
+                Ok(_) => accepted += 1,
+                Err(r) => break r,
+            }
+        };
+        assert_eq!(full.code, "OUTBOX_FULL");
+        assert!(accepted >= 2 && o.status().bytes <= 600);
+        // After the platform took them there is room again.
+        o.ack(accepted, &[]);
+        assert!(o.append(&ev(99)).is_ok());
+
+        let mut big = ev(1);
+        big.payload = json!({"text": "x".repeat(PAYLOAD_MAX)});
+        assert_eq!(o.append(&big).unwrap_err().code, "EVENT_TOO_LARGE");
+        let mut bad = ev(1);
+        bad.event = "Feed New".into();
+        assert_eq!(o.append(&bad).unwrap_err().code, "EVENT_INVALID");
+        bad = ev(1);
+        bad.payload = json!([1]);
+        assert_eq!(o.append(&bad).unwrap_err().code, "EVENT_INVALID");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn batches_stay_within_their_limits() {
+        let path = tmp("batch");
+        let o = Outbox::open(
+            &path,
+            "lnk_0123456789abcdef0123456789abcdef",
+            DEFAULT_CAP_BYTES,
+        )
+        .unwrap();
+        for n in 1..=(BATCH_ITEMS as u64 + 10) {
+            o.append(&ev(n)).unwrap();
+        }
+        let first = o.batch(0).unwrap();
+        assert_eq!(first["items"].as_array().unwrap().len(), BATCH_ITEMS);
+        let next = o.batch(BATCH_ITEMS as u64).unwrap();
+        assert_eq!(next["items"][0]["seq"], BATCH_ITEMS as u64 + 1);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+}

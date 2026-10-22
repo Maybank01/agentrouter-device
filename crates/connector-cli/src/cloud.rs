@@ -210,6 +210,8 @@ pub fn link(opts: CloudOptions, interrupted: &'static AtomicBool) -> i32 {
         .unwrap_or_else(|| first.display().to_string());
     let link_id = agentrouter_hostd_link::link_id(&format!("cloud:{}", host_id()), &first);
     let data = data_dir();
+    // Before the aggregator takes `data` and the link id: the host's outbox (Cloud #2739).
+    let outbox = crate::events::open_outbox(&data, &link_id, line);
     let shown: Vec<String> = folders.iter().map(|f| f.display().to_string()).collect();
     line(&format!(
         "hostd (cloud) {} · {} · {gateway}",
@@ -279,6 +281,7 @@ pub fn link(opts: CloudOptions, interrupted: &'static AtomicBool) -> i32 {
             load: Some(Arc::new(move || meter.sample(&load_home, for_load.environments()))),
             // A cloud sandbox serves its loopback directly (the sandbox is the boundary).
             bridge: None,
+            outbox: outbox.clone(),
         });
         let _ = handle_cell.set(handle.clone());
 

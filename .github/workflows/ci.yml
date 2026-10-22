@@ -258,6 +258,9 @@ jobs:
       # travel over a named pipe the sandbox entry connects to (#112). Both steps block on every OS.
       - name: The aggregator runs a real MCP server confined (issue #46)
         run: cargo test -p agentrouter-aggregator -- --nocapture
+      # Also on macOS (the Linux and Windows jobs run the whole workspace): the on-disk outbox (SQLite) and its flush.
+      - name: The host's outbox survives restarts and leaves only after the ack (Cloud #2739)
+        run: cargo test -p agentrouter-hostd-link -- --nocapture
       - name: The whole chain through the real CLI, and the escape cases (issue #50)
         run: cargo test -p agentrouter-device-cli --test link_e2e -- --nocapture
       # #122: remove undoes it and the status asks again; without the restriction (Debian, Fedora, Arch…) the device's
