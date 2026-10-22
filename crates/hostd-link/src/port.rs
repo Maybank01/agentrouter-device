@@ -12,7 +12,9 @@
 //! (the person's own rights, or the sandbox is the boundary). In folder mode the commands run inside the OS sandbox
 //! (on Linux its own network namespace, so the dev server's loopback is not this process's): refused with
 //! `PORT_SANDBOXED` unless the consumer gives a [`Bridge`]: on Linux the link's host server, which runs in the same
-//! sandbox, connects to the port in the sandbox's own loopback and hands the bytes over (device #136, HOSTD-MCP §3.8).
+//! sandbox, connects to the port in the sandbox's own loopback and hands the bytes over (device #136, HOSTD-MCP §3.8);
+//! on Windows and macOS, where the sandbox shares this computer's loopback, the bridge checks that the port's listener
+//! is the link's own and dials it here (device #139).
 
 use std::time::Duration;
 
@@ -95,7 +97,8 @@ pub fn limit() -> std::sync::Arc<Semaphore> {
     std::sync::Arc::new(Semaphore::new(STREAMS_MAX))
 }
 
-async fn connect_loopback(port: u16) -> Option<TcpStream> {
+/// A connection to `port` on this computer's loopback (`127.0.0.1`, then `[::1]`), or None when nothing answers.
+pub async fn connect_loopback(port: u16) -> Option<TcpStream> {
     for addr in [format!("127.0.0.1:{port}"), format!("[::1]:{port}")] {
         if let Ok(Ok(stream)) = tokio::time::timeout(CONNECT_WAIT, TcpStream::connect(&addr)).await
         {

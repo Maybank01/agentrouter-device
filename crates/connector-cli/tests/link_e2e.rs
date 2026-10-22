@@ -484,69 +484,85 @@ fn a_linked_folder_end_to_end_and_the_boundary_holds() {
     );
     assert!(!ok(&refused) && !host_escape.exists(), "{refused}");
 
-    // A preview stream into the sandbox (device #136): on Linux the sandbox has its own network namespace and the host
-    // server bridges a port there (a server the Agent started inside, reached from outside); macOS and Windows still
-    // answer PORT_SANDBOXED.
+    // A preview stream into the sandbox: a server the Agent started inside is reached from outside on every OS — Linux
+    // through the host server's bridge in the sandbox's own namespace (device #136), Windows and macOS on the shared
+    // loopback once its listener is the link's own (device #139). A port the person's own program listens on is never
+    // opened in folder mode: PORT_NOT_IN_SANDBOX on Windows and macOS (on Linux it is not even in the namespace:
+    // PORT_CLOSED).
     let port = 47000 + (std::process::id() % 1000) as u16;
-    if cfg!(target_os = "linux") {
-        let node = agentrouter_sandbox::Runtime::new(&data).node().unwrap();
-        let script = format!(
-            "require('http').createServer((q,r)=>r.end('bridged-'+q.url)).listen({port},'127.0.0.1')"
-        );
-        let started = call(
-            &mut ws,
-            130,
-            "tools/call",
-            host(
-                "job_start",
-                json!({"command": format!("\"{}\" -e \"{script}\"", node.display())}),
-            ),
-            true,
-        );
-        assert!(ok(&started), "{started}");
-        std::thread::sleep(Duration::from_secs(3));
-    }
-    let id = format!("pst_{}", "a".repeat(32));
-    ws.send(Message::text(
-        json!({"op": "port_open", "id": id, "port": port, "ticket": "ticket-e2e-0123456789"})
-            .to_string(),
-    ))
-    .unwrap();
-    if cfg!(target_os = "linux") {
-        let mut pws = port_rx
-            .recv_timeout(Duration::from_secs(60))
-            .expect("the device dials the stream through the bridge");
-        pws.send(Message::binary(
-            b"GET /x HTTP/1.0\r\nHost: a\r\n\r\n".to_vec(),
+    let node = agentrouter_sandbox::Runtime::new(&data).node().unwrap();
+    let script = format!(
+        "require('http').createServer((q,r)=>r.end('bridged-'+q.url)).listen({port},'127.0.0.1')"
+    );
+    let line = if cfg!(windows) {
+        format!("& \"{}\" -e \"{script}\"", node.display())
+    } else {
+        format!("\"{}\" -e \"{script}\"", node.display())
+    };
+    let started = call(
+        &mut ws,
+        130,
+        "tools/call",
+        host("job_start", json!({"command": line})),
+        true,
+    );
+    assert!(ok(&started), "{started}");
+    std::thread::sleep(Duration::from_secs(if cfg!(windows) { 8 } else { 3 }));
+    let open_port = |ws: &mut tungstenite::WebSocket<_>, id: &str, port: u16| {
+        ws.send(Message::text(
+            json!({"op": "port_open", "id": id, "port": port, "ticket": "ticket-e2e-0123456789"})
+                .to_string(),
         ))
         .unwrap();
-        let mut got = Vec::new();
-        while let Ok(msg) = pws.read() {
-            match msg {
-                Message::Binary(b) => got.extend_from_slice(&b),
-                Message::Close(_) => break,
-                _ => {}
-            }
-        }
-        let text = String::from_utf8_lossy(&got);
-        assert!(text.contains("bridged-/x"), "through the bridge: {text}");
-    } else {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            assert!(
-                Instant::now() < deadline,
-                "no port_error for the folder-mode stream"
-            );
-            let frame = ws.read().unwrap();
-            let Ok(v) = serde_json::from_str::<Value>(frame.to_text().unwrap_or("")) else {
-                continue;
-            };
-            if v["op"] == "port_error" && v["id"] == id.as_str() {
-                assert_eq!(v["code"], "PORT_SANDBOXED", "{v}");
-                break;
-            }
+    };
+    let id = format!("pst_{}", "a".repeat(32));
+    open_port(&mut ws, &id, port);
+    let mut pws = port_rx
+        .recv_timeout(Duration::from_secs(60))
+        .expect("the device dials the stream to the sandbox's own server");
+    pws.send(Message::binary(
+        b"GET /x HTTP/1.0\r\nHost: a\r\n\r\n".to_vec(),
+    ))
+    .unwrap();
+    let mut got = Vec::new();
+    while let Ok(msg) = pws.read() {
+        match msg {
+            Message::Binary(b) => got.extend_from_slice(&b),
+            Message::Close(_) => break,
+            _ => {}
         }
     }
+    let text = String::from_utf8_lossy(&got);
+    assert!(
+        text.contains("bridged-/x"),
+        "the sandbox's own server: {text}"
+    );
+
+    let mine = TcpListener::bind("127.0.0.1:0").unwrap();
+    let mine_port = mine.local_addr().unwrap().port();
+    let id = format!("pst_{}", "b".repeat(32));
+    open_port(&mut ws, &id, mine_port);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "no port_error for the person's own port"
+        );
+        let frame = ws.read().unwrap();
+        let Ok(v) = serde_json::from_str::<Value>(frame.to_text().unwrap_or("")) else {
+            continue;
+        };
+        if v["op"] == "port_error" && v["id"] == id.as_str() {
+            let want = if cfg!(target_os = "linux") {
+                "PORT_CLOSED"
+            } else {
+                "PORT_NOT_IN_SANDBOX"
+            };
+            assert_eq!(v["code"], want, "{v}");
+            break;
+        }
+    }
+    drop(mine);
 
     // A forged call (arguments changed after signing) is refused.
     let mut forged = control_forged(

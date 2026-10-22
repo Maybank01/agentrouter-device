@@ -276,7 +276,7 @@ fn print_sandbox_status(st: &agentrouter_sandbox::Status) {
         st.mechanism,
         if st.ready { "可用" } else { "不可用" }
     );
-    for p in &st.problems {
+    for p in st.problems.iter().chain(&st.notes) {
         println!("  {}", p.message);
         println!("  {}", p.next);
     }

@@ -544,6 +544,9 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
                 "  沙箱     {}（{}）",
                 status.mechanism, status.backend
             ));
+            for n in &status.notes {
+                line(&format!("  沙箱     {}。{}", n.message, n.next));
+            }
         } else {
             for p in &status.problems {
                 line(&format!("  沙箱     不可用：{}。{}", p.message, p.next));
@@ -665,7 +668,24 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
             });
             bridge
         });
-        #[cfg(not(target_os = "linux"))]
+        // Windows and macOS share the computer's loopback with the sandbox: dial the port here, only when its listener
+        // is one of the link's own servers' processes (#139).
+        #[cfg(any(windows, target_os = "macos"))]
+        let bridge: Option<agentrouter_hostd_link::port::Bridge> = (!opts.full).then(|| {
+            let agg = agg.clone();
+            let bridge: agentrouter_hostd_link::port::Bridge = Arc::new(move |port: u16| {
+                let agg = agg.clone();
+                Box::pin(async move {
+                    agg.port_owner(port).await?;
+                    agentrouter_hostd_link::port::connect_loopback(port)
+                        .await
+                        .map(|s| Box::new(s) as Box<dyn agentrouter_hostd_link::port::Duplex>)
+                        .ok_or("PORT_CLOSED")
+                })
+            });
+            bridge
+        });
+        #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
         let bridge = None;
         let (handle, mut events) = agentrouter_hostd_link::start(agentrouter_hostd_link::Options {
             gateway: gateway.clone(),
@@ -990,7 +1010,7 @@ pub fn status() -> i32 {
         st.backend,
         if st.ready { "可用" } else { "不可用" }
     ));
-    for p in &st.problems {
+    for p in st.problems.iter().chain(&st.notes) {
         line(&format!("  {}。{}", p.message, p.next));
     }
     if let Ok(folder) = this_folder()

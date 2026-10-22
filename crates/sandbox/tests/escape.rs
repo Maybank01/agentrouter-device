@@ -173,6 +173,123 @@ fn the_open_web_stays_off_this_computer_and_the_lan(rt: &Runtime, node: &Path, f
     }
 }
 
+/// Starts an HTTP server on loopback and fetches a page from it in the same confined process: what a local terminal
+/// does with a dev server (parity T6, device #139).
+const OWN_SERVER: &str = r#"
+const http = require('http');
+const srv = http.createServer((q, s) => s.end('own-page'));
+srv.on('error', e => { console.log(JSON.stringify({ own: 'listen: ' + e.code })); process.exit(0); });
+srv.listen(0, '127.0.0.1', () => {
+  const port = srv.address().port;
+  const req = http.get({ host: '127.0.0.1', port, path: '/', timeout: 8000 }, res => {
+    let b = '';
+    res.on('data', c => (b += c));
+    res.on('end', () => { console.log(JSON.stringify({ own: b })); srv.close(); });
+  });
+  req.on('timeout', () => { req.destroy(); console.log(JSON.stringify({ own: 'timeout' })); srv.close(); });
+  req.on('error', e => { console.log(JSON.stringify({ own: 'connect: ' + e.code })); srv.close(); });
+});
+"#;
+
+/// Parity T6 (device #139): a confined command reaches a dev server it started on loopback — Linux in the sandbox's
+/// own namespace, macOS and Windows through srt's `allowLocalBinding` (Windows: the fence installed with loopback open
+/// by `sandbox setup`).
+fn a_confined_command_reaches_its_own_dev_server(rt: &Runtime, node: &Path, folder: &Path) {
+    std::fs::write(folder.join("own-server.js"), OWN_SERVER).unwrap();
+    let args = vec![folder.join("own-server.js").to_string_lossy().into_owned()];
+    let env = vec![(
+        "PATH".to_string(),
+        std::env::var("PATH").unwrap_or_default(),
+    )];
+    let folders = vec![folder.to_path_buf()];
+    let launch = Launch {
+        key: "own-server",
+        program: node,
+        args: &args,
+        env: &env,
+        cwd: folder,
+        folders: &folders,
+        network: &[],
+        readable: &[],
+        read_only: false,
+        open_web: false,
+        job: None,
+    };
+    let out = rt
+        .command(&launch)
+        .expect("confined command")
+        .stdin(Stdio::null())
+        .output()
+        .expect("srt runs");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    eprintln!(
+        "own server: exit {:?}\nstdout: {stdout}\nstderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let r: Value = stdout
+        .lines()
+        .rev()
+        .find_map(|l| serde_json::from_str(l).ok())
+        .expect("the own-server probe reported");
+    assert_eq!(r["own"], "own-page", "its own dev server: {r}");
+}
+
+/// #138: git inside the sandbox commits with the person's identity, from their own global config (read-only), on
+/// every OS — the sandbox's home is not theirs (Windows: its own account profile; macOS/Linux: scratch).
+fn git_in_the_sandbox_has_the_person_s_identity(rt: &Runtime, folder: &Path) {
+    let Some(git) = agentrouter_sandbox::find_program("git", None) else {
+        eprintln!("no git on this runner: identity check skipped");
+        return;
+    };
+    let want = std::process::Command::new(&git)
+        .args(["config", "--global", "user.email"])
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    if want.is_empty() {
+        eprintln!("no global git identity on this runner: identity check skipped");
+        return;
+    }
+    let args = vec!["config".to_string(), "user.email".to_string()];
+    let env = vec![(
+        "PATH".to_string(),
+        std::env::var("PATH").unwrap_or_default(),
+    )];
+    let folders = vec![folder.to_path_buf()];
+    let launch = Launch {
+        key: "git-identity",
+        program: &git,
+        args: &args,
+        env: &env,
+        cwd: folder,
+        folders: &folders,
+        network: &[],
+        readable: &[],
+        read_only: false,
+        open_web: false,
+        job: None,
+    };
+    let out = rt
+        .command(&launch)
+        .expect("confined command")
+        .stdin(Stdio::null())
+        .output()
+        .expect("srt runs");
+    let got = String::from_utf8_lossy(&out.stdout);
+    eprintln!(
+        "git identity: exit {:?} stdout {got:?} stderr {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        got.trim(),
+        want,
+        "git in the sandbox sees the person's identity"
+    );
+}
+
 #[test]
 fn a_confined_process_cannot_touch_anything_outside_the_folder() {
     if !enabled() {
@@ -322,6 +439,8 @@ fn a_confined_process_cannot_touch_anything_outside_the_folder() {
     }
 
     the_open_web_stays_off_this_computer_and_the_lan(&rt, &node, &folder);
+    a_confined_command_reaches_its_own_dev_server(&rt, &node, &folder);
+    git_in_the_sandbox_has_the_person_s_identity(&rt, &folder);
 
     let _ = std::fs::remove_file(&ssh);
     let _ = std::fs::remove_dir_all(&home_dot);

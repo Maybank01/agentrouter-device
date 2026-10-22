@@ -423,6 +423,52 @@ impl Aggregator {
         }
     }
 
+    /// Folder mode on Windows and macOS (device #139, HOSTD-MCP §3.8): the sandbox shares this computer's loopback, so
+    /// a preview stream may dial `port` here — only when every listener on it is one of the link's own servers'
+    /// processes (Windows: their Job objects, #129; macOS: their process trees and sessions). `Err(code)`:
+    /// `PORT_CLOSED` (nothing listens), `PORT_NOT_IN_SANDBOX` (a program outside the link's sandbox listens there, the
+    /// person's own), `PORT_SANDBOXED` (who listens cannot be told).
+    #[cfg(any(windows, target_os = "macos"))]
+    pub async fn port_owner(&self, port: u16) -> Result<(), &'static str> {
+        use agentrouter_device::ports::{Listening, who_listens};
+        let servers: Vec<Arc<Server>> = self
+            .inner
+            .servers
+            .lock()
+            .unwrap()
+            .values()
+            .cloned()
+            .collect();
+        #[cfg(windows)]
+        let sets: Vec<Vec<u32>> = servers
+            .iter()
+            .filter_map(|s| s.enforced.lock().unwrap().as_ref().map(|e| e.job_pids()))
+            .collect();
+        #[cfg(target_os = "macos")]
+        let roots: Vec<u32> = servers
+            .iter()
+            .filter_map(|s| *s.pid.lock().unwrap())
+            .collect();
+        let verdict = tokio::task::spawn_blocking(move || {
+            #[cfg(windows)]
+            let ours = agentrouter_device::ports::in_sets(sets);
+            #[cfg(target_os = "macos")]
+            let ours = agentrouter_device::ports::in_trees(&roots);
+            who_listens(port, ours)
+        })
+        .await;
+        match verdict {
+            Ok(Ok(Listening::Ours)) => Ok(()),
+            Ok(Ok(Listening::Nothing)) => Err("PORT_CLOSED"),
+            Ok(Ok(Listening::Foreign(pids))) => {
+                self.inner.record(json!({"kind": "port", "event": "refused", "link": self.inner.cfg.link, "port": port,
+                    "detail": format!("listened on by a program outside the link's sandbox (pid {pids:?})")}));
+                Err("PORT_NOT_IN_SANDBOX")
+            }
+            _ => Err("PORT_SANDBOXED"),
+        }
+    }
+
     /// Start the aggregator of one link (inside a tokio runtime). `out` sends to the link.
     pub fn new(cfg: Config, hooks: Arc<dyn Hooks>, out: Outbound) -> Aggregator {
         let audit = Audit::open(&audit_path(&cfg.data_dir, &cfg.link));
@@ -1019,7 +1065,8 @@ impl Inner {
             "cloud": self.cfg.cloud,
             "readOnly": self.cfg.read_only,
             "sandbox": {"backend": status.backend, "mechanism": status.mechanism, "ready": status.ready,
-                        "problems": status.problems.iter().map(|p| json!({"code": p.code, "message": p.message, "next": p.next})).collect::<Vec<_>>()},
+                        "problems": status.problems.iter().map(|p| json!({"code": p.code, "message": p.message, "next": p.next})).collect::<Vec<_>>(),
+                        "notes": status.notes.iter().map(|p| json!({"message": p.message, "next": p.next})).collect::<Vec<_>>()},
             "limits": self.limits_view(),
             "servers": list,
         })

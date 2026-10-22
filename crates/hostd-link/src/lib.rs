@@ -485,7 +485,7 @@ async fn connection(
                             Inbound::Lost(why) => break Conn::Lost(why),
                             Inbound::PortOpen(open) => {
                                 let refuse = |code| { let _ = out_tx.send(Out::PortError { id: open.id.clone(), code }); };
-                                // Folder mode: only through the bridge into the sandbox (device #136).
+                                // Folder mode: only through the bridge into the sandbox (device #136) or to its own listener (#139).
                                 let bridge = (!port::allowed(&info.lock().unwrap())).then(|| options.bridge.clone());
                                 if matches!(bridge, Some(None)) {
                                     refuse("PORT_SANDBOXED");
