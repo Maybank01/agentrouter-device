@@ -4,6 +4,7 @@
 mod cli;
 mod cloud;
 mod console;
+mod events;
 mod leases;
 #[path = "mcp_serve.rs"]
 mod mcp_serve;

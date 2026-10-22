@@ -21,11 +21,16 @@
 //!                             jobs that hold a platform instance's control lease, Cloud PROJECT-SERVICE §4.8 "Lease epochs")
 //!          gateway → device  {"op": "lease_lost", "jobs": [{job, instance, reason}]}   (those whose instance ended or
 //!                             runs another job by now: the consumer stops them, [`Event::LeaseLost`])
+//!          device → gateway  {"op": "events", "host": "<producer>", "items": [{seq, id, space, instance?, event, payload,
+//!                             key?, cause?, at}]}   (the host's outbox, [`outbox`], Cloud PROJECT-SERVICE §9.8.2)
+//!          gateway → device  {"op": "events_ack", "host": "<producer>", "seq": n, "refused": [{seq, code, message}],
+//!                             "retry_ms"?}   (done with every entry up to `seq`; they leave the outbox)
 //! ```
 //!
 //! Calls in flight when the link drops are not replayed: an answer produced while the link is down is dropped
 //! (the gateway already answered `LINK_LOST`). Sessions themselves outlive a drop on the aggregator side.
 
+pub mod outbox;
 pub mod port;
 pub mod proxy;
 
@@ -55,6 +60,12 @@ pub const HEARTBEAT: Duration = Duration::from_secs(20);
 const WELCOME_WAIT: Duration = Duration::from_secs(15);
 const BACKOFF_MIN: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
+/// An `events` batch nobody acknowledged within this long is sent again (the platform dedupes by event id).
+const EVENTS_ACK_WAIT: Duration = Duration::from_secs(60);
+/// After a partial ack (the platform could not take the rest yet), the rest is sent again after this long, unless the
+/// ack says `retry_ms` (bounded by [`EVENTS_RETRY_MAX`]).
+const EVENTS_RETRY: Duration = Duration::from_secs(5);
+const EVENTS_RETRY_MAX: Duration = Duration::from_secs(300);
 /// Close code the gateway uses when a newer connection of the same link replaced this one.
 pub const CLOSE_REPLACED: u16 = 4409;
 
@@ -189,6 +200,9 @@ pub struct Options {
     /// Folder mode: how a preview stream reaches a port inside the sandbox ([`port::Bridge`], device #136); None
     /// answers `PORT_SANDBOXED` there.
     pub bridge: Option<port::Bridge>,
+    /// The host's outbox ([`outbox`]): flushed in seq order after every welcome, entries leave on `events_ack`. None:
+    /// this host produces no events.
+    pub outbox: Option<Arc<outbox::Outbox>>,
 }
 
 /// What the link reports to its consumer.
@@ -477,6 +491,9 @@ async fn connection(
         let h = (options.audit_head)();
         json!({"op": "audit_head", "seq": h.get("seq").cloned().unwrap_or(json!(0)), "hash": h.get("hash").cloned().unwrap_or(json!(""))})
     };
+    // The outbox flush of this connection (stop and wait: one batch in flight; a new connection starts from the lowest
+    // entry still in the outbox).
+    let mut flush = Flush::default();
     let result = loop {
         let silence = SILENCE_LIMIT.saturating_sub(last_rx.elapsed());
         tokio::select! {
@@ -498,6 +515,17 @@ async fn connection(
                             }
                             Inbound::End(end) => break Conn::End(end),
                             Inbound::Lost(why) => break Conn::Lost(why),
+                            Inbound::EventsAck(ack) => {
+                                if let Some(outbox) = options.outbox.as_ref().filter(|o| o.producer() == ack.host) {
+                                    outbox.ack(ack.seq, &ack.refused);
+                                    let last = flush.sent.map(|s| s.0).unwrap_or(0);
+                                    flush.sent = None;
+                                    if ack.seq < last {
+                                        // The platform could not take the rest yet (the Space Server is away): again later.
+                                        flush.retry_at = Some(Instant::now() + ack.retry.unwrap_or(EVENTS_RETRY).min(EVENTS_RETRY_MAX));
+                                    }
+                                }
+                            }
                             Inbound::PortOpen(open) => {
                                 let refuse = |code| { let _ = out_tx.send(Out::PortError { id: open.id.clone(), code }); };
                                 // Folder mode: only through the bridge into the sandbox (device #136) or to its own listener (#139).
@@ -549,6 +577,17 @@ async fn connection(
                     break Conn::Lost(e.to_string());
                 }
             }
+            _ = flush_due(options.outbox.clone(), flush.sent.map(|s| s.1), flush.retry_at), if *welcomed && options.outbox.is_some() => {
+                flush.retry_at = None;
+                flush.sent = None;
+                if let Some(batch) = options.outbox.as_ref().and_then(|o| o.batch(0)) {
+                    let last = batch["items"].as_array().and_then(|a| a.last()).and_then(|i| i["seq"].as_u64()).unwrap_or(0);
+                    if let Err(e) = ws.send(Message::text(batch.to_string())).await {
+                        break Conn::Lost(e.to_string());
+                    }
+                    flush.sent = Some((last, Instant::now()));
+                }
+            }
             _ = heartbeat.tick(), if *welcomed => {
                 if let Err(e) = ws.send(Message::text(head(options).to_string())).await {
                     break Conn::Lost(e.to_string());
@@ -581,8 +620,48 @@ async fn connection(
     result
 }
 
+/// The outbox flush of one connection.
+#[derive(Default)]
+struct Flush {
+    /// The last seq of the batch in flight and when it went out.
+    sent: Option<(u64, Instant)>,
+    /// After a partial ack: when to send the rest again.
+    retry_at: Option<Instant>,
+}
+
+/// Resolves when the outbox should send: the batch in flight waited too long for its ack (send it again), the retry
+/// time of a partial ack came, or (nothing in flight) entries wait.
+async fn flush_due(
+    outbox: Option<Arc<outbox::Outbox>>,
+    sent: Option<Instant>,
+    retry_at: Option<Instant>,
+) {
+    let Some(outbox) = outbox else {
+        return std::future::pending().await;
+    };
+    if let Some(at) = sent {
+        return tokio::time::sleep_until(at + EVENTS_ACK_WAIT).await;
+    }
+    if let Some(at) = retry_at {
+        return tokio::time::sleep_until(at).await;
+    }
+    if outbox.has_pending() {
+        return;
+    }
+    outbox.appended().await;
+}
+
+/// `{"op":"events_ack"}`.
+struct EventsAck {
+    host: String,
+    seq: u64,
+    refused: Vec<outbox::Refused>,
+    retry: Option<Duration>,
+}
+
 enum Inbound {
     None,
+    EventsAck(EventsAck),
     Welcome(String),
     End(End),
     Lost(String),
@@ -630,6 +709,18 @@ fn on_text(text: &str, events: &mpsc::UnboundedSender<Event>) -> Inbound {
             Inbound::None
         }
         "revoked" => Inbound::End(End::Revoked(field("reason"))),
+        "events_ack" => match frame.get("seq").and_then(Value::as_u64) {
+            Some(seq) => Inbound::EventsAck(EventsAck {
+                host: field("host"),
+                seq,
+                refused: outbox::parse_refused(frame.get("refused")),
+                retry: frame
+                    .get("retry_ms")
+                    .and_then(Value::as_u64)
+                    .map(Duration::from_millis),
+            }),
+            None => Inbound::None,
+        },
         "port_open" => port::parse(&frame).map_or(Inbound::None, Inbound::PortOpen),
         "lease_lost" => {
             let jobs: Vec<Value> = frame

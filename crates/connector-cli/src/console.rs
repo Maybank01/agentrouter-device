@@ -711,6 +711,7 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
             audit_head: Arc::new(move || for_head.audit_head()),
             load: Some(Arc::new(move || meter.sample(&load_home, for_load.environments()))),
             bridge,
+            outbox: crate::events::open_outbox(&data_dir(), &link_id, line),
         });
         let _ = handle_cell.set(handle.clone());
         let _ = console.handle.set(handle.clone());

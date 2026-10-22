@@ -17,6 +17,9 @@ base64 = "0.23"
 getrandom = "0.4"
 serde_json.workspace = true
 sha2 = "0.11"
+# The outbox (src/outbox.rs, Cloud #2739): SQLite, bundled (no system library on any OS): rusqlite/rusqlite, MIT, not
+# archived, pushed 2026-10-18, release v0.40.2 2026-08-08 (checked with gh api 2026-10-22).
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 tokio = { workspace = true, features = ["rt", "macros", "sync", "time", "net", "io-util"] }
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake"] }
 

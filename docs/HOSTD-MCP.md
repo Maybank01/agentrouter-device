@@ -213,6 +213,25 @@ host. `load1` is null on Windows. `free_slots` = `environments` capacity minus r
          device → gateway  {"op": "info", "link": {…same fields as hello.link, same id…}}  (the folders changed)
 ```
 
+**Events (Cloud PROJECT-SERVICE §9.8.2, #2739).** Every event the host produces for a space (a feed row, a runtime's
+event, later a device space's file change) is written first into the host's **outbox**: SQLite in hostd's data
+directory (`outbox/<link>.sqlite`, WAL, `synchronous=FULL`; `agentrouter_hostd_link::outbox`), with the host's own
+monotonic seq and the event id `<producer>:<seq>` (`<producer>` = the link id + a random id of that database, so a
+reinstall never repeats an id). After each `welcome` the link sends it in seq order, one batch at a time (≤ 200 items,
+≤ 1 MiB; a payload is ≤ 32 KiB):
+
+```text
+         device → gateway  {"op": "events", "host": "<producer>", "items": [{seq, id, space, instance?, event, payload,
+                            key?, cause?, at}]}
+         gateway → device  {"op": "events_ack", "host": "<producer>", "seq": n, "refused": [{seq, code, message}],
+                            "retry_ms"?}
+```
+
+`seq` is the highest entry the platform is done with (appended, a duplicate, or refused for good); those leave the
+outbox, refused ones are kept (last 500) for the status. A partial ack sends the rest again after `retry_ms` (default
+5 s); a batch without an ack within 60 s, or cut by a dropped link, is sent again — the platform dedupes by event id.
+Past the disk cap (256 MiB) a producer's write is refused `OUTBOX_FULL` and it pauses; nothing accepted is dropped.
+
 That is the entire custom surface. Everything else is MCP: `initialize`,
 `notifications/initialized`, `tools/list`, `tools/call`, `notifications/tools/list_changed`,
 `notifications/cancelled`, `notifications/progress`, `ping`.
