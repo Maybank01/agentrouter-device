@@ -1,0 +1,132 @@
+name: Parity bench (Windows)
+
+# The PC parity bench (Cloud deploy/maintenance/parity-bench, umbrella Cloud #2383) on a GitHub-hosted Windows runner:
+# a Dev conversation whose environment is this runner's `agentrouter link` in folder mode (arm C), tasks T1–T9, each
+# judged by a checker that reads the folder afterwards (#132). On demand only — never on a push or a pull request,
+# never in a loop.
+#
+# Secrets (this repository is public): the pinned Dev test account `pcbench` (Dev only, Dev quota, no money) lives in the
+# environment `dev-bench`, whose only deployment branch is `main`; the only trigger is workflow_dispatch (write access).
+# Pull requests — from forks or not — never run this workflow, and GitHub gives fork pull requests no secrets anyway.
+# The pairing code never reaches the log (bench.mjs `pair`); only the results and the report are uploaded.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tasks:
+        description: Tasks to run (comma-separated)
+        default: T1,T2,T3,T4,T5,T6,T7,T8,T9
+      cloud_ref:
+        description: agentrouter-cloud ref of the bench
+        default: dev
+
+permissions:
+  contents: read
+
+# One test account: one run at a time.
+concurrency:
+  group: parity-windows
+  cancel-in-progress: false
+
+jobs:
+  bench:
+    name: Parity bench (Windows, folder mode)
+    if: github.repository == 'Maybank01/agentrouter-device'
+    runs-on: windows-latest
+    environment: dev-bench
+    timeout-minutes: 150
+    env:
+      PB_HOSTD_MODE: folder
+      PB_COMPUTER: gh-win-${{ github.run_id }}-${{ github.run_attempt }}
+      PB_TASKS: ${{ inputs.tasks }}
+    steps:
+      # The fixture's files and their hashes must be the same bytes as on any other PC (T3 packs them).
+      - name: Git as on a person's PC (no line-ending rewrite), with the person's identity (T7)
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global user.name "Parity Person"
+          git config --global user.email "parity-person@bench.invalid"
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Release build
+        run: cargo build --release --locked -p agentrouter-device-cli
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Cloud read token (contents:read on agentrouter-cloud only)
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.MERGE_BOT_APP_ID }}
+          private-key: ${{ secrets.MERGE_BOT_APP_PRIVATE_KEY }}
+          owner: Maybank01
+          repositories: agentrouter-cloud
+          permission-contents: read
+      - name: The bench (agentrouter-cloud deploy/maintenance)
+        uses: actions/checkout@v7
+        with:
+          repository: Maybank01/agentrouter-cloud
+          ref: ${{ inputs.cloud_ref }}
+          token: ${{ steps.app.outputs.token }}
+          path: cloud
+          sparse-checkout: deploy/maintenance
+          persist-credentials: false
+      # srt-win starts the sandbox account's processes with CreateProcessWithLogonW (ci.yml, Sandbox (Windows)).
+      - name: Windows Secondary Logon service
+        shell: pwsh
+        run: |
+          Set-Service -Name seclogon -StartupType Manual
+          Start-Service -Name seclogon
+      - name: Paths and the folder-mode sandbox (sandbox setup, as on a person's first link)
+        shell: pwsh
+        run: |
+          if ($env:PB_TASKS -notmatch '^T[1-9](,T[1-9])*$') { throw "tasks: comma-separated T1..T9, got '$env:PB_TASKS'" }
+          $hostd = Join-Path $env:GITHUB_WORKSPACE 'target\release\agentrouter.exe'
+          $home_ = Join-Path $env:RUNNER_TEMP 'device-home'
+          $root = Join-Path $env:RUNNER_TEMP 'pb'
+          New-Item -ItemType Directory -Force $home_, $root | Out-Null
+          "PB_HOSTD=$hostd" >> $env:GITHUB_ENV
+          "PB_DEVICE_HOME=$home_" >> $env:GITHUB_ENV
+          "PB_ROOT=$root" >> $env:GITHUB_ENV
+          $env:AGENTROUTER_DEVICE_HOME = $home_
+          & $hostd sandbox setup
+          if ($LASTEXITCODE -ne 0) { throw "sandbox setup exited $LASTEXITCODE" }
+          & $hostd sandbox status
+      - name: Pair this runner with the test account
+        env:
+          SMOKE_ORIGIN: ${{ secrets.PB_SMOKE_ORIGIN }}
+          SMOKE_USER: ${{ secrets.PB_SMOKE_USER }}
+          SMOKE_PASSWORD: ${{ secrets.PB_SMOKE_PASSWORD }}
+        run: node cloud/deploy/maintenance/parity-bench/bench.mjs pair --name "$env:PB_COMPUTER" --root "$env:PB_ROOT"
+      - name: Bench, arm C
+        env:
+          SMOKE_ORIGIN: ${{ secrets.PB_SMOKE_ORIGIN }}
+          SMOKE_USER: ${{ secrets.PB_SMOKE_USER }}
+          SMOKE_PASSWORD: ${{ secrets.PB_SMOKE_PASSWORD }}
+        run: node cloud/deploy/maintenance/parity-bench/bench.mjs run C --root "$env:PB_ROOT" --tasks "$env:PB_TASKS"
+      - name: Report
+        if: always()
+        shell: pwsh
+        run: |
+          $results = Join-Path $env:PB_ROOT 'C-results.json'
+          if (-not (Test-Path $results)) { "No results." >> $env:GITHUB_STEP_SUMMARY; exit 0 }
+          node cloud/deploy/maintenance/parity-bench/bench.mjs report $results
+          Get-Content (Join-Path $env:PB_ROOT 'parity-report.md') >> $env:GITHUB_STEP_SUMMARY
+      - name: Unpair
+        if: always()
+        env:
+          SMOKE_ORIGIN: ${{ secrets.PB_SMOKE_ORIGIN }}
+          SMOKE_USER: ${{ secrets.PB_SMOKE_USER }}
+          SMOKE_PASSWORD: ${{ secrets.PB_SMOKE_PASSWORD }}
+        run: node cloud/deploy/maintenance/parity-bench/bench.mjs unpair --name "$env:PB_COMPUTER"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: parity-windows-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/pb/C-results.json
+            ${{ runner.temp }}/pb/parity-report.*
+          if-no-files-found: ignore
+          retention-days: 14
