@@ -150,10 +150,10 @@ impl Outbox {
             std::fs::create_dir_all(dir).map_err(|e| format!("outbox {}: {e}", dir.display()))?;
         }
         let conn = Connection::open(path).map_err(|e| sql(e, path))?;
-        conn.pragma_update(None, "journal_mode", "WAL")
+        conn.pragma_update(None, "journal_mode", "wal")
             .map_err(|e| sql(e, path))?;
         // FULL: a commit is on disk before append returns (power cut, sleep), not only on the next checkpoint.
-        conn.pragma_update(None, "synchronous", "FULL")
+        conn.pragma_update(None, "synchronous", "full")
             .map_err(|e| sql(e, path))?;
         conn.busy_timeout(std::time::Duration::from_secs(5))
             .map_err(|e| sql(e, path))?;
@@ -303,7 +303,7 @@ impl Outbox {
                 params![text, size as i64, now_ms()],
             )
             .map_err(|err| Refusal {
-                code: "OUTBOX_WRITE_FAILED",
+                code: "OUTBOX_FAULT",
                 message: sql(err, &self.path),
             })?;
         let seq = db.conn.last_insert_rowid() as u64;
@@ -456,7 +456,7 @@ pub fn parse_refused(v: Option<&Value>) -> Vec<Refused> {
                         code: r
                             .get("code")
                             .and_then(Value::as_str)
-                            .unwrap_or("REFUSED")
+                            .unwrap_or("HOST_EVENT_INVALID")
                             .chars()
                             .take(64)
                             .collect(),

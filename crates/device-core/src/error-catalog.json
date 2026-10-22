@@ -1,5 +1,5 @@
 {
-  "source": "agentrouter-cloud@a01b058a4223f363eb3552f643c751f210d9bd84",
+  "source": "agentrouter-cloud@d59c22cc1e6194479188284553b179b3f71f2812",
   "schema": "agentrouter.errors/v1",
   "about": "The one error catalog (#2449; owner 2026-10-21 「还有，错误那一块，是不是应该有一种统一的方式？我不想错误都散落在各处」). Adding an error = adding an entry here, then `node scripts/sync-error-catalog.mjs`. README.md has the rules.",
   "errors": [
@@ -396,8 +396,8 @@
       "status": 403,
       "retry": "never",
       "log": "info",
-      "agent": "{target} is not in this Agent's reach, so {operation} did not run: its definition does not name it (the cause lists what it names and how to add it)",
-      "next": "Work with the spaces and computers this Agent reaches. If the person wants it to reach this one, tell them which line to add to the Agent's definition (the cause shows it); calling again will not work in this conversation.",
+      "agent": "{target} is not in this Agent's reach, so {operation} did not run: neither its definition (with its slots as the install maps them) nor a grant gives it (the cause lists what it reaches and how to add it)",
+      "next": "Work with the spaces and computers this Agent reaches. If it needs this one: the person (through their Main Agent) or the Agent that dispatched you can grant it for this conversation (agent_grant), or the definition can name it (the cause shows the line). Ask; calling again before a grant will not work.",
       "user": "这个 Agent 的定义里没有包含它，这一步没有执行。"
     },
     {
@@ -1032,6 +1032,26 @@
       "agent": "a slot is mapped to a space of another kind{on_target}",
       "next": "Map the slot to a space of the kind its agent.yaml names (the problem says which kind it wants and which the space is), or change the slot's kind in agent.yaml if the definition was wrong.",
       "user": "给这个 Agent 选的空间类型不对。"
+    },
+    {
+      "code": "GRANT_EXCEEDS_REACH",
+      "component": "agent-sessions",
+      "status": 403,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation} would grant {target}, which you do not reach yourself: a dispatched Agent gets a part of your own reach, never more",
+      "next": "Grant only spaces you reach (the cause lists them). If the dispatched Agent needs this one, ask the person: their Main Agent can grant it (agent_grant).",
+      "user": "这个 Agent 不能把自己用不到的空间交给别的 Agent。"
+    },
+    {
+      "code": "GRANT_NOT_ALLOWED",
+      "component": "agent-sessions",
+      "status": 403,
+      "retry": "never",
+      "log": "info",
+      "agent": "{operation} cannot grant {target} here (the cause says why: who may grant, which conversation, what can be granted)",
+      "next": "Grants come from the person (through a conversation acting for them, e.g. their Main Agent) to any of their Agents' conversations, or from an Agent to a conversation it dispatched. keep needs the person's word and a conversation that runs an install. Fix the call as the cause says, or ask the person.",
+      "user": "这里不能给这个 Agent 加空间。"
     },
     {
       "code": "AGENT_VIEW_UNBAKEABLE",
@@ -2089,6 +2109,87 @@
       "agent": "The person's computer refused to connect to this gateway address (not on its allowed list) for {operation}{on_target}",
       "next": "Tell the person the address the cause names; they link with the official AgentRouter address.",
       "user": "电脑拒绝连接这个地址。"
+    },
+    {
+      "code": "OUTBOX_FULL",
+      "component": "hostd",
+      "status": 507,
+      "retry": "always",
+      "retryAfterSeconds": 60,
+      "log": "warn",
+      "agent": "The event outbox on that computer is full ({target}): its producers (feeds, runtimes) pause until the link has taken the waiting events",
+      "next": "Nothing is lost. Check that the computer is online (its link status); the feeds resume by themselves once the outbox drains.",
+      "user": "这台电脑上待上传的事件太多，已暂停收集，连上后会自动继续。"
+    },
+    {
+      "code": "OUTBOX_UNAVAILABLE",
+      "component": "hostd",
+      "status": 503,
+      "retry": "transient",
+      "log": "warn",
+      "agent": "The event outbox on that computer could not be opened for {operation}{on_target}",
+      "next": "The link still works; events produced there wait until hostd can open its outbox (its data folder must be writable). Tell the person in one plain sentence.",
+      "user": "这台电脑暂时不能记录事件。"
+    },
+    {
+      "code": "OUTBOX_FAULT",
+      "component": "hostd",
+      "status": 500,
+      "retry": "never",
+      "log": "error",
+      "agent": "The event outbox on that computer failed while doing {operation}{on_target} (a fault in hostd, not in your call)",
+      "next": "Retrying will not help. Continue another way, and tell the person in one plain sentence what could not be recorded.",
+      "user": "这台电脑记录事件时出错了，已记录。"
+    },
+    {
+      "code": "EVENT_INVALID",
+      "component": "hostd",
+      "status": 400,
+      "retry": "never",
+      "log": "info",
+      "agent": "The event {operation}{on_target} is not one the platform can take: {target}",
+      "next": "Fix what the message names (a declared event name, an object payload, short texts) in the space's definition or the producer, then try again.",
+      "user": "事件格式不对，没有记录。"
+    },
+    {
+      "code": "EVENT_TOO_LARGE",
+      "component": "hostd",
+      "status": 413,
+      "retry": "never",
+      "log": "info",
+      "agent": "The event {operation}{on_target} is larger than an event may be (32 KiB of payload)",
+      "next": "Put the bulk data in a file (or keep it on the computer) and send its reference in the event instead.",
+      "user": "事件太大，没有记录。"
+    },
+    {
+      "code": "HOST_EVENT_INVALID",
+      "component": "host-link",
+      "status": 400,
+      "retry": "never",
+      "log": "warn",
+      "agent": "The computer sent an event the platform cannot read ({operation}{on_target})",
+      "next": "Update hostd on that computer; the event was set aside there (its outbox status lists it).",
+      "user": "电脑上传的事件格式不对，已跳过。"
+    },
+    {
+      "code": "HOST_EVENT_INSTANCE_UNKNOWN",
+      "component": "host-link",
+      "status": 404,
+      "retry": "never",
+      "log": "warn",
+      "agent": "The computer sent {operation} for an instance the platform has no record of ({target})",
+      "next": "Start the space's runtime again from its definition; events of the old instance were set aside on the computer.",
+      "user": "这个运行实例已经不存在，相关事件已跳过。"
+    },
+    {
+      "code": "HOST_EVENT_NOT_WRITER",
+      "component": "host-link",
+      "status": 403,
+      "retry": "never",
+      "log": "warn",
+      "agent": "The computer may not write {target}: a host writes only the spaces whose runtime it runs ({operation})",
+      "next": "Place the space's runtime on that computer (its requires.host), or write the space from where its runtime runs.",
+      "user": "这台电脑不能写入这个空间，相关事件已跳过。"
     }
   ]
 }
