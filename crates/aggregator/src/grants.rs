@@ -153,7 +153,15 @@ mod tests {
     use super::*;
 
     fn temp(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!(
+        // Under the build's own target folder (never the system temp one, docs/AV-HYGIENE.md): the unit-test
+        // binary is `<target>/debug/deps/<name>`.
+        let exe = std::env::current_exe().unwrap();
+        let target = exe
+            .parent()
+            .and_then(std::path::Path::parent)
+            .and_then(std::path::Path::parent)
+            .expect("target folder");
+        let d = target.join("tmp").join(format!(
             "agentrouter-grants-{tag}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
