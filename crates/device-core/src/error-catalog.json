@@ -1,5 +1,5 @@
 {
-  "source": "agentrouter-cloud@7cc185b3d1d10999e50b18846e0f3ca0f9746f68",
+  "source": "agentrouter-cloud@a01b058a4223f363eb3552f643c751f210d9bd84",
   "schema": "agentrouter.errors/v1",
   "about": "The one error catalog (#2449; owner 2026-10-21 「还有，错误那一块，是不是应该有一种统一的方式？我不想错误都散落在各处」). Adding an error = adding an entry here, then `node scripts/sync-error-catalog.mjs`. README.md has the rules.",
   "errors": [
@@ -1012,6 +1012,26 @@
       "agent": "agent.yaml names a space the person does not have{on_target}",
       "next": "Name a space the person has, as the problem lists them: own:<作品 title> with the 作品's exact title (survives a fork), wrk_<id> for one 作品, connection:<id> for a connection, or a role (work, conversation, self, memory.person …). Create the 作品 first (space_create) if it does not exist yet.",
       "user": "这个 Agent 用到的作品或连接找不到了。"
+    },
+    {
+      "code": "AGENT_SLOT_UNMAPPED",
+      "component": "agent-definition",
+      "status": 422,
+      "retry": "never",
+      "log": "info",
+      "agent": "a required slot of the Agent is not mapped to one of the person's spaces{on_target}",
+      "next": "Map the slot to one of the person's spaces of its kind (the problem lists the closest ones): agent_publish with slots: { <slot>: <space> } (wrk_…, own:<作品 title>, memory.person …). Ask the person which one when several fit, or create it first (space_create). A slot that should be optional says optional: true in agent.yaml.",
+      "user": "这个 Agent 还缺一个要用的空间，需要先选一个。"
+    },
+    {
+      "code": "AGENT_SLOT_KIND_MISMATCH",
+      "component": "agent-definition",
+      "status": 422,
+      "retry": "never",
+      "log": "info",
+      "agent": "a slot is mapped to a space of another kind{on_target}",
+      "next": "Map the slot to a space of the kind its agent.yaml names (the problem says which kind it wants and which the space is), or change the slot's kind in agent.yaml if the definition was wrong.",
+      "user": "给这个 Agent 选的空间类型不对。"
     },
     {
       "code": "AGENT_VIEW_UNBAKEABLE",
