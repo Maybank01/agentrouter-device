@@ -18,17 +18,23 @@ fn dir(data_dir: &Path) -> PathBuf {
     data_dir.join("secrets")
 }
 
-/// A name is `<server>/<credential>`: lower-case letters, digits, `_`, `-`, one `/`.
+/// A name is `<owner>/<credential>`: the owner is a server name (one account per server on this computer) or a space,
+/// `space:<space id>`, whose programs share one account (a space's runtime secret, Cloud PROJECT-SERVICE §9.8.5);
+/// lower-case letters, digits, `_`, `-`, one `/`.
 pub fn valid_name(name: &str) -> bool {
-    let mut parts = name.split('/');
-    let ok = |p: Option<&str>| {
-        p.is_some_and(|p| {
-            (1..=48).contains(&p.len())
-                && p.chars()
-                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
-        })
+    let word = |p: &str, max: usize| {
+        (1..=max).contains(&p.len())
+            && p.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
     };
-    ok(parts.next()) && ok(parts.next()) && parts.next().is_none()
+    let Some((owner, credential)) = name.split_once('/') else {
+        return false;
+    };
+    let owner_ok = match owner.strip_prefix("space:") {
+        Some(space) => word(space, 64),
+        None => word(owner, 48),
+    };
+    owner_ok && word(credential, 48)
 }
 
 fn path_in(dir: &Path, name: &str) -> PathBuf {
@@ -40,7 +46,9 @@ fn path_in(dir: &Path, name: &str) -> PathBuf {
 fn refuse(name: &str) -> std::io::Error {
     std::io::Error::new(
         std::io::ErrorKind::InvalidInput,
-        format!("local secret name {name:?} is not <server>/<credential>"),
+        format!(
+            "local secret name {name:?} is not <server>/<credential> or space:<id>/<credential>"
+        ),
     )
 }
 
@@ -125,6 +133,10 @@ mod tests {
     fn names_are_server_slash_credential() {
         assert!(valid_name("bilibili/cookie"));
         assert!(valid_name("my-mcp/api_key2"));
+        assert!(valid_name("space:wrk_0123abcd/bilibili"));
+        assert!(!valid_name("space:/bilibili"));
+        assert!(!valid_name("space:wrk_x/a/b"));
+        assert!(!valid_name("Space:wrk_x/bilibili"));
         assert!(!valid_name("bilibili"));
         assert!(!valid_name("a/b/c"));
         assert!(!valid_name("../x/y"));

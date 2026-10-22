@@ -1111,6 +1111,13 @@ server that reads its account from a file; nothing here names a service.
   `check` in the background → `login_ok` or `login_failed` (its words in `lastError`). Errors: `LOGIN_UNSUPPORTED`,
   `SERVER_NOT_RUNNING`, `LOGIN_IN_PROGRESS`, `LOGIN_FAILED`.
 - **`link__logout {name, credential?}`:** forgets the value here and restarts the server without it.
+- **A space's runtime secret (Cloud PROJECT-SERVICE §9.8.5, #2739):** `credentials[]` may also carry `secret:
+  "space:<id>/<name>"` (the value is kept under that name, shared by every server of that space that reads it, instead
+  of `<server>/<name>`), `fields: {<file field>: <account field>}` (this computer keeps the account as those fields and
+  writes each server its own file shape, so a cookie one server's login wrote is read by another that names the fields
+  differently; a file that is not a JSON object is not taken) and `fileHome: <path>` in place of `fileEnv` (a server that
+  reads a fixed path under its home gets `HOME` / `USERPROFILE` = its own folder in its scratch, with only that file).
+  When a server rewrites a shared secret, the other running servers that read it are started again.
 
 Follow-ups D1–D6 are listed in that doc §8.3 (D1, D2, D6 extend §13.5; D3 write-back + redaction, D4 feed poller, D5
 rate backstop are new).
