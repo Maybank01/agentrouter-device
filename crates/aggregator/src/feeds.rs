@@ -9,7 +9,9 @@
 //! 2. takes the items: `structuredContent` (at `items` when given, else the result itself must be the list), or JSON
 //!    inside a text result found by the declared `extract.json` path; anything else is `FEED_OUTPUT_UNSTRUCTURED` —
 //!    prose is never parsed;
-//! 3. keeps of each item the columns of its table (`columns`; a number for a `text` column becomes its text) and
+//! 3. keeps of each item the columns of its table (`columns`; a number for a `text` column becomes its text) — a
+//!    column the feed's `map` names is filled from that item field (a tool's `entityType` into `entity_type`), every
+//!    other one from the field of its own name; nothing is renamed unless the feed declares it — and
 //!    writes every item whose `key` this feed has not seen into the host's outbox — the key is marked seen in the same
 //!    transaction, persisted, so a restart never sends a row twice (the Space Server's dedupe stays authoritative);
 //! 4. backs off: an error carrying a code of `backoff.on` (an HTTP status, a JSON-RPC code or the server's own code;
@@ -55,6 +57,9 @@ pub struct FeedSpec {
     pub into: String,
     /// The table's columns: name → type (`text`, `number`, …); an item keeps only these.
     pub columns: BTreeMap<String, String>,
+    /// Column → the item field that fills it, for a column spelled otherwise than that field (the feed's `map`, Cloud
+    /// #2739). A column not named here is filled by the item field of its own name.
+    pub map: BTreeMap<String, String>,
     pub backoff_on: Vec<Value>,
     pub backoff_wait: Duration,
 }
@@ -161,6 +166,11 @@ pub fn select<'a>(v: &'a Value, path: &str) -> Option<&'a Value> {
 }
 
 impl FeedSpec {
+    /// The item field that fills `column`: the one the feed's `map` names, else the column's own name.
+    pub fn field_of<'a>(&'a self, column: &'a str) -> &'a str {
+        self.map.get(column).map(String::as_str).unwrap_or(column)
+    }
+
     pub fn parse(v: &Value) -> Result<FeedSpec, Failure> {
         if !v.is_object() {
             return Err(invalid("a feed is an object"));
@@ -213,6 +223,32 @@ impl FeedSpec {
                 columns.keys().cloned().collect::<Vec<_>>().join(", ")
             )));
         }
+        let mut map = BTreeMap::new();
+        match v.get("map") {
+            None | Some(Value::Null) => {}
+            Some(Value::Object(m)) => {
+                for (column, field) in m {
+                    let Some(field) = field.as_str().filter(|f| !f.is_empty() && f.len() <= 64)
+                    else {
+                        return Err(invalid(format!(
+                            "{w}: map {column} is the name of the item field that fills it"
+                        )));
+                    };
+                    if !columns.contains_key(column) {
+                        return Err(invalid(format!(
+                            "{w}: map {column}: not a column of table {into} ({})",
+                            columns.keys().cloned().collect::<Vec<_>>().join(", ")
+                        )));
+                    }
+                    map.insert(column.clone(), field.to_string());
+                }
+            }
+            Some(_) => {
+                return Err(invalid(format!(
+                    "{w}: map is an object {{ <column>: <item field> }}"
+                )));
+            }
+        }
         let (backoff_on, backoff_wait) = match v.get("backoff") {
             None | Some(Value::Null) => (Vec::new(), Duration::ZERO),
             Some(b) => {
@@ -242,6 +278,7 @@ impl FeedSpec {
             extract_json,
             into,
             columns,
+            map,
             backoff_on,
             backoff_wait,
         })
@@ -413,24 +450,27 @@ pub fn items_of(result: &CallToolResult, spec: &FeedSpec) -> Result<Vec<Value>, 
     }
 }
 
-/// An item as a row: its table's columns only (a number or a boolean for a `text` field becomes its
-/// text); its key as text. None when the key is missing.
+/// An item as a row: its table's columns only, each from the item field that fills it (`map`, else the field of
+/// its name; a number or a boolean for a `text` column becomes its text); its key as text. None when the key is
+/// missing.
 pub fn row_of(item: &Value, spec: &FeedSpec) -> Option<(String, Value)> {
     let obj = item.as_object()?;
-    let key = match obj.get(&spec.key)? {
+    let key = match obj.get(spec.field_of(&spec.key))? {
         Value::String(s) if !s.is_empty() => s.clone(),
         Value::Number(n) => n.to_string(),
         _ => return None,
     };
     let mut payload = Map::new();
-    for (field, ty) in &spec.columns {
-        let Some(v) = obj.get(field) else { continue };
+    for (column, ty) in &spec.columns {
+        let Some(v) = obj.get(spec.field_of(column)) else {
+            continue;
+        };
         let v = match (ty.as_str(), v) {
             ("text", Value::Number(n)) => Value::String(n.to_string()),
             ("text", Value::Bool(b)) => Value::String(b.to_string()),
             _ => v.clone(),
         };
-        payload.insert(field.clone(), v);
+        payload.insert(column.clone(), v);
     }
     Some((key, Value::Object(payload)))
 }
@@ -673,7 +713,7 @@ async fn poll(
             format!(
                 "feed {}: {skipped} items had no {} (their fields: {})",
                 feed.name,
-                feed.key,
+                feed.field_of(&feed.key),
                 fields.join(", ")
             ),
         ));
@@ -835,6 +875,47 @@ mod tests {
         assert_eq!(key, "42");
         assert_eq!(payload, json!({"id": "42", "title": "t"}));
         assert!(row_of(&json!({"title": "no id"}), &s).is_none());
+    }
+
+    #[test]
+    fn a_mapped_column_is_filled_from_the_item_field_the_feed_names() {
+        // memory_graph's shape (Cloud #2739): camelCase item fields, lower-case columns.
+        let s = FeedSpec::parse(&json!({
+            "name": "图谱实体", "tool": "read_graph", "everyMs": 30_000, "key": "name", "items": "$.entities",
+            "into": "entities", "columns": {"name": "text", "entity_type": "text"},
+            "map": {"entity_type": "entityType"}
+        }))
+        .unwrap();
+        let (key, payload) = row_of(
+            &json!({"name": "alpha", "entityType": "test", "observations": ["x"]}),
+            &s,
+        )
+        .unwrap();
+        assert_eq!(key, "alpha");
+        assert_eq!(payload, json!({"name": "alpha", "entity_type": "test"}));
+        // Without the map nothing is renamed: the column stays empty.
+        let mut plain = s.clone();
+        plain.map.clear();
+        let (_, payload) = row_of(&json!({"name": "alpha", "entityType": "test"}), &plain).unwrap();
+        assert_eq!(payload, json!({"name": "alpha"}));
+        // The key column may be mapped too.
+        let k = FeedSpec::parse(&json!({
+            "name": "a", "tool": "t", "everyMs": 60_000, "key": "entity_id", "into": "x",
+            "columns": {"entity_id": "text"}, "map": {"entity_id": "entityId"}
+        }))
+        .unwrap();
+        assert_eq!(row_of(&json!({"entityId": 7}), &k).unwrap().0, "7");
+        // A map entry for a column the table does not have is refused.
+        let e = FeedSpec::parse(&json!({
+            "name": "a", "tool": "t", "everyMs": 60_000, "key": "id", "into": "x",
+            "columns": {"id": "text"}, "map": {"kind": "entityType"}
+        }))
+        .unwrap_err();
+        assert!(
+            e.message.contains("map kind: not a column of table x"),
+            "{}",
+            e.message
+        );
     }
 
     #[test]
