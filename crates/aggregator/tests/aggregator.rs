@@ -364,11 +364,17 @@ async fn a_display_granted_server_says_so_in_the_tool_list() {
     let dir = scratch("display");
     let fake = dir.join("fake.cjs");
     std::fs::write(&fake, FAKE).unwrap();
+    // A bare `node` resolves to the device's own runtime (set up by `agentrouter sandbox setup`): the runner's.
+    let node = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .flat_map(|d| [d.join("node"), d.join("node.exe")])
+        .find(|p| p.is_file())
+        .expect("node on PATH");
     let mut h = Harness::new(&dir, &dir.join("work"), TestHooks::default(), true);
     h.open("mcs_1", "ags_a").await;
     let added = h
         .call("mcs_1", 2, "ags_a", "link__server_add", json!({
-            "name": "screen", "command": "node", "args": [fake.to_string_lossy()], "display": true, "waitMs": 60000,
+            "name": "screen", "command": node.to_string_lossy(), "args": [fake.to_string_lossy()], "display": true,
+            "waitMs": 60000,
         }))
         .await;
     assert_eq!(
