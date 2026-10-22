@@ -9,6 +9,9 @@
 //!   layer reads the node daemon's content routes with a checkout ticket (`POST /v1/view/checkout` on the platform
 //!   side); the upper layer is this host's own folder under the device home. `prefetch` fetches named files ahead of
 //!   their first read (a task's declared inputs); `settle` drops upper files the new version holds the same.
+//! - `_space_prefetch`: fetches now the files a task's declared `inputs` select in a folder of a checkout (selected by
+//!   the node daemon, `POST /v1/content/select`), several at once, within a byte budget — a task's stage then copies
+//!   them from this host's cache instead of fetching them one by one on first read.
 //! - `_space_changes`: the upper layer as changes (puts with the lower digest they replace, deletes), for the one sync
 //!   engine, plus this checkout's cache counters.
 //! - `_space_unmount`: ends the checkout (the upper layer stays on disk for the next mount at the same folder).
@@ -45,6 +48,15 @@ pub(super) fn tools() -> Vec<Value> {
                 "settle": {"type": "boolean"},
                 "prefetch": {"type": "array", "items": {"type": "string"}, "maxItems": 5000},
             }, "required": ["path", "origin", "root", "exp", "t"]}),
+            false,
+        ),
+        tool(
+            "_space_prefetch",
+            "Platform use: fetch now the files a task's declared inputs select in a folder of a mounted checkout (several at once, at most 1 GiB; the rest stay on demand). Linux only.",
+            json!({"type": "object", "properties": {
+                "path": {"type": "string", "description": "a folder inside a mounted checkout (a space's folder, <mount>/<space>)"},
+                "inputs": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 200},
+            }, "required": ["path", "inputs"]}),
             false,
         ),
         tool(
@@ -86,6 +98,9 @@ impl Host {
     pub(super) fn space_changes(&self, _args: &Value) -> Result<Value, Fail> {
         Err(unsupported("_space_changes"))
     }
+    pub(super) fn space_prefetch(&self, _args: &Value) -> Result<Value, Fail> {
+        Err(unsupported("_space_prefetch"))
+    }
     pub(super) fn space_unmount(&self, _args: &Value) -> Result<Value, Fail> {
         Err(unsupported("_space_unmount"))
     }
@@ -107,6 +122,10 @@ mod linux {
     use super::super::{Fail, Host, arg_bool, arg_str, shown};
     use super::fs::{Shared, SpaceFs};
     use super::lower::{HttpSource, Lower, Ticket};
+
+    /// A prefetch fetches at most this many bytes and files (the rest stay on demand: never a whole large 作品).
+    const PREFETCH_BYTES: u64 = 1 << 30;
+    const PREFETCH_FILES: usize = 5000;
 
     struct Mounted {
         fs: Arc<SpaceFs>,
@@ -359,6 +378,83 @@ mod linux {
             })?;
             Ok(
                 json!({"path": shown(&path), "root": fs.lower.ticket().root, "changes": changes, "stats": fs.lower.stats_json()}),
+            )
+        }
+
+        /// A task's declared inputs in a folder of a checkout, fetched now (within PREFETCH_BYTES / PREFETCH_FILES).
+        pub(in crate::host) fn space_prefetch(&self, args: &Value) -> Result<Value, Fail> {
+            let path = self.absolute(arg_str(args, "path").unwrap_or_default());
+            let inputs: Vec<String> = args["inputs"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|p| p.as_str().map(str::to_string))
+                        .take(200)
+                        .collect()
+                })
+                .unwrap_or_default();
+            if inputs.is_empty() {
+                return Err(fail(
+                    "HOSTD_ARGS_INVALID",
+                    "_space_prefetch",
+                    &path,
+                    "inputs must name 1 to 200 path patterns".into(),
+                    false,
+                    "pass the task's declared inputs",
+                ));
+            }
+            // The checkout this folder is in (the deepest mount above it), and the folder relative to its top.
+            let found = self
+                .spaces
+                .mounts
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(top, _)| path.starts_with(top))
+                .max_by_key(|(top, _)| top.as_os_str().len())
+                .map(|(top, m)| (top.clone(), m.fs.clone()));
+            let Some((top, fs)) = found else {
+                return Err(fail(
+                    "CHECKOUT_NOT_MOUNTED",
+                    "_space_prefetch",
+                    &path,
+                    "no checkout is mounted at or above this folder".into(),
+                    false,
+                    "mount it first with host___space_mount (or read the files as they are)",
+                ));
+            };
+            let rel = path
+                .strip_prefix(&top)
+                .map(|r| r.to_string_lossy().trim_matches('/').to_string())
+                .unwrap_or_default();
+            let started = std::time::Instant::now();
+            let (files, more) = fs.lower.select(&rel, &inputs).map_err(|e| {
+                fail(
+                    "CHECKOUT_SOURCE_FAILED",
+                    "_space_prefetch",
+                    &path,
+                    format!("the node daemon could not select the inputs: {e:?}"),
+                    true,
+                    "the task's stage reads its inputs on demand instead; retry the prefetch later",
+                )
+            })?;
+            let (mut bytes, mut wanted) = (0u64, Vec::new());
+            for (file, size) in &files {
+                if wanted.len() >= PREFETCH_FILES || bytes + size > PREFETCH_BYTES {
+                    break;
+                }
+                bytes += size;
+                wanted.push(if rel.is_empty() {
+                    file.clone()
+                } else {
+                    format!("{rel}/{file}")
+                });
+            }
+            let fetched = fs.prefetch(&wanted);
+            Ok(
+                json!({"path": shown(&path), "selected": files.len(), "more": more, "prefetched": fetched,
+                      "within": wanted.len(), "bytes": bytes, "ms": started.elapsed().as_millis() as u64,
+                      "stats": fs.lower.stats_json()}),
             )
         }
 

@@ -56,10 +56,14 @@ libc = "0.2"
 
 # On-demand checkouts of space versions (Cloud #2767, PROJECT-SERVICE §5.5.4 "Linux"): cberner/fuser, MIT, 0.18.0
 # (2026-07-22, ~6M downloads), pure Rust (no libfuse); mounts through /dev/fuse (fusermount3 when not root).
-# The lower layer reads the node daemon with ureq (already in the tree through device-core); serde for its state.
+# The lower layer reads the node daemon over plain HTTP through the sandbox's egress proxy (squid on the node), which
+# forwards absolute-form GET/POST to the daemon and refuses CONNECT tunnels; ureq 3 only tunnels (CONNECT) through an
+# HTTP proxy (Dev 10-22: "CONNECT proxy failed: 403"), so this layer uses reqwest's blocking client (seanmonstar/reqwest,
+# MIT/Apache-2.0, 0.13, active; HTTP/1 only, no TLS: the daemon is plain HTTP on the node), which forwards http:// URLs
+# through HTTP_PROXY in absolute form and honours NO_PROXY.
 [target.'cfg(target_os = "linux")'.dependencies]
 fuser = { version = "0.18.0", default-features = false }
-ureq = { version = "3", default-features = false }
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "query"] }
 serde.workspace = true
 
 [target.'cfg(windows)'.dependencies]

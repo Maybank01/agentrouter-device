@@ -686,24 +686,37 @@ impl SpaceFs {
     }
 
     /// Fetches these files of the lower into this host's cache ahead of their first read (a task's declared inputs, a
-    /// version's hot set). Returns how many were fetched now.
+    /// version's hot set), up to PREFETCH_WORKERS at once from the node cache. Returns how many were fetched now.
     pub fn prefetch(&self, paths: &[String]) -> usize {
-        let mut fetched = 0;
-        for path in paths {
-            if let Ok(Some(Entry {
-                kind: Kind::File { .. },
-                digest: Some(d),
-                ..
-            })) = self.lower_entry(path)
-                && !self.lower.object_path(&d).is_file()
-                && self.lower.object(path, &d).is_ok()
-            {
-                fetched += 1;
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let fetched = std::sync::atomic::AtomicUsize::new(0);
+        let workers = paths.len().clamp(1, PREFETCH_WORKERS);
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                scope.spawn(|| {
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(path) = paths.get(i) else { break };
+                        if let Ok(Some(Entry {
+                            kind: Kind::File { .. },
+                            digest: Some(d),
+                            ..
+                        })) = self.lower_entry(path)
+                            && !self.lower.object_path(&d).is_file()
+                            && self.lower.object(path, &d).is_ok()
+                        {
+                            fetched.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
+                });
             }
-        }
-        fetched
+        });
+        fetched.into_inner()
     }
 }
+
+/// How many files a prefetch fetches at once (each a node-cache read over the sandbox's network).
+const PREFETCH_WORKERS: usize = 8;
 
 /// The FUSE side: `fuser` takes the file system by value; the mount registry keeps the same [`SpaceFs`].
 pub struct Shared(pub Arc<SpaceFs>);

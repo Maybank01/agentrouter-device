@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -56,7 +56,24 @@ pub trait Source: Send + Sync {
     fn list(&self, ticket: &Ticket, path: &str) -> Result<Vec<Entry>, LowerError>;
     /// The whole file at `path`, with the digest the source says it has.
     fn read(&self, ticket: &Ticket, path: &str) -> Result<(Vec<u8>, String), LowerError>;
+    /// The files a task's declared `inputs` select below the folder at `path` (`POST /v1/content/select`: the Space
+    /// Server's own selection, the one a stored version's task inputs use), as paths below it with their sizes, and
+    /// whether the source cut the list short.
+    fn select(
+        &self,
+        _ticket: &Ticket,
+        path: &str,
+        _inputs: &[String],
+    ) -> Result<(Vec<(String, u64)>, bool), LowerError> {
+        Err(LowerError::Failed {
+            code: "CHECKOUT_SOURCE_FAILED".into(),
+            message: format!("select {path}: this source cannot select task inputs"),
+        })
+    }
 }
+
+/// A part file's name is unique per fetch (several threads may fetch at once: FUSE workers, a prefetch).
+static PART: AtomicUsize = AtomicUsize::new(0);
 
 /// Counters of this layer (the T0 tier of §5.1, per environment instance) for the sync's answer.
 #[derive(Default)]
@@ -222,9 +239,11 @@ impl Lower {
             self.note(&error);
             return Err(error);
         }
-        let part = self
-            .objects
-            .join(format!("{digest}.{}.part", std::process::id()));
+        let part = self.objects.join(format!(
+            "{digest}.{}.{}.part",
+            std::process::id(),
+            PART.fetch_add(1, Ordering::Relaxed)
+        ));
         let written = std::fs::File::create(&part)
             .and_then(|mut f| f.write_all(&bytes))
             .and_then(|_| std::fs::rename(&part, &path));
@@ -243,6 +262,18 @@ impl Lower {
         Ok(path)
     }
 
+    /// The files `inputs` select below the folder at `rel` (relative to the mount's top), paths relative to that folder.
+    pub fn select(
+        &self,
+        rel: &str,
+        inputs: &[String],
+    ) -> Result<(Vec<(String, u64)>, bool), LowerError> {
+        let ticket = self.ticket();
+        self.source
+            .select(&ticket, &Self::snapshot_path(&ticket, rel), inputs)
+            .inspect_err(|e| self.note(e))
+    }
+
     pub fn stats_json(&self) -> Value {
         let s = &self.stats;
         let get = |c: &AtomicU64| c.load(Ordering::Relaxed);
@@ -255,49 +286,55 @@ impl Lower {
     }
 }
 
-/// The node daemon's content routes (`GET /v1/content/{list,read}`), through the sandbox's egress proxy when the
-/// environment names one (ureq reads `HTTP_PROXY` / `NO_PROXY`).
+/// The node daemon's content routes (`GET /v1/content/{list,read}`, `POST /v1/content/select`), plain HTTP through the
+/// sandbox's egress proxy when the environment names one (`HTTP_PROXY` / `NO_PROXY`): the node's squid forwards
+/// absolute-form GET/POST to the daemon and refuses CONNECT tunnels, so the client must forward, never tunnel.
 pub struct HttpSource {
-    agent: ureq::Agent,
+    client: reqwest::blocking::Client,
 }
 
+type Response = reqwest::blocking::Response;
+
 impl HttpSource {
+    /// Through the environment's proxy (`HTTP_PROXY`, `NO_PROXY`), as the sandbox names it.
     pub fn new() -> HttpSource {
-        let config = ureq::Agent::config_builder()
-            .timeout_connect(Some(Duration::from_secs(10)))
-            .timeout_recv_response(Some(Duration::from_secs(60)))
-            .timeout_global(Some(Duration::from_secs(15 * 60)))
-            .http_status_as_error(false);
+        Self::through(None)
+    }
+
+    /// Through this proxy instead of the environment's (tests).
+    pub fn through(proxy: Option<&str>) -> HttpSource {
+        let mut builder = reqwest::blocking::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(15 * 60));
+        if let Some(p) = proxy {
+            builder = builder.proxy(reqwest::Proxy::http(p).expect("a proxy URL"));
+        }
         HttpSource {
-            agent: config.build().new_agent(),
+            client: builder
+                .build()
+                .expect("an HTTP client without TLS always builds"),
         }
     }
 
-    fn get(
-        &self,
-        ticket: &Ticket,
+    fn unreachable(route: &str, path: &str, origin: &str, e: impl std::fmt::Display) -> LowerError {
+        LowerError::Failed {
+            code: "CHECKOUT_SOURCE_UNREACHABLE".into(),
+            message: format!("{route} {path} at {origin}: {e}"),
+        }
+    }
+
+    /// The answer when it is 200; 404 as NotFound; anything else with the daemon's own code and text.
+    fn answered(
         route: &str,
         path: &str,
-    ) -> Result<ureq::http::Response<ureq::Body>, LowerError> {
-        let url = format!("{}/v1/content/{route}", ticket.origin.trim_end_matches('/'));
-        let response = self
-            .agent
-            .get(&url)
-            .query("root", &ticket.root)
-            .query("exp", ticket.exp.to_string())
-            .query("t", &ticket.t)
-            .query("path", path)
-            .call()
-            .map_err(|e| LowerError::Failed {
-                code: "CHECKOUT_SOURCE_UNREACHABLE".into(),
-                message: format!("{route} {path} at {}: {e}", ticket.origin),
-            })?;
+        origin: &str,
+        response: Response,
+    ) -> Result<Response, LowerError> {
         match response.status().as_u16() {
             200 => Ok(response),
             404 => Err(LowerError::NotFound),
             status => {
-                let mut body = response.into_body();
-                let text = body.read_to_string().unwrap_or_default();
+                let text = response.text().unwrap_or_default();
                 let code = serde_json::from_str::<Value>(&text)
                     .ok()
                     .and_then(|v| v["error"]["code"].as_str().map(str::to_string))
@@ -305,23 +342,78 @@ impl HttpSource {
                 Err(LowerError::Failed {
                     code,
                     message: format!(
-                        "{route} {path} at {}: {status} {}",
-                        ticket.origin,
+                        "{route} {path} at {origin}: {status} {}",
                         text.chars().take(300).collect::<String>()
                     ),
                 })
             }
         }
     }
+
+    fn get(&self, ticket: &Ticket, route: &str, path: &str) -> Result<Response, LowerError> {
+        let url = format!("{}/v1/content/{route}", ticket.origin.trim_end_matches('/'));
+        let exp = ticket.exp.to_string();
+        let response = self
+            .client
+            .get(&url)
+            .query(&[
+                ("root", ticket.root.as_str()),
+                ("exp", exp.as_str()),
+                ("t", ticket.t.as_str()),
+                ("path", path),
+            ])
+            .send()
+            .map_err(|e| Self::unreachable(route, path, &ticket.origin, e))?;
+        Self::answered(route, path, &ticket.origin, response)
+    }
 }
 
 impl Source for HttpSource {
-    fn list(&self, ticket: &Ticket, path: &str) -> Result<Vec<Entry>, LowerError> {
-        let mut body = self.get(ticket, "list", path)?.into_body();
-        let text = body.read_to_string().map_err(|e| LowerError::Failed {
-            code: "CHECKOUT_SOURCE_UNREACHABLE".into(),
-            message: format!("list {path}: {e}"),
+    fn select(
+        &self,
+        ticket: &Ticket,
+        path: &str,
+        inputs: &[String],
+    ) -> Result<(Vec<(String, u64)>, bool), LowerError> {
+        let url = format!("{}/v1/content/select", ticket.origin.trim_end_matches('/'));
+        let response = self
+            .client
+            .post(&url)
+            .header("content-type", "application/json")
+            .body(
+                json!({"root": ticket.root, "exp": ticket.exp, "t": ticket.t, "path": path, "inputs": inputs})
+                    .to_string(),
+            )
+            .send()
+            .map_err(|e| Self::unreachable("select", path, &ticket.origin, e))?;
+        let text = Self::answered("select", path, &ticket.origin, response)?
+            .text()
+            .map_err(|e| Self::unreachable("select", path, &ticket.origin, e))?;
+        let body: Value = serde_json::from_str(&text).map_err(|_| LowerError::Failed {
+            code: "CHECKOUT_SOURCE_INVALID".into(),
+            message: format!("select {path}: not a selection"),
         })?;
+        let files = body["files"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|f| {
+                        Some((
+                            f["path"].as_str()?.to_string(),
+                            f["size"].as_u64().unwrap_or(0),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok((files, body["more"].as_bool().unwrap_or(false)))
+    }
+
+    fn list(&self, ticket: &Ticket, path: &str) -> Result<Vec<Entry>, LowerError> {
+        let text = self
+            .get(ticket, "list", path)?
+            .text()
+            .map_err(|e| Self::unreachable("list", path, &ticket.origin, e))?;
         parse_listing(&text).ok_or_else(|| LowerError::Failed {
             code: "CHECKOUT_SOURCE_INVALID".into(),
             message: format!("list {path}: not a listing"),
@@ -338,15 +430,9 @@ impl Source for HttpSource {
             .to_string();
         let mut bytes = Vec::new();
         response
-            .into_body()
-            .into_with_config()
-            .limit(OBJECT_MAX)
-            .reader()
+            .take(OBJECT_MAX)
             .read_to_end(&mut bytes)
-            .map_err(|e| LowerError::Failed {
-                code: "CHECKOUT_SOURCE_UNREACHABLE".into(),
-                message: format!("read {path}: {e}"),
-            })?;
+            .map_err(|e| Self::unreachable("read", path, &ticket.origin, e))?;
         Ok((bytes, said))
     }
 }

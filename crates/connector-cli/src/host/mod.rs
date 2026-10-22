@@ -276,6 +276,7 @@ impl Host {
             "out_status" => self.out_status()?,
             "_space_mount" => self.space_mount(args)?,
             "_space_changes" => self.space_changes(args)?,
+            "_space_prefetch" => self.space_prefetch(args)?,
             "_space_unmount" => self.space_unmount(args)?,
             "_task" => self.task(args)?,
             #[cfg(unix)]

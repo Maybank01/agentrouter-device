@@ -10,7 +10,7 @@ use agentrouter_device::util::hex;
 use sha2::{Digest as _, Sha256};
 
 use super::fs::{Change, Shared, SpaceFs};
-use super::lower::{Entry, Kind, Lower, LowerError, Source, Ticket};
+use super::lower::{Entry, HttpSource, Kind, Lower, LowerError, Source, Ticket};
 
 /// One version: path → file content (`None` = a directory).
 type Version = HashMap<String, Option<Vec<u8>>>;
@@ -112,6 +112,29 @@ impl Source for SharedSource {
     }
     fn read(&self, t: &Ticket, p: &str) -> Result<(Vec<u8>, String), LowerError> {
         self.0.read(t, p)
+    }
+    /// A stand-in for the node daemon's selection: the files below `path` under an input folder (no wildcards here).
+    fn select(
+        &self,
+        t: &Ticket,
+        path: &str,
+        inputs: &[String],
+    ) -> Result<(Vec<(String, u64)>, bool), LowerError> {
+        let versions = self.0.versions.lock().unwrap();
+        let all = versions.get(&t.root).ok_or(LowerError::NotFound)?;
+        let mut out: Vec<(String, u64)> = all
+            .iter()
+            .filter_map(|(p, c)| {
+                let rel = p.strip_prefix(&format!("{path}/"))?;
+                let bytes = c.as_ref()?;
+                inputs
+                    .iter()
+                    .any(|i| rel == i || rel.starts_with(&format!("{i}/")))
+                    .then(|| (rel.to_string(), bytes.len() as u64))
+            })
+            .collect();
+        out.sort();
+        Ok((out, false))
     }
 }
 
@@ -304,4 +327,74 @@ fn a_checkout_reads_on_demand_copies_up_on_write_and_settles_on_the_next_version
 
     drop(session);
     let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn a_prefetch_fetches_only_the_selected_inputs_several_at_once() {
+    let source = Arc::new(MapSource::default());
+    let mut files: Vec<(String, String)> = (0..40)
+        .map(|i| (format!("web/src/m{i:02}.txt"), format!("{i}\n")))
+        .collect();
+    files.push(("web/assets/big.bin".into(), "x".repeat(4096)));
+    files.push(("api/index.js".into(), "api".into()));
+    let refs: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(p, c)| (p.as_str(), c.as_str()))
+        .collect();
+    source.add("v1", &refs);
+    let base = temp("prefetch");
+    let lower = Arc::new(
+        Lower::new(
+            Box::new(SharedSource(source.clone())),
+            ticket("v1"),
+            base.join("objects"),
+        )
+        .unwrap(),
+    );
+    let fs = SpaceFs::new(lower.clone(), &base.join("state"), (0, 0)).unwrap();
+    // The folder `web` of the checkout, inputs `src`: the 40 files below web/src, nothing else.
+    let (selected, more) = lower.select("web", &["src".into()]).unwrap();
+    assert_eq!((selected.len(), more), (40, false));
+    let wanted: Vec<String> = selected.iter().map(|(p, _)| format!("web/{p}")).collect();
+    assert_eq!(fs.prefetch(&wanted), 40);
+    assert_eq!(source.reads.load(Ordering::Relaxed), 40);
+    // Fetched once: a second prefetch (or a read) is a hit.
+    assert_eq!(fs.prefetch(&wanted), 0);
+    assert_eq!(source.reads.load(Ordering::Relaxed), 40);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn the_content_source_forwards_through_the_proxy_never_tunnels() {
+    // The node's squid forwards absolute-form GET/POST to the daemon and refuses CONNECT (Dev 10-22: 403).
+    use std::io::{BufRead, BufReader, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let proxy = format!("http://{}", listener.local_addr().unwrap());
+    let seen = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let mut header = String::new();
+        while reader.read_line(&mut header).unwrap() > 2 {
+            header.clear();
+        }
+        let body = r#"{"entries":[{"name":"a.txt","kind":"file","size":1,"digest":"x-1"}]}"#;
+        write!(
+            &stream,
+            "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+        line
+    });
+    let mut t = ticket("r1");
+    t.origin = "http://project-daemon-dev:8091".into();
+    let entries = HttpSource::through(Some(&proxy)).list(&t, "work").unwrap();
+    assert_eq!(entries.len(), 1);
+    let line = seen.join().unwrap();
+    assert!(
+        line.starts_with("GET http://project-daemon-dev:8091/v1/content/list?root=r1&"),
+        "{line}"
+    );
 }
