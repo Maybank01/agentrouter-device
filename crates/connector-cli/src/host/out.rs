@@ -168,7 +168,6 @@ impl Out {
         }
     }
 
-    #[cfg(test)]
     pub(super) fn root(&self) -> &Path {
         &self.root
     }
