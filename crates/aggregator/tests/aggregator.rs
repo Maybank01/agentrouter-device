@@ -28,6 +28,13 @@ fn test_root() -> PathBuf {
     std::env::temp_dir()
 }
 
+/// One sandbox test at a time in this binary. `sandbox setup` refreshes srt's profile read grant, which is one per
+/// computer: while a refresh runs no confined server can start (`profile status` = `in_progress`), and a refresh is
+/// refused while confined servers run (srt-win exit 24). Two tests setting up side by side (the default parallel test
+/// threads) therefore broke each other on the Windows runner. Each test holds this until its servers are shut down.
+static SANDBOX_TESTS: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
 const LINK: &str = "lnk_00000000000000000000000000000001";
 
 #[derive(Default)]
@@ -395,6 +402,7 @@ async fn a_confined_server_end_to_end() {
         eprintln!("skipped: set AGENTROUTER_SANDBOX_TESTS=1 (CI runners only)");
         return;
     }
+    let _one = SANDBOX_TESTS.lock().await;
     let base = test_root().join(format!("agentrouter-agg-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(base.join("work")).unwrap();
@@ -636,6 +644,7 @@ async fn a_server_logs_in_on_this_computer_and_its_credential_stays_here() {
         eprintln!("skipped: set AGENTROUTER_SANDBOX_TESTS=1 (CI runners only)");
         return;
     }
+    let _one = SANDBOX_TESTS.lock().await;
     let base = test_root().join(format!("agentrouter-agg-login-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(base.join("work")).unwrap();
