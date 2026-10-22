@@ -246,6 +246,10 @@ Unsigned (harmless, read-only shape): `tools/list`, `ping`, notifications. Failu
   or a custom definition — custom ones need the local `y` in §5), `link__server_remove`,
   `link__server_logs`, `link__package_put` (pinned package bytes, digest-checked; replaces
   `mcp_package`). These manage *which* servers run; they are not capabilities.
+- A server's log (`link__server_logs`: its last 200 lines) is its stderr, the MCP log messages it sends, and the
+  aggregator's own start / handshake / ready / exit lines, secrets blanked. The same lines are appended to
+  `<device data>/logs/server-<name>.log` (moved to `.log.1` at 2 MiB), so a server that never got ready can be
+  diagnosed after the link ended (Cloud #2703).
 - `link__limits {memoryMb?, processes?, cpuPercent?}`: the environment's resource limits, applied live (§6.6).
 - `link__folder_add {path, reason?}`: the Agent asks for another folder; the person answers `y/N` on the computer
   (§5). On `y` the folder joins the writable set, every running server restarts with the new policy, `info` goes
