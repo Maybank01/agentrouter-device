@@ -118,6 +118,9 @@ pub struct Config {
     /// The owner's ceiling on what an environment here may use (`{"memory_mb", "processes", "cpu_percent"}`, each
     /// optional; device #127): the platform's limits never go above it. Unset = only the platform's.
     pub limits: crate::limits::Limits,
+    /// Installed-software discovery (Cloud DEVICES §2.3): per-source switches, hidden ids and the person's own entries
+    /// (`agentrouter software add|hide`). Unset = every source on.
+    pub software: crate::software::SoftwareConfig,
 }
 
 impl Default for Config {
@@ -134,6 +137,7 @@ impl Default for Config {
             max_environments: None,
             pool: None,
             limits: Default::default(),
+            software: Default::default(),
         }
     }
 }

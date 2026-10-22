@@ -22,15 +22,26 @@ ureq = { version = "3", default-features = false, features = ["json"] }
 sysinfo = { version = "0.39", default-features = false, features = ["system", "disk"] }
 # Who listens on a loopback port (preview streams in folder mode, #139). MIT, GyulyVGC/listeners.
 listeners = "0.6"
+# Steam libraries and app manifests (Cloud DEVICES §2.3). MIT, WilliamVenner/steamlocate-rs.
+steamlocate = "2.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# App bundles' Info.plist (Cloud DEVICES §2.3). MIT, ebarnard/rust-plist.
+plist = "1.10"
+
 [target.'cfg(windows)'.dependencies]
+# Installed programs (Cloud DEVICES §2.3): the Uninstall keys and GOG (winreg, MIT) and Store / MSIX packages through
+# PackageManager (windows, MIT / Apache-2.0).
+winreg = "0.56"
+windows = { version = "0.62", features = ["ApplicationModel", "Management_Deployment", "Foundation_Collections"] }
 windows-sys = { workspace = true, features = [
   "Win32_Foundation",
   "Win32_Graphics_Dwm",
   "Win32_Graphics_Gdi",
+  "Win32_Media_Audio",
   "Win32_Security",
   "Win32_Security_Authorization",
   "Win32_Security_Cryptography",

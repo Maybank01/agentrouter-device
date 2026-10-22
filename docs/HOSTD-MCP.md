@@ -206,6 +206,26 @@ the id.
   sent in `hello.link` only when set (1–40 characters). Control records it with the host; a definition admits it as
   `pool:<name>` in `reach.environment.allow`. Unset = the person's default pool.
 
+- `resources` (Cloud DEVICES §2.4): peripherals, `{display: [{id, width?, height?}], audio_out, audio_in, camera}`.
+  `display: []` = no interactive desktop; a value the OS cannot tell is `null` (unknown, never guessed). Windows:
+  monitors and wave devices; Linux: `WAYLAND_DISPLAY`/`DISPLAY`, ALSA's `/proc/asound/pcm`, `/sys/class/video4linux`;
+  macOS: not measured yet (all `null`). Cloud links send none.
+- `software` (Cloud DEVICES §2.3, `agentrouter_device::software`): installed programs and games,
+  `[{id, name, version?, source, publisher?, path?, exclusive?}]`, read only from the OS's and the launchers' own
+  inventories (Windows Uninstall keys, Store/MSIX packages, GOG; macOS app bundles + Spotlight; Linux dpkg / rpm /
+  pacman packages that ship a desktop entry, Flatpak, Snap; Steam, Epic on every OS). Absent until the first discovery
+  finished (it runs in the background after the link starts, so `hello` never waits for it); then rediscovered every
+  hour and whenever `config.json` `software` changes (`agentrouter software add|hide|unhide|source`). Each change goes
+  as a delta, and every later `hello` / `info` carries the whole list:
+
+```text
+         device → gateway  {"op": "software", added: [{…}], removed: ["<id>"], changed: [{…}],
+                            status: ["<source>: <why it could not be read>"]}            (installed software changed)
+```
+
+  Applying a delta twice is harmless (upsert / remove by id). `status` names sources that exist on this computer but
+  could not be read; it is never an error.
+
 The `load` frame goes with every heartbeat. An environment is a conversation with an open MCP session on this
 host. `load1` is null on Windows. `free_slots` = `environments` capacity minus running ones.
 

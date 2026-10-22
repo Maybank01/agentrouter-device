@@ -38,6 +38,13 @@ link 启动 hostd（宿主守护进程）；agentrouter hostd 是同一条命令
                                 这要你在这里同意（--yes 是事先同意，给无人值守的电脑），它会以你自己的权限运行，不受文件夹限制
   agentrouter mcp list          自己加的本机工具
   agentrouter mcp remove <名字> 去掉一个自己加的本机工具（连同给它的权限）
+  agentrouter software [list]   这台电脑上的软件和游戏（平台按它们找能干活的电脑；只读系统和启动器自己的清单，不看你的文件）
+  agentrouter software add <名字> [--path <文件夹或程序>] [--version <版本>] [--exclusive]
+                                补一个没找到的软件或游戏；--exclusive 表示同一时间只能一个 Agent 用（比如游戏）
+  agentrouter software hide <id> | unhide <id>
+                                不让平台看到某一项（id 见 software list）/ 取消隐藏
+  agentrouter software source <来源> on|off
+                                打开或关掉一个来源（steam、epic、windows-uninstall、msix、gog、macos-apps、dpkg、rpm、pacman、flatpak、snap）
   agentrouter sandbox setup|status|remove
                                 本机工具的隔离环境（Windows 会弹一次管理员确认）
   sudo agentrouter sandbox userns install|remove
@@ -113,6 +120,9 @@ pub fn main() {
     // `mcp add … -- <command…>`: everything after `--` is the tool's own command line, not our flags.
     if command == "mcp" {
         std::process::exit(cmd_mcp(&args[1..]));
+    }
+    if command == "software" {
+        std::process::exit(cmd_software(&args[1..]));
     }
     let flags = match parse(&args[1..]) {
         Ok(f) => f,
@@ -445,5 +455,145 @@ fn print_sandbox_status(st: &agentrouter_sandbox::Status) {
     for p in st.problems.iter().chain(&st.notes) {
         println!("  {}", p.message);
         println!("  {}", p.next);
+    }
+}
+
+/// `agentrouter software list|add|hide|unhide|source` (Cloud `docs/development/DEVICES.md` §2.3): the person stays in
+/// charge of what this computer reports. Changes are saved in `config.json`; a running link picks them up within a
+/// minute (`console::report_software`).
+fn cmd_software(args: &[String]) -> i32 {
+    use agentrouter_device::config::Config;
+    use agentrouter_device::software::{self, SOURCES};
+    let mut cfg = Config::load();
+    let save = |cfg: &Config, done: &str| match cfg.save() {
+        Ok(()) => {
+            println!("{done}");
+            0
+        }
+        Err(e) => {
+            eprintln!("没保存：{e}（{}）", Config::path().display());
+            1
+        }
+    };
+    match args.first().map(String::as_str) {
+        None | Some("list") => {
+            let found = software::discover(&cfg.software);
+            println!(
+                "这台电脑上的软件和游戏（{} 项，平台按它们找能干活的电脑）：",
+                found.software.len()
+            );
+            for s in &found.software {
+                let version = s
+                    .version
+                    .as_deref()
+                    .map(|v| format!(" {v}"))
+                    .unwrap_or_default();
+                let only_one = if s.exclusive {
+                    " · 同一时间只给一个 Agent"
+                } else {
+                    ""
+                };
+                println!("  {}{version} · {} · {}{only_one}", s.name, s.source, s.id);
+            }
+            for line in &found.status {
+                println!("  （没读到：{line}）");
+            }
+            if !cfg.software.hidden.is_empty() {
+                println!(
+                    "隐藏了 {} 项（agentrouter software unhide <id> 取消）。",
+                    cfg.software.hidden.len()
+                );
+            }
+            0
+        }
+        Some("add") => {
+            let mut name = None;
+            let (mut path, mut version, mut exclusive) = (None, None, false);
+            let mut rest = args[1..].iter();
+            while let Some(a) = rest.next() {
+                match a.as_str() {
+                    "--path" => path = rest.next().map(std::path::PathBuf::from),
+                    "--version" => version = rest.next().cloned(),
+                    "--exclusive" => exclusive = true,
+                    other if name.is_none() && !other.starts_with("--") => {
+                        name = Some(other.to_string())
+                    }
+                    other => {
+                        eprintln!(
+                            "看不懂 {other}：agentrouter software add <名字> [--path <文件夹或程序>] [--version <版本>] [--exclusive]"
+                        );
+                        return 2;
+                    }
+                }
+            }
+            let Some(name) = name.filter(|n| !n.trim().is_empty()) else {
+                eprintln!("要写名字：agentrouter software add <名字> [--path <文件夹或程序>]");
+                return 2;
+            };
+            if let Some(p) = &path
+                && !p.exists()
+            {
+                eprintln!("{} 不存在，没有加。", p.display());
+                return 1;
+            }
+            let entry =
+                software::manual_entry(&name, path.as_deref(), version.as_deref(), exclusive);
+            let id = entry.id.clone();
+            cfg.software.added.retain(|s| s.id != id);
+            cfg.software.added.push(entry);
+            save(&cfg, &format!("加上了 {name}（{id}）。"))
+        }
+        Some(verb @ ("hide" | "unhide")) => {
+            let Some(id) = args.get(1) else {
+                eprintln!(
+                    "要写 id：agentrouter software {verb} <id>（id 见 agentrouter software list）"
+                );
+                return 2;
+            };
+            cfg.software.hidden.retain(|h| h != id);
+            if verb == "hide" {
+                cfg.software.hidden.push(id.clone());
+                // A hand-added entry that is hidden is simply removed.
+                cfg.software.added.retain(|s| &s.id != id);
+                cfg.software.hidden.retain(|h| !h.starts_with("manual:"));
+                save(&cfg, &format!("{id} 不再报给平台。"))
+            } else {
+                save(&cfg, &format!("{id} 会再报给平台。"))
+            }
+        }
+        Some("source") => {
+            let (Some(source), Some(state)) = (args.get(1), args.get(2)) else {
+                eprintln!(
+                    "用法：agentrouter software source <来源> on|off（来源：{}）",
+                    SOURCES.join("、")
+                );
+                return 2;
+            };
+            if !SOURCES.contains(&source.as_str()) {
+                eprintln!("没有叫 {source} 的来源（有：{}）。", SOURCES.join("、"));
+                return 2;
+            }
+            let on = match state.as_str() {
+                "on" => true,
+                "off" => false,
+                _ => {
+                    eprintln!("要写 on 或 off。");
+                    return 2;
+                }
+            };
+            if on {
+                cfg.software.sources.remove(source);
+            } else {
+                cfg.software.sources.insert(source.clone(), false);
+            }
+            save(
+                &cfg,
+                &format!("来源 {source} 已{}。", if on { "打开" } else { "关掉" }),
+            )
+        }
+        Some(other) => {
+            eprintln!("没有 software {other}；可以用 list、add、hide、unhide、source。");
+            2
+        }
     }
 }

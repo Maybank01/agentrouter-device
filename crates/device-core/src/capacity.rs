@@ -85,6 +85,63 @@ pub fn capacity(home: &Path, max_environments_owner: Option<u32>) -> Value {
     })
 }
 
+/// Peripherals (Cloud DEVICES §2.4): `{display: [{id, width, height}], audio_out, audio_in, camera}`. A value the OS
+/// cannot tell is `null` (unknown), never a guess; `display: []` = no interactive desktop (a service, a headless box).
+pub fn resources() -> Value {
+    peripherals()
+}
+
+#[cfg(windows)]
+fn peripherals() -> Value {
+    use windows_sys::Win32::Media::Audio::{waveInGetNumDevs, waveOutGetNumDevs};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetSystemMetrics, SM_CMONITORS, SM_CXSCREEN, SM_CYSCREEN,
+    };
+    // SAFETY: plain queries without arguments.
+    let (monitors, w, h, out, inp) = unsafe {
+        (
+            GetSystemMetrics(SM_CMONITORS),
+            GetSystemMetrics(SM_CXSCREEN),
+            GetSystemMetrics(SM_CYSCREEN),
+            waveOutGetNumDevs(),
+            waveInGetNumDevs(),
+        )
+    };
+    let display: Vec<Value> = (0..monitors.max(0))
+        .map(|i| {
+            if i == 0 {
+                json!({"id": 0, "width": w, "height": h})
+            } else {
+                json!({"id": i})
+            }
+        })
+        .collect();
+    json!({"display": display, "audio_out": out > 0, "audio_in": inp > 0, "camera": null})
+}
+
+#[cfg(target_os = "linux")]
+fn peripherals() -> Value {
+    let desktop = crate::shell_env::var_os("WAYLAND_DISPLAY").is_some()
+        || crate::shell_env::var_os("DISPLAY").is_some();
+    let display: Vec<Value> = if desktop {
+        vec![json!({"id": 0})]
+    } else {
+        Vec::new()
+    };
+    // ALSA's PCM list: "00-00: ALC892 Analog : ALC892 Analog : playback 1 : capture 1".
+    let pcm = std::fs::read_to_string("/proc/asound/pcm").ok();
+    let has = |what: &str| pcm.as_deref().map(|t| t.contains(what));
+    let camera = std::fs::read_dir("/sys/class/video4linux")
+        .ok()
+        .map(|mut d| d.next().is_some());
+    json!({"display": display, "audio_out": has("playback"), "audio_in": has("capture"), "camera": camera})
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+fn peripherals() -> Value {
+    json!({"display": null, "audio_out": null, "audio_in": null, "camera": null})
+}
+
 /// Labels: `{os, arch, tools, runtimes, custom}` (the owner's own from `config.json`, e.g. `gpu`, `rack-2`).
 pub fn labels(custom: &[String]) -> Value {
     static FOUND: OnceLock<(Vec<&'static str>, Vec<&'static str>)> = OnceLock::new();

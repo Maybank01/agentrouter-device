@@ -215,6 +215,8 @@ mod tests {
             capacity: serde_json::Value::Null,
             labels: serde_json::Value::Null,
             pool: None,
+            resources: Value::Null,
+            software: Value::Null,
         };
         assert!(!allowed(&info));
         info.full = true;
