@@ -1123,7 +1123,8 @@ impl Inner {
         }));
     }
 
-    /// Every tool the link offers now: the management tools, then each ready server's tools as `<server>__<tool>`.
+    /// Every tool the link offers now: the management tools, then each ready server's tools as `<server>__<tool>`;
+    /// those of a display-granted server say so ([`servers::mark_display`], device #147).
     fn tool_list(&self) -> Vec<Tool> {
         let mut tools = link_tools();
         for (name, server) in self.servers.lock().unwrap().iter() {
@@ -1133,6 +1134,9 @@ impl Inner {
             for t in server.tools.lock().unwrap().iter() {
                 let mut t = t.clone();
                 t.name = format!("{name}__{}", t.name).into();
+                if server.def.display {
+                    servers::mark_display(&mut t, self.cfg.full);
+                }
                 tools.push(t);
             }
         }
@@ -1146,7 +1150,7 @@ impl Inner {
             if let Some(peer) = peer
                 && let Ok(tools) = peer.list_all_tools().await
             {
-                *server.tools.lock().unwrap() = tools;
+                server.set_tools(tools);
             }
         }
         self.notify_tools_changed().await;

@@ -372,7 +372,8 @@ process.stdin.on('data', (d) => {
     if (m.method === 'initialize') send({ jsonrpc: '2.0', id: m.id, result: { protocolVersion: m.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'fake', version: '1' } } });
     else if (m.method === 'tools/list') send({ jsonrpc: '2.0', id: m.id, result: { tools: [
       { name: 'read', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } },
-      { name: 'write', inputSchema: { type: 'object' } },
+      { name: 'write', description: 'Write a file.', inputSchema: { type: 'object' } },
+      { name: '_hidden', inputSchema: { type: 'object' } },
     ] } });
     else if (m.method === 'tools/call') {
       const a = m.params.arguments || {};
@@ -547,6 +548,45 @@ async fn a_confined_server_end_to_end() {
     );
     assert!(audit.contains("\"checkpoint\":\"cp1\""));
     assert!(audit.contains("\"kind\":\"server\",") && audit.contains("\"policy\""));
+
+    // Device #147: each tool of a display-granted server says so in the list the Agent sees (and in `_meta`); `_…`
+    // tools are never listed; the confined server's tools stay as they are.
+    let granted = h
+        .call("mcs_1", 34, "ags_a", "link__server_add", json!({
+            "name": "screen", "command": "node", "args": [fake.to_string_lossy()], "display": true, "waitMs": 120000,
+        }))
+        .await;
+    assert_eq!(
+        granted["result"]["structuredContent"]["state"], "ready",
+        "{granted}"
+    );
+    let listed = h.request("mcs_1", 35, "tools/list", json!({})).await;
+    let tools = listed["result"]["tools"].as_array().unwrap();
+    let find = |name: &str| tools.iter().find(|t| t["name"] == name);
+    let write = find("screen__write").expect("the granted server's tools are listed");
+    let text = write["description"].as_str().unwrap();
+    assert!(
+        text.starts_with("[Screen access granted by the person")
+            && text.ends_with("] Write a file."),
+        "{text}"
+    );
+    assert_eq!(write["_meta"]["agentrouter.top/display"], true, "{write}");
+    let read = find("screen__read").unwrap()["description"]
+        .as_str()
+        .unwrap();
+    assert!(
+        read.starts_with('[') && read.ends_with(']'),
+        "a tool without its own description: {read}"
+    );
+    assert!(
+        find("screen___hidden").is_none() && find("fake___hidden").is_none(),
+        "`_…` tools are never listed"
+    );
+    let confined = find("fake__write").unwrap();
+    assert!(
+        confined["description"] == "Write a file." && confined.get("_meta").is_none(),
+        "{confined}"
+    );
 
     h.agg.shutdown().await;
     let _ = std::fs::remove_dir_all(&base);
