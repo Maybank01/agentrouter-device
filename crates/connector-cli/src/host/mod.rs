@@ -24,6 +24,7 @@ mod out;
 mod pty;
 mod run;
 mod search;
+mod space;
 mod watch;
 
 use std::collections::HashMap;
@@ -56,6 +57,7 @@ fn tools() -> Value {
     all.extend(info::tools());
     all.extend(watch::tools());
     all.extend(out::tools());
+    all.extend(space::tools());
     #[cfg(unix)]
     all.extend(bridge::tools());
     Value::Array(all)
@@ -71,6 +73,9 @@ struct Host {
     out: Arc<out::Out>,
     ptys: pty::Ptys,
     changes: watch::Changes,
+    /// On-demand checkouts of space versions (Cloud #2767), by folder (Linux only for now).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    spaces: space::Spaces,
 }
 
 type Notify = Arc<dyn Fn(&Value) + Send + Sync>;
@@ -159,6 +164,7 @@ impl Host {
             out: Arc::default(),
             ptys: pty::Ptys::default(),
             changes: watch::Changes::default(),
+            spaces: space::Spaces::default(),
         }
     }
 
@@ -170,6 +176,8 @@ impl Host {
         self.jobs.end_all();
         self.ptys.end_all();
         self.changes.stop();
+        #[cfg(target_os = "linux")]
+        self.spaces.end_all();
         // The output folder stays: a reconnect or a reboot keeps its paths; only the Agent removes files (#102).
     }
 
@@ -264,6 +272,9 @@ impl Host {
             "spill_write" => self.spill_write(args)?,
             "out_release" => self.out_release(args)?,
             "out_status" => self.out_status()?,
+            "_space_mount" => self.space_mount(args)?,
+            "_space_changes" => self.space_changes(args)?,
+            "_space_unmount" => self.space_unmount(args)?,
             #[cfg(unix)]
             "_port_bridge" => self.port_bridge(args)?,
             other => return Err(format!("没有这个工具：{other}").into()),

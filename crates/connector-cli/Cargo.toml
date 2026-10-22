@@ -54,6 +54,14 @@ rustls = ["agentrouter-device-core/rustls", "agentrouter-hostd-link/rustls"]
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# On-demand checkouts of space versions (Cloud #2767, PROJECT-SERVICE §5.5.4 "Linux"): cberner/fuser, MIT, 0.18.0
+# (2026-07-22, ~6M downloads), pure Rust (no libfuse); mounts through /dev/fuse (fusermount3 when not root).
+# The lower layer reads the node daemon with ureq (already in the tree through device-core); serde for its state.
+[target.'cfg(target_os = "linux")'.dependencies]
+fuser = { version = "0.18.0", default-features = false }
+ureq = { version = "3", default-features = false }
+serde.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_System_Console", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_UI_Shell", "Win32_System_Com"] }
 # The native folder picker on a double-click start (the shell's IFileOpenDialog): PolyMeilex/rfd, MIT.
