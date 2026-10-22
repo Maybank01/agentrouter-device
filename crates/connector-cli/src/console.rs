@@ -533,7 +533,7 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
                 .any(|p| p.message.contains("命名空间"))
         {
             line(
-                "  沙箱     第一次要准备隔离环境（下载一次，约 60 MB；Windows 会弹一次管理员确认，可能要几分钟）…",
+                "  沙箱     第一次要准备隔离环境（下载一次，约 70 MB；Windows 会弹一次管理员确认，可能要几分钟）…",
             );
             if let Err(e) = sandbox.setup() {
                 line(&format!("  沙箱     没准备好：{e}"));
@@ -553,7 +553,7 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
         }
     } else if sandbox.runtime_bins().len() < agentrouter_sandbox::runtimes::ALL.len() {
         // 完全访问 runs `npx`/`uvx` tools too: the device's own Node and uv, no install for the person (#116).
-        line("  运行环境 第一次要下载 AgentRouter 自己用的 Node.js 和 uv（约 60 MB）…");
+        line("  运行环境 第一次要下载 AgentRouter 自己用的 Node.js 和 uv（约 70 MB）…");
         match sandbox.provision() {
             Ok(done) => done.iter().for_each(|d| line(&format!("  运行环境 {d}"))),
             Err(e) => line(&format!(

@@ -49,12 +49,14 @@ pub struct Archive {
     pub sha256: &'static str,
 }
 
-/// Node.js 24 LTS ("Krypton"; srt needs 22.12+). 24.22.1 is the 2026-10-20 security release; SHASUMS256.txt signed by
-/// release key 5BE8A3F6C8A5C01D106C0AD820B1A390B168D356 (Antoine du Hamel), verified 2026-10-21.
+/// Node.js 22 LTS ("Jod", maintained until 2027-04; srt needs 22.12+). 22.23.4 is the 2026-10-20 security release;
+/// SHASUMS256.txt signed by release key 5BE8A3F6C8A5C01D106C0AD820B1A390B168D356 (Antoine du Hamel), verified
+/// 2026-10-21. Not 24 yet: its libuv refuses a Unix socket path longer than macOS's 104 bytes (`listen EINVAL`), and
+/// srt puts its proxy socket in the server's scratch TMPDIR, which is longer than that under the macOS data folder.
 pub const NODE: Pinned = Pinned {
     title: "Node.js",
     name: "node",
-    version: "24.22.1",
+    version: "22.23.4",
     sources: &[
         "https://nodejs.org/dist/v{version}/{file}",
         "https://cdn.npmmirror.com/binaries/node/v{version}/{file}",
@@ -63,38 +65,38 @@ pub const NODE: Pinned = Pinned {
         Archive {
             os: "windows",
             arch: "x86_64",
-            file: "node-v24.22.1-win-x64.zip",
-            sha256: "d2046d28c2c3dcd211ac5145c0bf30e2047ef9dfb306693c8c6e2eccd8b95fa5",
+            file: "node-v22.23.4-win-x64.zip",
+            sha256: "cbc74b5e0982c9dbb41525fd8fb5dcd32fbee237863f7829072f4639a1ce5f20",
         },
         Archive {
             os: "windows",
             arch: "aarch64",
-            file: "node-v24.22.1-win-arm64.zip",
-            sha256: "a0c807319fede24c4a0d8f84564c82a619bd313b16b10c007c383c2609e99171",
+            file: "node-v22.23.4-win-arm64.zip",
+            sha256: "a8b8cd79cbbb3062435f449591d98dd63730bbbf30ce2d7cc3a6376c236cb111",
         },
         Archive {
             os: "macos",
             arch: "x86_64",
-            file: "node-v24.22.1-darwin-x64.tar.gz",
-            sha256: "d132557e7ee2b85af08b0c8c34338e65c6430f2238d01f727728ef42dc83b035",
+            file: "node-v22.23.4-darwin-x64.tar.gz",
+            sha256: "efcc2b0db6f94bf53eddb038fe2b370277a042bd29e4f19b8f8e23598795b819",
         },
         Archive {
             os: "macos",
             arch: "aarch64",
-            file: "node-v24.22.1-darwin-arm64.tar.gz",
-            sha256: "89c682593d76cd44233fa53b1563264e7de9cbb189cad169135c5b4fadfbc0a7",
+            file: "node-v22.23.4-darwin-arm64.tar.gz",
+            sha256: "c9e1dbc748b33ed2d14f42445191ecaf14c56259c7a9a26d0042c49ec2b66428",
         },
         Archive {
             os: "linux",
             arch: "x86_64",
-            file: "node-v24.22.1-linux-x64.tar.gz",
-            sha256: "eb6728e77c576a35162c122c45ccadf224d89ff00abc8dae46cc2897c6002d7c",
+            file: "node-v22.23.4-linux-x64.tar.gz",
+            sha256: "b8492284c76a54baf58d61668dd0e41ee0fc98adabf9503d30f05d08f55b4406",
         },
         Archive {
             os: "linux",
             arch: "aarch64",
-            file: "node-v24.22.1-linux-arm64.tar.gz",
-            sha256: "33c37be234ba8bee041961047b19160f4d7d0f164e8e246f78bdd10feff148b3",
+            file: "node-v22.23.4-linux-arm64.tar.gz",
+            sha256: "f7a1e486dbc8b286847815b477d4fb5e9fb963ed4489c3e1588853d685f589f9",
         },
     ],
     bin_windows: "",
@@ -174,7 +176,7 @@ impl Pinned {
             .find(|a| a.os == std::env::consts::OS && a.arch == std::env::consts::ARCH)
     }
 
-    /// `node-24.22.1`: the runtime's folder under the runtimes root.
+    /// `node-22.23.4`: the runtime's folder under the runtimes root.
     pub fn folder(&self) -> String {
         format!("{}-{}", self.name, self.version)
     }
@@ -323,10 +325,14 @@ fn agent() -> ureq::Agent {
         .timeout_connect(Some(Duration::from_secs(15)))
         .timeout_recv_response(Some(Duration::from_secs(30)))
         .timeout_global(Some(Duration::from_secs(30 * 60)));
+    // The system's TLS with the system's roots (Windows' store, as every program on the PC): ureq's default with
+    // native-tls is Mozilla's list only, and Schannel then rejects nodejs.org's chain ("unable to find any
+    // user-specified roots in the final cert chain", hosted Windows runner).
     #[cfg(feature = "native-tls")]
     let config = config.tls_config(
         ureq::tls::TlsConfig::builder()
             .provider(ureq::tls::TlsProvider::NativeTls)
+            .root_certs(ureq::tls::RootCerts::PlatformVerifier)
             .build(),
     );
     #[cfg(all(feature = "rustls", not(feature = "native-tls")))]
@@ -426,7 +432,7 @@ fn unpack(archive: &Path, name: &str, into: &Path) -> Result<(), String> {
     }
 }
 
-/// The one folder an archive unpacked into (`node-v24.22.1-win-x64/`), when that is all there is.
+/// The one folder an archive unpacked into (`node-v22.23.4-win-x64/`), when that is all there is.
 fn single_folder(dir: &Path) -> Option<PathBuf> {
     let mut entries = std::fs::read_dir(dir).ok()?.flatten();
     let first = entries.next()?;
