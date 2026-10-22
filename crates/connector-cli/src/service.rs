@@ -32,7 +32,13 @@ fn state_path(data: &Path) -> PathBuf {
 }
 
 /// `agentrouter service …`; `dirs`, `read_only`, `full`, `yes_servers` are `install`'s.
-pub fn cmd(sub: Option<&str>, dirs: &[String], read_only: bool, full: bool, yes_servers: bool) -> i32 {
+pub fn cmd(
+    sub: Option<&str>,
+    dirs: &[String],
+    read_only: bool,
+    full: bool,
+    yes_servers: bool,
+) -> i32 {
     match sub {
         Some("install") => install(dirs, read_only, full, yes_servers),
         Some("uninstall") => uninstall(),
@@ -444,11 +450,8 @@ mod os {
             std::fs::create_dir_all(dir).map_err(|e| format!("{}：{e}", dir.display()))?;
         }
         let log = data.join("service.log");
-        std::fs::write(
-            &path,
-            def::launch_agent(LABEL, exe, &log.to_string_lossy()),
-        )
-        .map_err(|e| format!("{}：{e}", path.display()))?;
+        std::fs::write(&path, def::launch_agent(LABEL, exe, &log.to_string_lossy()))
+            .map_err(|e| format!("{}：{e}", path.display()))?;
         let target = format!("{}/{LABEL}", domain());
         // A loaded one is replaced, so the new folders apply.
         let _ = tool("launchctl", &["bootout", &target]);
@@ -484,7 +487,8 @@ mod os {
     pub const LOG_HINT: &str = "它自己的窗口里最后几行（关掉窗口就停了）";
 
     fn user() -> Result<String, String> {
-        let name = std::env::var("USERNAME").map_err(|_| "看不到当前用户名（USERNAME）".to_string())?;
+        let name =
+            std::env::var("USERNAME").map_err(|_| "看不到当前用户名（USERNAME）".to_string())?;
         Ok(match std::env::var("USERDOMAIN") {
             Ok(domain) if !domain.is_empty() => format!("{domain}\\{name}"),
             _ => name,
@@ -498,7 +502,14 @@ mod os {
             .map_err(|e| format!("{}：{e}", file.display()))?;
         let created = tool(
             "schtasks",
-            &["/Create", "/TN", TASK, "/XML", &file.to_string_lossy(), "/F"],
+            &[
+                "/Create",
+                "/TN",
+                TASK,
+                "/XML",
+                &file.to_string_lossy(),
+                "/F",
+            ],
         );
         let _ = std::fs::remove_file(&file);
         created?;
@@ -540,13 +551,23 @@ mod tests {
 
     #[test]
     fn plist_and_task_escape_paths_and_run_only_service_run() {
-        let plist = launch_agent("top.agentrouter.link", "/Users/a&b/agentrouter", "/tmp/l<og");
+        let plist = launch_agent(
+            "top.agentrouter.link",
+            "/Users/a&b/agentrouter",
+            "/tmp/l<og",
+        );
         assert!(plist.contains("<string>/Users/a&amp;b/agentrouter</string><string>service</string><string>run</string>"));
         assert!(plist.contains("<key>Crashed</key><true/>") && plist.contains("/tmp/l&lt;og"));
-        let task = task_xml(r"PC\Ann & Bo", r"C:\Program Files\AgentRouter\agentrouter.exe");
+        let task = task_xml(
+            r"PC\Ann & Bo",
+            r"C:\Program Files\AgentRouter\agentrouter.exe",
+        );
         assert!(task.contains(r"<UserId>PC\Ann &amp; Bo</UserId>"));
         assert!(task.contains(r"<Command>C:\Program Files\AgentRouter\agentrouter.exe</Command><Arguments>service run</Arguments>"));
-        assert!(task.contains("<RunLevel>LeastPrivilege</RunLevel>") && task.contains("<LogonType>InteractiveToken</LogonType>"));
+        assert!(
+            task.contains("<RunLevel>LeastPrivilege</RunLevel>")
+                && task.contains("<LogonType>InteractiveToken</LogonType>")
+        );
         let bytes = utf16le("<a/>");
         assert_eq!(&bytes[..4], &[0xFF, 0xFE, b'<', 0]);
     }
