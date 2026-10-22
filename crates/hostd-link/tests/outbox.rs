@@ -98,7 +98,7 @@ where
 async fn offline_entries_flush_in_order_and_leave_only_after_the_ack() {
     let mut r = [0u8; 6];
     getrandom::fill(&mut r).unwrap();
-    let dir = std::env::temp_dir().join(format!(
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!(
         "ar-outbox-link-{}",
         r.iter().map(|b| format!("{b:02x}")).collect::<String>()
     ));
