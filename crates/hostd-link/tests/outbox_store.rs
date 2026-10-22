@@ -158,3 +158,43 @@ fn batches_stay_within_their_limits() {
     assert_eq!(next["items"][0]["seq"], BATCH_ITEMS as u64 + 1);
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
+
+#[test]
+fn a_feed_key_is_written_once_and_a_refusal_leaves_it_unseen() {
+    let path = tmp("seen");
+    const LINK: &str = "lnk_0123456789abcdef0123456789abcdef";
+    let outbox = Outbox::open(&path, LINK, 600).unwrap();
+    let row = |key: &str, size: usize| NewEvent {
+        space: "spc_1".into(),
+        instance: Some("ins_1".into()),
+        event: "feed.new".into(),
+        payload: json!({"id": key, "text": "x".repeat(size)}),
+        key: Some(format!("f:{key}")),
+        cause: None,
+    };
+    assert_eq!(
+        outbox.append_new("spc_1/f", &row("1", 10)).unwrap(),
+        Some(1)
+    );
+    assert_eq!(outbox.append_new("spc_1/f", &row("1", 10)).unwrap(), None);
+    assert_eq!(
+        outbox.append_new("spc_1/g", &row("1", 10)).unwrap(),
+        Some(2)
+    );
+    // Past the cap: refused, and the key stays unseen so the next poll writes it.
+    let full = outbox.append_new("spc_1/f", &row("2", 700)).unwrap_err();
+    assert_eq!(full.code, "OUTBOX_FULL");
+    assert_eq!(outbox.seen_count("spc_1/f"), 1);
+    assert_eq!(outbox.status().pending, 2);
+    // The seen-set survives a reopen.
+    drop(outbox);
+    let outbox = Outbox::open(&path, LINK, 600).unwrap();
+    assert_eq!(outbox.append_new("spc_1/f", &row("1", 10)).unwrap(), None);
+    outbox.ack(2, &[]);
+    assert_eq!(
+        outbox.append_new("spc_1/f", &row("2", 10)).unwrap(),
+        Some(3)
+    );
+    outbox.forget("spc_1/f");
+    assert_eq!(outbox.seen_count("spc_1/f"), 0);
+}

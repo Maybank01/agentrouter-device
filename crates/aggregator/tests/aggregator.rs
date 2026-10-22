@@ -229,6 +229,7 @@ async fn the_protocol_gate_audit_and_no_unconfined_fallback() {
             "link__server_logs",
             "link__folder_add",
             "link__limits",
+            "link__feeds",
             "link__package_put"
         ]
     );

@@ -51,6 +51,7 @@ mod tests {
         "BUN_INSTALL_CACHE_DIR",
         "CI",
         "CLAUDE_CODE_TMPDIR",
+        "COMMIT", // SQL (hostd-link outbox transaction)
         "COMPUTERNAME",
         "COREPACK_HOME",
         "CSV",
@@ -76,6 +77,7 @@ mod tests {
         "PWD",
         "PYTHONIOENCODING",
         "PYTHONUTF8",
+        "ROLLBACK", // SQL (hostd-link outbox transaction)
         "RUSTUP_HOME",
         "SHELL",
         "SHLVL",
