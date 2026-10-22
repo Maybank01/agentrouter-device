@@ -19,7 +19,7 @@
 //! away from capability-bearing namespaces, and a profile naming a path under the home folder would hand that to
 //! anything that drops a file there.
 //!
-//! `sudo agentrouter sandbox userns install` sets it up ([`install`]; idempotent) and `… userns remove` undoes it
+//! `sudo agentrouter computer userns install` sets it up ([`install`]; idempotent) and `… userns remove` undoes it
 //! ([`remove`]). [`crate::Runtime::status`] names the line ([`admin_line`]) when the restriction is on and the copy or
 //! the profile is missing.
 
@@ -105,7 +105,7 @@ pub fn admin_line(action: &str) -> String {
         .ok()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|| "agentrouter".into());
-    format!("sudo {} sandbox userns {action}", shell_word(&exe))
+    format!("sudo {} computer userns {action}", shell_word(&exe))
 }
 
 /// `word` as one shell word (single quotes when it holds anything but plain path characters).
@@ -190,7 +190,7 @@ fn set_mode(_: &Path, _: u32) -> Result<(), String> {
     Ok(())
 }
 
-/// `sudo agentrouter sandbox userns install`: the pinned bubblewrap, root-owned under [`ROOT`] (downloaded and checked
+/// `sudo agentrouter computer userns install`: the pinned bubblewrap, root-owned under [`ROOT`] (downloaded and checked
 /// against its pinned SHA-256 as `sandbox setup` does; an older pin's folder is removed), [`PROFILE_FILE`], and the
 /// profile loaded (`apparmor_parser --replace`). Idempotent: run again, it changes nothing and loads the profile again.
 pub fn install() -> Result<Vec<String>, String> {
@@ -237,7 +237,7 @@ pub fn install() -> Result<Vec<String>, String> {
     Ok(done)
 }
 
-/// `sudo agentrouter sandbox userns remove`: unloads and deletes the profile and deletes [`ROOT`]. Folder mode then
+/// `sudo agentrouter computer userns remove`: unloads and deletes the profile and deletes [`ROOT`]. Folder mode then
 /// asks for [`install`] again wherever the restriction is on.
 pub fn remove() -> Result<Vec<String>, String> {
     if !is_root() {
@@ -320,6 +320,6 @@ mod tests {
             line.starts_with("sudo /") || line.starts_with("sudo '/"),
             "{line}"
         );
-        assert!(line.ends_with(" sandbox userns install"));
+        assert!(line.ends_with(" computer userns install"));
     }
 }

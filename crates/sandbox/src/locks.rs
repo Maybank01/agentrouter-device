@@ -538,7 +538,7 @@ impl Runtime {
             let (ok, said) = one(source, (!last).then_some(OFFICIAL_BOUND)).map_err(|e| Unavailable {
                 code: INSTALL_FAILED,
                 message: format!("{what}：{e}"),
-                next: "AgentRouter 自己的 Node.js 或 uv 起不来：请用户运行 agentrouter sandbox setup 后再装。".into(),
+                next: "AgentRouter 自己的 Node.js 或 uv 起不来：请用户运行 agentrouter computer setup 后再装。".into(),
             })?;
             if ok {
                 return Ok(source.clone());
@@ -585,7 +585,7 @@ impl Runtime {
         let node = self.node().map_err(|e| Unavailable {
             code: INSTALL_FAILED,
             message: e,
-            next: "请用户运行 agentrouter sandbox setup 后再装。".into(),
+            next: "请用户运行 agentrouter computer setup 后再装。".into(),
         })?;
         let npm = self.npm_cli();
         let log = dir.join("install.log");
@@ -613,7 +613,7 @@ impl Runtime {
             .ok_or_else(|| Unavailable {
                 code: INSTALL_FAILED,
                 message: format!("装 {}@{} 要用的 uv 还没准备好", lock.package, lock.version),
-                next: "请用户运行 agentrouter sandbox setup 后再装。".into(),
+                next: "请用户运行 agentrouter computer setup 后再装。".into(),
             })?;
         let python = lock.file(".python-version").trim().to_string();
         let log = dir.join("install.log");
@@ -651,7 +651,7 @@ impl Runtime {
                 return Err(Unavailable {
                     code: INSTALL_FAILED,
                     message: format!("uv venv（Python {python}）没建成：{said}"),
-                    next: "请用户运行 agentrouter sandbox setup 后再装；还不行就把原因告诉用户。"
+                    next: "请用户运行 agentrouter computer setup 后再装；还不行就把原因告诉用户。"
                         .into(),
                 });
             }

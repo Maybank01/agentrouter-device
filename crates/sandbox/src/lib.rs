@@ -66,7 +66,7 @@ pub const WINDOWS_PROXY_PORTS: (u16, u16) = (60080, 60143);
 /// The error code a call gets when its server cannot be confined (never run unconfined instead).
 pub const UNAVAILABLE: &str = "SANDBOX_UNAVAILABLE";
 /// The sandbox needs a one-time change only the computer's administrator can make (a system package such as
-/// bubblewrap, or a kernel setting): `agentrouter sandbox setup` cannot help, the person runs the one line in `next`
+/// bubblewrap, or a kernel setting): `agentrouter computer setup` cannot help, the person runs the one line in `next`
 /// (Cloud error catalog).
 pub const NEEDS_ADMIN: &str = "HOSTD_SANDBOX_NEEDS_ADMIN";
 
@@ -121,7 +121,7 @@ pub const PRIVATE_RANGES: &[&str] = &[
 /// Why a server cannot be started confined, and what the person can do about it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unavailable {
-    /// [`UNAVAILABLE`] (`agentrouter sandbox setup` fixes it) or [`NEEDS_ADMIN`] (only the line in `next` does).
+    /// [`UNAVAILABLE`] (`agentrouter computer setup` fixes it) or [`NEEDS_ADMIN`] (only the line in `next` does).
     pub code: &'static str,
     pub message: String,
     pub next: String,
@@ -145,7 +145,7 @@ impl Unavailable {
         }
     }
 
-    /// `agentrouter sandbox setup` can fix it (it cannot install system packages or change kernel settings).
+    /// `agentrouter computer setup` can fix it (it cannot install system packages or change kernel settings).
     pub fn setup_helps(&self) -> bool {
         self.code != NEEDS_ADMIN
     }
@@ -191,7 +191,7 @@ fn userns_needs_admin(detail: Option<&str>) -> Unavailable {
 
 #[cfg_attr(not(windows), allow(dead_code))]
 const NEXT_PROFILE_BUSY: &str = "等那次设置完成（用户文件夹大时要几分钟）再试，不用再运行 setup。";
-const NEXT_SETUP: &str = "请用户在这台电脑上运行 agentrouter sandbox setup（装好隔离环境；Windows 会弹一次管理员确认），然后再试。";
+const NEXT_SETUP: &str = "请用户在这台电脑上运行 agentrouter computer setup（装好隔离环境；Windows 会弹一次管理员确认），然后再试。";
 
 /// One process to start confined.
 #[derive(Debug, Clone)]
@@ -231,7 +231,7 @@ pub struct JobJoin<'a> {
     pub program: &'a Path,
 }
 
-/// What `agentrouter sandbox status` shows and `hello` reports.
+/// What `agentrouter computer status` shows and `hello` reports.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Status {
     /// `srt@0.0.81`.
@@ -242,7 +242,7 @@ pub struct Status {
     /// What is missing, each with what to do.
     pub problems: Vec<Unavailable>,
     /// What works less than it could, without stopping anything (Windows: loopback still closed to the sandbox, so a
-    /// command cannot reach a dev server it started; `agentrouter sandbox setup` opens it, device #139).
+    /// command cannot reach a dev server it started; `agentrouter computer setup` opens it, device #139).
     pub notes: Vec<Unavailable>,
 }
 
@@ -383,7 +383,7 @@ impl Runtime {
                 Ok(None) => {}
                 Err(e) if rt.required => return Err(e),
                 Err(e) => done.push(format!(
-                    "{} 没准备好，要用它的本机工具这次起不来；下次运行 agentrouter sandbox setup 会再试（{e}）",
+                    "{} 没准备好，要用它的本机工具这次起不来；下次运行 agentrouter computer setup 会再试（{e}）",
                     rt.title
                 )),
             }
@@ -507,7 +507,7 @@ impl Runtime {
         }
         if !failures.is_empty() {
             return Err(format!(
-                "npm ci 装 {SRT_PACKAGE}@{SRT_VERSION} 没成功（{}），网络通了以后运行 agentrouter sandbox setup 会再试",
+                "npm ci 装 {SRT_PACKAGE}@{SRT_VERSION} 没成功（{}），网络通了以后运行 agentrouter computer setup 会再试",
                 failures.join("；")
             ));
         }
@@ -528,7 +528,7 @@ impl Runtime {
         Ok(())
     }
 
-    /// `agentrouter sandbox setup`: the device's own Node.js and uv (and on Linux ripgrep and socat,
+    /// `agentrouter computer setup`: the device's own Node.js and uv (and on Linux ripgrep and socat,
     /// [`Runtime::provision`]), srt when it is missing and, on Windows, the sandbox account and its network fence (one
     /// UAC prompt, owner Q4). Returns what was done.
     pub fn setup(&self) -> Result<Vec<String>, String> {
@@ -640,7 +640,7 @@ impl Runtime {
         }
     }
 
-    /// `agentrouter sandbox remove`: the Windows account and fence (one UAC prompt) and the installed runtime.
+    /// `agentrouter computer remove`: the Windows account and fence (one UAC prompt) and the installed runtime.
     pub fn remove(&self) -> Result<Vec<String>, String> {
         let mut done = Vec::new();
         #[cfg(windows)]
@@ -690,7 +690,7 @@ impl Runtime {
                 Vec::new(),
                 vec![Unavailable::new(
                     "这台电脑的隔离环境还不让命令连本机端口，命令连不上自己起的开发服务器",
-                    "请用户在这台电脑上运行 agentrouter sandbox setup（会弹一次管理员确认），再重新链接。",
+                    "请用户在这台电脑上运行 agentrouter computer setup（会弹一次管理员确认），再重新链接。",
                 )],
             ),
             Ok(_) => (Vec::new(), Vec::new()),
@@ -784,7 +784,7 @@ impl Runtime {
                 // profile; srt starts no session meanwhile). Transient: running setup again would not help.
                 Ok((state, _)) if state == "in_progress" => {
                     return Err(Unavailable::new(
-                        "隔离账户对你用户文件夹的读取权限正在写入（这台电脑上有一次 agentrouter sandbox setup 正在运行）",
+                        "隔离账户对你用户文件夹的读取权限正在写入（这台电脑上有一次 agentrouter computer setup 正在运行）",
                         NEXT_PROFILE_BUSY,
                     ));
                 }
@@ -880,10 +880,10 @@ impl Runtime {
             // srt-win exits: 24 = sessions or commands are running (the grant is written only while none is),
             // 25 = another grant or forget is running (srt `throwIfRefusedBesideOthers`).
             Some(24) => Err(
-                "有正在运行的隔离命令，这次没改；关掉这台电脑上其他 agentrouter 链接后再运行 agentrouter sandbox setup".into(),
+                "有正在运行的隔离命令，这次没改；关掉这台电脑上其他 agentrouter 链接后再运行 agentrouter computer setup".into(),
             ),
             Some(25) => Err(format!(
-                "这台电脑上另一次 agentrouter sandbox setup 正在写入用户文件夹的读取权限，这次没改；{NEXT_PROFILE_BUSY}"
+                "这台电脑上另一次 agentrouter computer setup 正在写入用户文件夹的读取权限，这次没改；{NEXT_PROFILE_BUSY}"
             )),
             _ => Err(format!(
                 "隔离账户读不了你的用户文件夹（srt-win profile grant：{}{}）",

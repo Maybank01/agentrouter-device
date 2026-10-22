@@ -26,7 +26,7 @@ let spec;
 try {
   spec = JSON.parse(fs.readFileSync(file, 'utf8'));
 } catch (e) {
-  process.stderr.write(`agentrouter sandbox: launch file unreadable: ${e.message}\n`);
+  process.stderr.write(`agentrouter folder confinement: launch file unreadable: ${e.message}\n`);
   process.exit(126);
 }
 try {
@@ -57,7 +57,7 @@ if (spec.job) {
   // Only this exact answer is a join (another program exiting 0 is not).
   if (joined.status !== 0 || (joined.stdout || '').trim() !== 'joined') {
     const why = joined.error ? joined.error.message : `${(joined.stderr || '').trim()} (exit ${joined.status})`;
-    process.stderr.write(`agentrouter sandbox: 没能进入资源上限的作业对象，所以没有启动（device #129）：${why}\n`);
+    process.stderr.write(`agentrouter folder confinement: 没能进入资源上限的作业对象，所以没有启动（device #129）：${why}\n`);
     process.exit(124);
   }
 }
@@ -79,7 +79,7 @@ function launch(stdio) {
     child = spawn(spec.program, args, options);
   }
   child.on('error', e => {
-    process.stderr.write(`agentrouter sandbox: ${spec.program}: ${e.message}\n`);
+    process.stderr.write(`agentrouter folder confinement: ${spec.program}: ${e.message}\n`);
     process.exit(127);
   });
   for (const s of ['SIGINT', 'SIGTERM', 'SIGBREAK']) {
@@ -93,7 +93,7 @@ const status = (code, signal) => (code === null ? (signal ? 1 : 0) : code);
 if (spec.pipe) {
   const sock = net.connect(spec.pipe);
   sock.once('error', e => {
-    process.stderr.write(`agentrouter sandbox: stdio pipe: ${e.message}\n`);
+    process.stderr.write(`agentrouter folder confinement: stdio pipe: ${e.message}\n`);
     process.exit(125);
   });
   sock.once('connect', () => {

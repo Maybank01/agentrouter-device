@@ -1,7 +1,7 @@
 # bubblewrap for Linux folder mode (#122): srt confines every local server with bubblewrap. The device brings its own
 # copy, as it does socat and ripgrep (crates/sandbox/src/runtimes.rs), for two reasons:
 # - the person installs nothing;
-# - on Ubuntu, where AppArmor restricts unprivileged user namespaces, `agentrouter sandbox userns install` can give
+# - on Ubuntu, where AppArmor restricts unprivileged user namespaces, `agentrouter computer userns install` can give
 #   exactly one root-owned copy of it the `userns` permission. The packaged /usr/bin/bwrap's profile strips
 #   capabilities from its children, and srt's seccomp helper needs them for its nested namespace.
 # Upstream publishes source only, so this workflow builds it:

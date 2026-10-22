@@ -324,7 +324,7 @@ fn a_confined_process_cannot_touch_anything_outside_the_folder() {
     std::fs::write(folder.join("probe.js"), PROBE).unwrap();
 
     let rt = Runtime::new(&data);
-    let done = rt.setup().expect("agentrouter sandbox setup");
+    let done = rt.setup().expect("agentrouter computer setup");
     eprintln!("setup: {done:?}");
     let status = rt.status();
     assert!(status.ready, "sandbox not ready: {:?}", status.problems);

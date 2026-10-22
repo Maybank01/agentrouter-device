@@ -337,7 +337,7 @@ async fn the_protocol_gate_audit_and_no_unconfined_fallback() {
         preset["error"]["data"]["next"]
             .as_str()
             .unwrap()
-            .contains("agentrouter sandbox setup")
+            .contains("agentrouter computer setup")
     );
 
     // The audit has every request with its arguments (and the refusals).

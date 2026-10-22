@@ -650,7 +650,7 @@ impl Pinned {
         }
         let Some(attempt) = fetched else {
             return Err(format!(
-                "{} {}（{}）从 {} 个地址都没下载下来，网络通了以后运行 agentrouter sandbox setup 会再试（{}）",
+                "{} {}（{}）从 {} 个地址都没下载下来，网络通了以后运行 agentrouter computer setup 会再试（{}）",
                 self.title,
                 self.version,
                 archive.file,

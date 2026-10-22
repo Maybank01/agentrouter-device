@@ -604,11 +604,11 @@ anything from the folder** (no git in the folder, no hooks, no folder config).
 No fallback to "unconfined": if the sandbox is not available (setup refused, unsupported filesystem,
 Linux without user namespaces), the link still connects, `tools/list` contains only `link__*`, and every
 call answers `SANDBOX_UNAVAILABLE` with a `next` that tells the person what to run
-(`agentrouter sandbox setup`).
+(`agentrouter computer setup`).
 
 ### 6.3 Per OS notes
 
-- **Windows:** first `link` runs `agentrouter sandbox setup` (one UAC prompt: create the `srt` sandbox
+- **Windows:** first `link` runs `agentrouter computer setup` (one UAC prompt: create the `srt` sandbox
   account and WFP filters). Setup then makes two read grants without elevation (device #66):
   - srt's **profile read grant** (`srt-win profile grant`, srt ≥ 0.0.81). The profile becomes readable to the
     account except srt's built-in credential stores (keys, browser and password-manager data, registry
@@ -624,7 +624,7 @@ call answers `SANDBOX_UNAVAILABLE` with a `next` that tells the person what to r
   as a whole.
 
   Every start checks both. A later `sandbox setup` refreshes the profile grant, so items created
-  since the last run become readable. `agentrouter sandbox remove` (`srt-win uninstall`) removes the
+  since the last run become readable. `agentrouter computer remove` (`srt-win uninstall`) removes the
   grant. FAT/exFAT folders and network shares cannot carry ACEs: `SANDBOX_UNAVAILABLE` for them.
 
   **Stdio (device #112).** srt-win gives a sandboxed child an empty stdin by design (upstream R14: the
@@ -651,12 +651,12 @@ call answers `SANDBOX_UNAVAILABLE` with a `next` that tells the person what to r
   deny capability`). srt's seccomp helper (`apply-seccomp`) runs inside bubblewrap and makes a nested namespace, so it
   fails with `setgroups: Permission denied`. The coordinator decided on least privilege: no global sysctl, and the
   seccomp layer stays on. The device therefore lifts the restriction for one program only:
-  - `sudo agentrouter sandbox userns install` puts a **root-owned** copy of the pinned bubblewrap at
+  - `sudo agentrouter computer userns install` puts a **root-owned** copy of the pinned bubblewrap at
     `/usr/local/libexec/agentrouter/bwrap-<version>/bwrap`. It is downloaded and checked like `sandbox setup` does.
   - It writes `/etc/apparmor.d/agentrouter-bwrap` in the pattern of Ubuntu's own per-application profiles:
     `abi <abi/4.0>`, `flags=(unconfined)`, `userns,`, attached to that exact path, nothing else. Then it loads the
     profile with `apparmor_parser --replace`. The apparmor service loads it again at boot.
-  - It is idempotent. `sudo agentrouter sandbox userns remove` unloads and deletes both.
+  - It is idempotent. `sudo agentrouter computer userns remove` unloads and deletes both.
   - Everything bubblewrap starts inherits the profile: srt's relay, `apply-seccomp`, and the command. The command runs
     under the helper's filter, which refuses new user namespaces, so the grant ends at the helper.
   - The grant never names a path the person's processes can write. A profile on a home-folder path would hand
@@ -938,7 +938,7 @@ those count as custom and need the local `y`.
 
 | # | Phase | Repo · module | Task |
 | --- | --- | --- | --- |
-| 1 | 1 Security base | device · `sandbox` (new crate) | Sandbox launcher on `srt` (pinned, digest-checked), policy from §6.1, `agentrouter sandbox setup/status/remove`; today's `mcp.rs` spawns every server through it; no-sandbox = refuse |
+| 1 | 1 Security base | device · `sandbox` (new crate) | Sandbox launcher on `srt` (pinned, digest-checked), policy from §6.1, `agentrouter computer setup/status/remove`; today's `mcp.rs` spawns every server through it; no-sandbox = refuse |
 | 2 | 1 | device · `connector-cli` + `mcp.rs` | Remove `AGENTROUTER_CONSENT` and cloud-supplied consent; strip reserved env names from `mcp_start.env` |
 | 3 | 1 | device · `audit` | Argument-level append-only audit (§7.1) incl. server command lines, redaction, `audit` / `audit verify` |
 | 4 | 2 Link | device · `hostd-link` (formerly `linker`; new crate from `net.rs`) | `/device/v2/link`, `hello v2` with `lnk_`, envelope `{s, m}`, reconnect/heartbeat, `audit_head`; no capabilities |

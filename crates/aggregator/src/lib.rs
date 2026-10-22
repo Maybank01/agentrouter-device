@@ -1570,7 +1570,7 @@ impl Inner {
                 "RUNTIME_MISSING",
                 format!("这台电脑上找不到 {}", def.command),
             )
-            .next("npx 和 uvx 由 AgentRouter 自己准备：请用户运行 agentrouter sandbox setup 后再试；其他程序要这台电脑上装着，或换一个工具。"));
+            .next("npx 和 uvx 由 AgentRouter 自己准备：请用户运行 agentrouter computer setup 后再试；其他程序要这台电脑上装着，或换一个工具。"));
         }
         if let Some(old) = existing {
             old.stop.cancel();
