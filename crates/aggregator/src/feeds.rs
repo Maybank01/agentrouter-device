@@ -1,7 +1,7 @@
 //! The feed runner (Cloud PROJECT-SERVICE §9.8.5, SPACE-STRUCTURE §2.6, Cloud #2739 step 2): generic for any MCP server.
 //!
 //! A space whose runtime runs an MCP server (`runtime.program`) declares `feeds:` beside it — which tool to call, how
-//! often, the dedupe key, the declared event each new item raises, and which error codes mean "back off". The platform
+//! often, the dedupe key, the table each new item becomes a row of, and which error codes mean "back off". The platform
 //! checks them at submit and sends the runtime instance's feeds to the host that runs it (`link__feeds`, signed like
 //! every call). This runner then, per feed:
 //!
@@ -9,7 +9,7 @@
 //! 2. takes the items: `structuredContent` (at `items` when given, else the result itself must be the list), or JSON
 //!    inside a text result found by the declared `extract.json` path; anything else is `FEED_OUTPUT_UNSTRUCTURED` —
 //!    prose is never parsed;
-//! 3. keeps of each item the fields the event declares (`payload`; a number for a `text` field becomes its text) and
+//! 3. keeps of each item the columns of its table (`columns`; a number for a `text` column becomes its text) and
 //!    writes every item whose `key` this feed has not seen into the host's outbox — the key is marked seen in the same
 //!    transaction, persisted, so a restart never sends a row twice (the Space Server's dedupe stays authoritative);
 //! 4. backs off: an error carrying a code of `backoff.on` (an HTTP status, a JSON-RPC code or the server's own code;
@@ -17,7 +17,8 @@
 //!    (the feed's `every`, doubled per failure, at most an hour beyond it); a full outbox pauses polling until it drains.
 //!
 //! The status of every feed is in `link__servers` (`feeds`) and in the answer of `link__feeds`. Rows go into the
-//! space's table once the tables engine lands (`into`); until then the event payload carries the row.
+//! space's table (`into`): the platform upserts them by the table's key and the space raises `<table>.inserted|updated`
+//! once per row when they land — a feed raises no event of its own (Cloud #2739, tables engine #2762).
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -40,7 +41,7 @@ const CALL_WAIT: Duration = Duration::from_secs(120);
 /// How soon a paused feed looks again (its server not running yet, a full outbox).
 const RECHECK: Duration = Duration::from_secs(30);
 
-/// One feed as the Space Server describes it (`describe.feeds[]`) plus the payload fields of its event.
+/// One feed as the Space Server describes it (`describe.feeds[]`) plus the columns of its table.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FeedSpec {
     pub name: String,
@@ -50,10 +51,10 @@ pub struct FeedSpec {
     pub key: String,
     pub items: Option<String>,
     pub extract_json: Option<String>,
+    /// The space's table the items become rows of (the table raises `<table>.inserted|updated` when they land).
     pub into: String,
-    pub event: String,
-    /// The event's declared payload: field → type (`text`, `number`, …).
-    pub payload: BTreeMap<String, String>,
+    /// The table's columns: name → type (`text`, `number`, …); an item keeps only these.
+    pub columns: BTreeMap<String, String>,
     pub backoff_on: Vec<Value>,
     pub backoff_wait: Duration,
 }
@@ -73,8 +74,9 @@ pub struct RuntimeFeeds {
 pub struct FeedRow {
     pub space: String,
     pub instance: String,
-    pub event: String,
-    /// `<feed>:<item key>`: the source key of the event's provenance (the Space Server dedupes by it).
+    /// The table it is a row of (the feed's `into`).
+    pub table: String,
+    /// `<feed>:<item key>`: the row's source key (this host's seen-set dedupes by it; the table upserts by its own key).
     pub key: String,
     pub payload: Value,
     /// What led to it: the feed's tool call (`feed:<instance>/<feed>@<ms>`).
@@ -195,21 +197,20 @@ impl FeedSpec {
         };
         let items = path("items", v.get("items"))?;
         let extract_json = path("extract.json", v.get("extract").and_then(|e| e.get("json")))?;
-        let into = text(v, "into", 80, &w)?.to_string();
-        let event = text(v, "event", 120, &w)?.to_string();
-        let payload: BTreeMap<String, String> = v
-            .get("payload")
+        let into = text(v, "into", 64, &w)?.to_string();
+        let columns: BTreeMap<String, String> = v
+            .get("columns")
             .and_then(Value::as_object)
             .map(|m| {
                 m.iter()
                     .map(|(k, t)| (k.clone(), t.as_str().unwrap_or("text").to_string()))
                     .collect()
             })
-            .ok_or_else(|| invalid(format!("{w}: payload lists the fields {event} declares")))?;
-        if !payload.contains_key(&key) {
+            .ok_or_else(|| invalid(format!("{w}: columns lists the columns of table {into}")))?;
+        if !columns.contains_key(&key) {
             return Err(invalid(format!(
-                "{w}: key {key} is not a field of {event}'s payload ({})",
-                payload.keys().cloned().collect::<Vec<_>>().join(", ")
+                "{w}: key {key} is not a column of table {into} ({})",
+                columns.keys().cloned().collect::<Vec<_>>().join(", ")
             )));
         }
         let (backoff_on, backoff_wait) = match v.get("backoff") {
@@ -240,8 +241,7 @@ impl FeedSpec {
             items,
             extract_json,
             into,
-            event,
-            payload,
+            columns,
             backoff_on,
             backoff_wait,
         })
@@ -413,7 +413,7 @@ pub fn items_of(result: &CallToolResult, spec: &FeedSpec) -> Result<Vec<Value>, 
     }
 }
 
-/// An item as the event's payload: its declared fields only (a number or a boolean for a `text` field becomes its
+/// An item as a row: its table's columns only (a number or a boolean for a `text` field becomes its
 /// text); its key as text. None when the key is missing.
 pub fn row_of(item: &Value, spec: &FeedSpec) -> Option<(String, Value)> {
     let obj = item.as_object()?;
@@ -423,7 +423,7 @@ pub fn row_of(item: &Value, spec: &FeedSpec) -> Option<(String, Value)> {
         _ => return None,
     };
     let mut payload = Map::new();
-    for (field, ty) in &spec.payload {
+    for (field, ty) in &spec.columns {
         let Some(v) = obj.get(field) else { continue };
         let v = match (ty.as_str(), v) {
             ("text", Value::Number(n)) => Value::String(n.to_string()),
@@ -453,7 +453,7 @@ struct FeedStatus {
 impl FeedStatus {
     fn view(&self, name: &str, spec: &FeedSpec) -> Value {
         json!({
-            "name": name, "tool": spec.tool, "event": spec.event, "into": spec.into, "everyMs": spec.every.as_millis() as u64,
+            "name": name, "tool": spec.tool, "into": spec.into, "everyMs": spec.every.as_millis() as u64,
             "state": self.state, "at": self.at, "nextAt": self.next_at, "until": self.until, "lastOkAt": self.last_ok,
             "runs": self.runs, "written": self.written, "lastWritten": self.last_written, "skipped": self.skipped,
             "error": self.error.as_ref().map(|(code, message)| json!({"code": code, "message": message})),
@@ -557,7 +557,7 @@ pub(crate) fn set(inner: &Arc<Inner>, args: &Value) -> Result<Value, Failure> {
         ));
     }
     inner.record(json!({"kind": "feeds", "event": "set", "link": inner.cfg.link, "instance": spec.instance, "space": spec.space, "server": spec.server,
-                        "feeds": spec.feeds.iter().map(|f| json!({"name": f.name, "tool": f.tool, "everyMs": f.every.as_millis() as u64, "event": f.event})).collect::<Vec<_>>()}));
+                        "feeds": spec.feeds.iter().map(|f| json!({"name": f.name, "tool": f.tool, "everyMs": f.every.as_millis() as u64, "into": f.into})).collect::<Vec<_>>()}));
     let r = Running { spec, stop, status };
     let view = r.view();
     running.insert(r.spec.instance.clone(), r);
@@ -652,7 +652,7 @@ async fn poll(
         let row = FeedRow {
             space: rt.space.clone(),
             instance: rt.instance.clone(),
-            event: feed.event.clone(),
+            table: feed.into.clone(),
             key: format!("{}:{key}", feed.name),
             payload,
             cause: cause.clone(),
@@ -785,7 +785,7 @@ mod tests {
     fn spec() -> FeedSpec {
         FeedSpec::parse(&json!({
             "name": "关注动态", "tool": "get_following_feed", "everyMs": 900_000, "key": "id", "items": "$.items",
-            "into": "feed", "event": "feed.new", "payload": {"id": "text", "title": "text"},
+            "into": "feed", "columns": {"id": "text", "title": "text"},
             "backoff": {"on": [412, 429, "RATE_LIMITED"], "waitMs": 1_800_000}
         }))
         .unwrap()
@@ -860,10 +860,10 @@ mod tests {
 
     #[test]
     fn invalid_feeds_are_refused_naming_the_field() {
-        let e = FeedSpec::parse(&json!({"name": "a", "tool": "t", "everyMs": 1000, "key": "id", "into": "x", "event": "e.x", "payload": {"id": "text"}})).unwrap_err();
+        let e = FeedSpec::parse(&json!({"name": "a", "tool": "t", "everyMs": 1000, "key": "id", "into": "x", "columns": {"id": "text"}})).unwrap_err();
         assert_eq!(e.code, "FEED_INVALID");
         assert!(e.message.contains("every"));
-        let e = FeedSpec::parse(&json!({"name": "a", "tool": "t", "everyMs": 60000, "key": "id", "into": "x", "event": "e.x", "payload": {"title": "text"}})).unwrap_err();
+        let e = FeedSpec::parse(&json!({"name": "a", "tool": "t", "everyMs": 60000, "key": "id", "into": "x", "columns": {"title": "text"}})).unwrap_err();
         assert!(e.message.contains("key id"), "{}", e.message);
     }
 }

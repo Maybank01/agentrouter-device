@@ -1924,17 +1924,17 @@ pub fn link_tools() -> Vec<Tool> {
         ),
         tool(
             "link__feeds",
-            "Platform only: set the feeds of a space's runtime instance on this computer (Cloud PROJECT-SERVICE §9.8.5). Each feed calls a tool of the named local server on its timer and writes new items (by key) into this computer's event outbox as the declared event. feeds: [] stops them. The answer is each feed's status (also in link__servers).",
+            "Platform only: set the feeds of a space's runtime instance on this computer (Cloud PROJECT-SERVICE §9.8.5). Each feed calls a tool of the named local server on its timer and writes new items (by key) into this computer's event outbox as rows of the space's table `into` (only its `columns`); the space raises <table>.inserted|updated when they land. feeds: [] stops them. The answer is each feed's status (also in link__servers).",
             json!({"type": "object", "properties": {
                 "instance": {"type": "string"}, "space": {"type": "string"}, "server": {"type": "string"},
                 "feeds": {"type": "array", "items": {"type": "object", "properties": {
                     "name": {"type": "string"}, "tool": {"type": "string"}, "args": {"type": "object"},
                     "everyMs": {"type": "integer"}, "key": {"type": "string"}, "items": {"type": "string"},
                     "extract": {"type": "object", "properties": {"json": {"type": "string"}}},
-                    "into": {"type": "string"}, "event": {"type": "string"},
-                    "payload": {"type": "object", "additionalProperties": {"type": "string"}},
+                    "into": {"type": "string"},
+                    "columns": {"type": "object", "additionalProperties": {"type": "string"}},
                     "backoff": {"type": "object", "properties": {"on": {"type": "array"}, "waitMs": {"type": "integer"}}}
-                }, "required": ["name", "tool", "everyMs", "key", "into", "event", "payload"]}}
+                }, "required": ["name", "tool", "everyMs", "key", "into", "columns"]}}
             }, "required": ["instance", "space", "server", "feeds"]}),
             false,
         ),

@@ -1,5 +1,5 @@
 //! The feed runner end to end against a real stdio MCP server (Node, no dependencies; unconfined in 完全访问, so no
-//! sandbox is needed): items from `structuredContent` become events in the sink with the declared fields only, a key
+//! sandbox is needed): items from `structuredContent` become rows of the feed's table in the sink with its columns only, a key
 //! seen before is not written again, an error carrying a declared back-off code pauses that feed (Cloud #2739 step 2).
 
 use std::collections::BTreeSet;
@@ -127,9 +127,9 @@ async fn a_feed_writes_new_items_once_and_backs_off_on_declared_codes() {
     let answer = agg
         .set_feeds(&json!({"instance": "ins_1", "space": "spc_1", "server": "feeder", "feeds": [
             {"name": "关注动态", "tool": "following", "everyMs": 900_000, "key": "id", "items": "$.items", "into": "feed",
-             "event": "feed.new", "payload": {"id": "text", "title": "text"}},
-            {"name": "风控", "tool": "blocked", "everyMs": 60_000, "key": "id", "into": "feed", "event": "feed.new",
-             "payload": {"id": "text"}, "backoff": {"on": [412], "waitMs": 1_800_000}}
+             "columns": {"id": "text", "title": "text"}},
+            {"name": "风控", "tool": "blocked", "everyMs": 60_000, "key": "id", "into": "feed",
+             "columns": {"id": "text"}, "backoff": {"on": [412], "waitMs": 1_800_000}}
         ]}))
         .expect("the feeds are taken");
     assert_eq!(answer["instance"], "ins_1");
@@ -152,7 +152,7 @@ async fn a_feed_writes_new_items_once_and_backs_off_on_declared_codes() {
     let rows = sink.rows.lock().unwrap().clone();
     assert_eq!(rows.len(), 1, "only the unseen item with a key: {rows:?}");
     assert_eq!(rows[0].key, "关注动态:2");
-    assert_eq!(rows[0].event, "feed.new");
+    assert_eq!(rows[0].table, "feed");
     assert_eq!(rows[0].instance, "ins_1");
     assert_eq!(rows[0].payload, json!({"id": "2", "title": "new"}));
     assert!(rows[0].cause.starts_with("feed:ins_1/关注动态@"));
