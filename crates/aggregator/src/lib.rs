@@ -59,6 +59,8 @@ pub const SESSION_GRACE: Duration = Duration::from_secs(120);
 pub const RESULT_MAX: usize = 7 << 20;
 const CALL_DEFAULT: Duration = Duration::from_secs(600);
 const CALL_MAX: Duration = Duration::from_secs(1800);
+/// How long a login started with `link__login` waits for the person to scan (a QR lives about 3 minutes).
+const LOGIN_WAIT: Duration = Duration::from_secs(180);
 /// Without a turn id from the cloud, calls this far apart are different turns (a new checkpoint).
 const TURN_GAP: Duration = Duration::from_secs(60);
 /// `_meta` keys the control plane may add (unsigned, display and pacing only).
@@ -128,6 +130,12 @@ pub enum Feed {
         title: String,
         event: String,
         detail: Option<String>,
+    },
+    /// A login on this computer (`link__login`): the address to scan or open. Shown on this computer only.
+    Login {
+        name: String,
+        title: String,
+        url: String,
     },
 }
 
@@ -953,7 +961,7 @@ impl Inner {
     fn redacted_for(&self, server: &str, arguments: &Value) -> Value {
         let mut a = arguments.clone();
         if let Some(srv) = self.servers.lock().unwrap().get(server) {
-            servers::redact_value(&mut a, &srv.def.secrets());
+            servers::redact_value(&mut a, &srv.secrets());
         }
         a
     }
@@ -1245,6 +1253,9 @@ impl Inner {
                 continue;
             }
             for t in server.tools.lock().unwrap().iter() {
+                if server.host_only(&t.name) {
+                    continue;
+                }
                 let mut t = t.clone();
                 t.name = format!("{name}__{}", t.name).into();
                 if server.def.display {
@@ -1424,6 +1435,220 @@ impl Inner {
         }
     }
 
+    /// Call one of a server's tools from `hostd` itself (its login tools): the answer's text, blanked of its secrets.
+    async fn call_host_tool(
+        &self,
+        server: &Server,
+        tool: &str,
+        arguments: Value,
+        wait: Duration,
+    ) -> Result<String, Failure> {
+        let name = &server.def.name;
+        let peer = server.peer.lock().unwrap().clone().ok_or_else(|| {
+            Failure::new("SERVER_NOT_RUNNING", format!("本机工具 {name} 没有在运行"))
+        })?;
+        let mut params = CallToolRequestParams::new(tool.to_string());
+        params.arguments = arguments.as_object().cloned();
+        let result = tokio::time::timeout(wait, peer.call_tool(params))
+            .await
+            .map_err(|_| {
+                Failure::new(
+                    "TIMEOUT",
+                    format!("{name} 的 {tool} 在 {} 秒内没有答复", wait.as_secs()),
+                )
+            })?
+            .map_err(|e| {
+                Failure::new("SERVER_CRASHED", format!("{name} 的 {tool} 没有完成：{e}"))
+                    .next("用 link__server_logs 看它的日志。")
+            })?;
+        let mut value = serde_json::to_value(&result).unwrap_or(Value::Null);
+        servers::redact_value(&mut value, &server.secrets());
+        let text = value
+            .get("content")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|c| c.get("text").and_then(Value::as_str))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default();
+        if value.get("isError").and_then(Value::as_bool) == Some(true) {
+            return Err(Failure::new(
+                "LOGIN_FAILED",
+                format!(
+                    "{name} 的 {tool} 报错：{}",
+                    agentrouter_device::util::clip(&text, 300)
+                ),
+            ));
+        }
+        Ok(text)
+    }
+
+    /// `link__login`: the person logs the server's account in on this computer. `hostd` runs the server's own login
+    /// tool (never listed to the cloud), shows the address as a QR on this console, answers with the address for the
+    /// web page, and waits for the server's check tool in the background; the credential file the server then writes
+    /// is kept on this computer ([`servers::sync_credentials`]). Docs: HOSTD-MCP.md §13.7.
+    async fn login(self: &Arc<Self>, args: &Value) -> Result<Value, Failure> {
+        let name = args.get("name").and_then(Value::as_str).unwrap_or("");
+        let server = self
+            .servers
+            .lock()
+            .unwrap()
+            .get(name)
+            .cloned()
+            .ok_or_else(|| {
+                Failure::new("SERVER_NOT_RUNNING", format!("本机工具 {name} 没有在运行"))
+                    .next("先用 link__server_add 装上它。")
+            })?;
+        let Some(spec) = server.def.login.clone() else {
+            return Err(Failure::new(
+                "LOGIN_UNSUPPORTED",
+                format!("本机工具 {name} 没有声明登录方式（login）"),
+            )
+            .next("它的凭据只能由这台电脑上的人在它自己的设置里配置。"));
+        };
+        let state = server.wait_settled(Duration::from_secs(60)).await;
+        if state != State::Ready {
+            return Err(Failure::new(
+                "SERVER_NOT_READY",
+                format!("本机工具 {name} 现在是 {}，还不能登录", state.label()),
+            )
+            .next("用 link__servers 看它的状态，就绪后再登录。"));
+        }
+        if let Some((_, since)) = server.cred.lock().unwrap().waiting.clone()
+            && since.elapsed() < LOGIN_WAIT
+        {
+            return Err(Failure::new(
+                "LOGIN_IN_PROGRESS",
+                format!(
+                    "{name} 的登录已在等待扫码（{} 秒前开始）",
+                    since.elapsed().as_secs()
+                ),
+            )
+            .next("等这次登录结束（link__servers 里的凭据状态），再重新开始。"));
+        }
+        let text = self
+            .call_host_tool(&server, &spec.start, json!({}), Duration::from_secs(30))
+            .await?;
+        let found = |pattern: &str, group: bool| -> Option<String> {
+            let re = regex::Regex::new(pattern).ok()?;
+            let caps = re.captures(&text)?;
+            caps.get(if group && caps.len() > 1 { 1 } else { 0 })
+                .map(|m| m.as_str().to_string())
+        };
+        let Some(url) = found(&spec.url, false) else {
+            return Err(Failure::new(
+                "LOGIN_FAILED",
+                format!("{name} 的 {} 没有给出登录地址", spec.start),
+            )
+            .next("这个本机工具的登录方式变了：在目录里更新它的 login 声明。"));
+        };
+        let key = match &spec.key {
+            Some(k) => Some(found(k, true).ok_or_else(|| {
+                Failure::new(
+                    "LOGIN_FAILED",
+                    format!("{name} 的 {} 没有给出登录码", spec.start),
+                )
+                .next("这个本机工具的登录方式变了：在目录里更新它的 login 声明。")
+            })?),
+            None => None,
+        };
+        {
+            let mut cred = server.cred.lock().unwrap();
+            cred.waiting = Some((spec.credential.clone(), std::time::Instant::now()));
+            cred.last_error = None;
+        }
+        self.server_event(&server, "login_started", Some(spec.credential.clone()));
+        self.hooks.feed(Feed::Login {
+            name: server.def.name.clone(),
+            title: server.def.title.clone(),
+            url: url.clone(),
+        });
+        if let (Some(check), Some(key)) = (spec.check.clone(), key) {
+            let this = self.clone();
+            let server = server.clone();
+            let key_arg = spec.key_arg.clone();
+            let credential = spec.credential.clone();
+            tokio::spawn(async move {
+                let answer = this
+                    .call_host_tool(&server, &check, json!({ key_arg: key }), LOGIN_WAIT)
+                    .await;
+                let changed = servers::sync_credentials(&this, &server);
+                let mut cred = server.cred.lock().unwrap();
+                cred.waiting = None;
+                if !changed.contains(&credential) {
+                    cred.last_error = Some(match answer {
+                        Ok(text) => agentrouter_device::util::clip(&text, 200),
+                        Err(f) => f.message,
+                    });
+                }
+                let error = cred.last_error.clone();
+                drop(cred);
+                let event = if error.is_none() {
+                    "login_ok"
+                } else {
+                    "login_failed"
+                };
+                this.server_event(&server, event, error);
+            });
+        }
+        Ok(json!({
+            "name": name,
+            "credential": spec.credential,
+            "state": "waiting_login",
+            "url": url,
+            "next": "把这个地址做成二维码给用户扫（这台电脑的终端里也显示了）；用 link__servers 看凭据状态。",
+        }))
+    }
+
+    /// `link__logout`: forget a server's credential on this computer and restart it without it.
+    fn logout(self: &Arc<Self>, args: &Value) -> Result<Value, Failure> {
+        let name = args.get("name").and_then(Value::as_str).unwrap_or("");
+        let server = self
+            .servers
+            .lock()
+            .unwrap()
+            .get(name)
+            .cloned()
+            .ok_or_else(|| {
+                Failure::new("SERVER_NOT_RUNNING", format!("本机工具 {name} 没有在运行"))
+            })?;
+        let wanted = args.get("credential").and_then(Value::as_str);
+        let names: Vec<String> = server
+            .def
+            .credentials
+            .iter()
+            .map(|c| c.name.clone())
+            .filter(|n| wanted.is_none_or(|w| w == n))
+            .collect();
+        if names.is_empty() {
+            return Err(Failure::new(
+                "CREDENTIAL_UNKNOWN",
+                format!("本机工具 {name} 没有凭据 {}", wanted.unwrap_or("")),
+            ));
+        }
+        for n in &names {
+            servers::forget_credential(self, &server, n).map_err(|e| {
+                Failure::new(
+                    "FAILED",
+                    format!("没能在这台电脑上删掉 {name} 的凭据 {n}：{e}"),
+                )
+            })?;
+        }
+        // Restart it so no process holds the old value.
+        let def = server.def.clone();
+        let this = self.clone();
+        tokio::spawn(async move {
+            server.stop.cancel();
+            server.wait_settled(Duration::from_secs(5)).await;
+            this.servers.lock().unwrap().remove(&def.name);
+            let _ = Inner::add(&this, def, Duration::from_secs(5), Origin::Cloud).await;
+        });
+        Ok(json!({"name": name, "forgotten": names}))
+    }
+
     /// The checkpoint before a non-read-only call (once per turn and session).
     async fn checkpoint_for(
         &self,
@@ -1527,6 +1752,14 @@ impl Inner {
                 .to_error());
             }
         }
+        if server.host_only(tool) {
+            return Err(Failure::new(
+                "HOST_ONLY_TOOL",
+                format!("{name} 只在这台电脑上由 hostd 运行（登录、刷新凭据），云端不能调用"),
+            )
+            .next(format!("要登录就用 link__login {{\"name\": \"{server_name}\"}}：二维码显示在这台电脑上和网页上。"))
+            .to_error());
+        }
         let read_only = server
             .tools
             .lock()
@@ -1614,6 +1847,9 @@ impl Inner {
             }
         };
         self.progress.lock().unwrap().remove(&key);
+        if !server.def.credentials.is_empty() {
+            servers::sync_credentials(self, &server);
+        }
         let Some(answer) = answer else {
             let _ = handle.cancel(Some("cancelled".into())).await;
             return Err(Failure::new("CANCELLED", "已取消").to_error());
@@ -1621,7 +1857,7 @@ impl Inner {
         match answer {
             Ok(Ok(ServerResult::CallToolResult(result))) => {
                 let mut value = serde_json::to_value(&result).unwrap_or(Value::Null);
-                servers::redact_value(&mut value, &server.def.secrets());
+                servers::redact_value(&mut value, &server.secrets());
                 let size = value.to_string().len();
                 if size > RESULT_MAX {
                     return Err(
@@ -1775,6 +2011,8 @@ impl Inner {
                 let name = args.get("name").and_then(Value::as_str).unwrap_or("");
                 self.remove(name).await
             }
+            "login" => self.login(args).await?,
+            "logout" => self.logout(args)?,
             "server_logs" => {
                 let name = args.get("name").and_then(Value::as_str).unwrap_or("");
                 let lines = args
@@ -1891,8 +2129,27 @@ pub fn link_tools() -> Vec<Tool> {
                 "keepOut": {"type": "array", "items": {"type": "string"}},
                 "pin": {"type": "object"}, "network": {"type": "array", "items": {"type": "string"}},
                 "preset": {"type": "string"}, "hash": {"type": "string"}, "waitMs": {"type": "integer"},
-                "display": {"type": "boolean"}
+                "display": {"type": "boolean"},
+                "credentials": {"type": "array", "items": {"type": "object", "properties": {
+                    "name": {"type": "string"}, "fileEnv": {"type": "string"}}, "required": ["name", "fileEnv"]}},
+                "hostOnly": {"type": "array", "items": {"type": "string"}},
+                "login": {"type": "object", "properties": {
+                    "credential": {"type": "string"}, "start": {"type": "string"}, "url": {"type": "string"},
+                    "key": {"type": "string"}, "check": {"type": "string"}, "keyArg": {"type": "string"}},
+                    "required": ["credential", "start", "url"]}
             }, "required": ["name", "command"]}),
+            false,
+        ),
+        tool(
+            "link__login",
+            "Log a local server's account in on this computer: hostd runs the server's own login tool, shows the QR / address on this computer's console and answers with the address (show it to the person as a QR). The credential the server then writes is kept on this computer only; link__servers shows its state (waiting_login → ok).",
+            name_only.clone(),
+            false,
+        ),
+        tool(
+            "link__logout",
+            "Forget a local server's credential on this computer (the person's account is logged out there); the server restarts without it.",
+            json!({"type": "object", "properties": {"name": {"type": "string"}, "credential": {"type": "string"}}, "required": ["name"]}),
             false,
         ),
         tool(

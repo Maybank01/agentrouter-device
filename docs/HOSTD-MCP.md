@@ -1087,5 +1087,28 @@ and views. The `hostd` side it needs, beyond §13.1–§13.5:
 - **Lifecycle:** lazy start from recorded tool names, idle stop (default 10 min, kept up while a feed is active), crash
   backoff, per-host cap on running third-party servers (PC 8, cloud 4).
 
+**As built (Cloud #2694): credentials that stay on this computer, and the login on this computer.** Generic for any
+server that reads its account from a file; nothing here names a service.
+- **Declared in `link__server_add`:** `credentials: [{name, fileEnv}]` (the server reads the credential from the file
+  whose path is in `fileEnv`), `hostOnly: [tool…]` (tools only `hostd` runs) and `login: {credential, start, url, key?,
+  check?, keyArg?}` (the server's own login tools; `url` / `key` are patterns over the start tool's text, `key`'s first
+  group is the key passed to `check` as `{<keyArg>: key}`). The login tools join `hostOnly` by themselves.
+- **Kept here only** (`device-core::local_secrets`, Cloud CONNECTIONS §3.2 `local:`): `<data dir>/secrets/`, one value
+  per `<server>/<credential>`, sealed with DPAPI on Windows, an owner-only file elsewhere (the device identity's
+  protection); the data folder is hidden from every sandbox. The cloud sees only `credentials: [{name, state: ok |
+  missing | waiting_login, lastError}]` in `link__servers` — never a value.
+- **Handed to that one process as a file:** before each start `hostd` writes the kept value into the server's own
+  scratch folder (`credentials/<name>`, owner-only; writable by that server only) and puts the file's **path** in
+  `fileEnv` — never the value in an argument or the environment. After every call, every login and every exit, a file
+  the server wrote or rewrote (a login, a cookie refresh) is kept again (`credential_saved` on the console).
+- **Blanked:** every kept value and each JSON / cookie value of 8+ characters inside it reads `[secret]` in results,
+  logs and the audit, like `secretEnv`.
+- **Host-only tools:** never in the cloud's `tools/list`; a call is `HOST_ONLY_TOOL`.
+- **`link__login {name}`:** runs `start`, shows the address as a QR on this console (`Feed::Login`; a cloud host logs
+  only that a login started), answers `{state: waiting_login, url}` for the web page, then waits up to 180 s for
+  `check` in the background → `login_ok` or `login_failed` (its words in `lastError`). Errors: `LOGIN_UNSUPPORTED`,
+  `SERVER_NOT_READY`, `LOGIN_IN_PROGRESS`, `LOGIN_FAILED`.
+- **`link__logout {name, credential?}`:** forgets the value here and restarts the server without it.
+
 Follow-ups D1–D6 are listed in that doc §8.3 (D1, D2, D6 extend §13.5; D3 write-back + redaction, D4 feed poller, D5
 rate backstop are new).

@@ -264,6 +264,20 @@ impl Hooks for Console {
                         detail.unwrap_or_default()
                     ),
                     "stopped" => format!("本机工具「{title}」已停止"),
+                    "login_started" => format!("本机工具「{title}」在等你扫码登录"),
+                    "login_ok" => format!("本机工具「{title}」已登录，凭据只保存在这台电脑上"),
+                    "login_failed" => format!(
+                        "本机工具「{title}」没有登录成功：{}",
+                        detail
+                            .map(|d| agentrouter_device::util::clip(&d, 80))
+                            .unwrap_or_default()
+                    ),
+                    "credential_saved" => {
+                        format!("本机工具「{title}」的登录凭据已更新，只保存在这台电脑上")
+                    }
+                    "credential_forgotten" => {
+                        format!("本机工具「{title}」的登录凭据已从这台电脑上删掉")
+                    }
                     "limit" => format!(
                         "本机工具「{title}」碰到了资源上限：{}",
                         detail.unwrap_or_default()
@@ -271,6 +285,12 @@ impl Hooks for Console {
                     _ => return,
                 };
                 line(&format!("{t}  {text}"));
+            }
+            Feed::Login { title, url, .. } => {
+                line(&format!(
+                    "{t}  「{title}」请用手机扫码登录（用给 AI 专用的账号）：\n{}\n{url}",
+                    terminal_qr(&url)
+                ));
             }
         }
     }
@@ -1081,4 +1101,19 @@ pub fn logout() -> i32 {
     keystore::forget();
     line("已退出：这台电脑的链接身份删掉了。网页上「我的设备」里也可以把它删掉。");
     0
+}
+
+/// A QR for the terminal: two rows of modules per character line (`▀▄█`), with a quiet zone, readable by phone
+/// cameras on light and dark themes. Empty when the text does not fit a QR.
+pub fn terminal_qr(text: &str) -> String {
+    use qrcode::render::unicode::Dense1x2;
+    match qrcode::QrCode::new(text.as_bytes()) {
+        Ok(code) => code
+            .render::<Dense1x2>()
+            .dark_color(Dense1x2::Light)
+            .light_color(Dense1x2::Dark)
+            .quiet_zone(true)
+            .build(),
+        Err(_) => String::new(),
+    }
 }

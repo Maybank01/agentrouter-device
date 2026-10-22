@@ -157,6 +157,8 @@ impl Hooks for CloudHooks {
                     .map(|d| agentrouter_device::util::clip(&d, 120))
                     .unwrap_or_default()
             )),
+            // The address is a short-lived login token: never in a cloud host's log.
+            Feed::Login { name, .. } => line(&format!("server {name} login_started")),
         }
     }
 }
