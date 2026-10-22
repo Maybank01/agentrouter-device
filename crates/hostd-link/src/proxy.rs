@@ -1,6 +1,13 @@
-//! The link through an HTTP proxy (issue #85): a cloud sandbox has no direct egress, only its node's proxy
-//! (`HTTPS_PROXY`, CONNECT to :443), and some PCs sit behind one too. The WebSocket client does not read proxy
-//! variables, so the link opens a CONNECT tunnel itself and runs TLS and the WebSocket handshake over it.
+//! The link through an HTTP proxy (issue #85): a cloud sandbox has no direct egress, only its node's proxy, and some
+//! PCs sit behind one too. The WebSocket client does not read proxy variables, so the link opens a CONNECT tunnel
+//! itself and runs TLS and the WebSocket handshake over it.
+//!
+//! hostd's one proxy rule (every HTTP path, whichever client): `https://`/`wss://` and the gateway are tunnelled with
+//! CONNECT; a plain `http://` service is forwarded in absolute form, never tunnelled. The node's squid
+//! (agentrouter-cloud `deploy/coolify/daytona-node/container/*.squid.conf`) allows CONNECT only to the gateway and to
+//! public :443, and reaches the project daemon (`http://project-daemon-dev:8091`) only as forwarded GET/POST: the
+//! space checkout's reads (`host/space/lower.rs`, reqwest) follow this, ureq (`device-core` net, the runtimes) is used
+//! for `https://` only (Cloud #2767: the checkout once tunnelled to the daemon and every mount got "CONNECT 403").
 //!
 //! The usual conventions (curl's): `HTTPS_PROXY`/`https_proxy` for `wss://`, `HTTP_PROXY`/`http_proxy` for `ws://`,
 //! `NO_PROXY`/`no_proxy` (comma list of host suffixes, `*` = none) wins. Only `http://` proxies; credentials in the
