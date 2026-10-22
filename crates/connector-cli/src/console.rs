@@ -197,6 +197,15 @@ impl Console {
         }
     }
 
+    /// The person changed this computer's usage rules (`agentrouter rules …`): the cloud gets the new `link.rules`.
+    fn set_rules(&self, rules: &agentrouter_device::rules::Rules) {
+        let mut info = self.info.lock().unwrap();
+        info.rules = rules.view();
+        if let Some(h) = self.handle.get() {
+            h.set_info(info.clone());
+        }
+    }
+
     /// Paths a call names (its target files), real and absolute.
     fn named_paths(&self, arguments: &Value) -> Vec<PathBuf> {
         let mut out = Vec::new();
@@ -493,22 +502,45 @@ fn data_folders(list: &[LocalData], data: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Named local data changes while the link runs (`agentrouter data add|remove`, checked every few seconds): the
-/// cloud gets the new list, and in folder mode the writable folders join or leave the link's grants at once (a
-/// removed one is outside the sandbox from that moment; the cloud stops the instances that required it,
-/// `LOCAL_DATA_REVOKED`). Folders chosen on the command line stay.
+/// Named local data and usage rules change while the link runs (`agentrouter data add|remove`, `agentrouter rules
+/// set`, checked every few seconds): this host enforces the new rules from the next call on, the cloud gets the new
+/// lists, and in folder mode the writable folders join or leave the link's grants at once (a removed one is outside
+/// the sandbox from that moment; the cloud stops the instances that required it, `LOCAL_DATA_REVOKED`). Folders chosen
+/// on the command line stay.
 async fn watch_local_data(
     console: Arc<Console>,
     agg: Aggregator,
     chosen: Vec<PathBuf>,
     mut last: Vec<LocalData>,
+    mut last_rules: agentrouter_device::rules::Rules,
     folder_mode: bool,
 ) {
     const EVERY: Duration = Duration::from_secs(5);
     let data = data_dir();
+    let mut said_broken = false;
     loop {
         tokio::time::sleep(EVERY).await;
-        let now_list = Config::load().local_data;
+        let cfg = match Config::try_load() {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                // Kept as they were: a broken file never widens the rules.
+                if !said_broken {
+                    line(&format!("{}  {e}；使用规则和命名文件夹保持原样", now()));
+                    said_broken = true;
+                }
+                continue;
+            }
+        };
+        said_broken = false;
+        let now_list = cfg.local_data;
+        if cfg.rules != last_rules || now_list != last {
+            agg.set_rules(cfg.rules.clone(), now_list.clone());
+        }
+        if cfg.rules != last_rules {
+            console.set_rules(&cfg.rules);
+            line(&format!("{}  使用规则改了：从下一次调用起按新规则", now()));
+            last_rules = cfg.rules;
+        }
         if now_list == last {
             continue;
         }
@@ -785,6 +817,7 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
         resources: agentrouter_device::capacity::resources(),
         software: Value::Null,
         local_data: local_data_view(&cfg.local_data, &folders),
+        rules: cfg.rules.view(),
     };
     let meter = Arc::new(agentrouter_device::capacity::LoadMeter::new(
         cfg.max_environments,
@@ -884,11 +917,14 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
             let handle = handle.clone();
             std::thread::spawn(move || report_software(handle));
         }
+        // The owner's rules, enforced here on every session and call (DEVICES §3.1).
+        agg.set_rules(cfg.rules.clone(), cfg.local_data.clone());
         tokio::spawn(watch_local_data(
             console.clone(),
             agg.clone(),
             chosen.clone(),
             cfg.local_data.clone(),
+            cfg.rules.clone(),
             !opts.full,
         ));
 

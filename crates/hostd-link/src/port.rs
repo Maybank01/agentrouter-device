@@ -218,6 +218,7 @@ mod tests {
             resources: Value::Null,
             software: Value::Null,
             local_data: Value::Null,
+            rules: Value::Null,
         };
         assert!(!allowed(&info));
         info.full = true;

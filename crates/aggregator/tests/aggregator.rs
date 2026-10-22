@@ -843,3 +843,85 @@ async fn only_sessions_launched_under_the_owners_account_open() {
     let own = h.request("mcs_4", 1, "initialize", params).await;
     assert!(own["result"].is_object(), "{own}");
 }
+
+/// DEVICES §3.1: the owner's rules, enforced here a second time. A session names its recipe in the signed `initialize`;
+/// a recipe the owner does not list is refused (`DEVICE_NOT_ALLOWED`), the rules apply again on every call (a change
+/// reaches running sessions), and a call that names a local data folder closed to the recipe is refused
+/// (`LOCAL_DATA_NOT_ALLOWED`) before anything runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_owners_rules_hold_on_this_computer_whatever_the_cloud_decided() {
+    use agentrouter_device::local_data::LocalData;
+    use agentrouter_device::rules::Rules;
+    let dir = scratch("rules");
+    let folder = dir.join("work");
+    let mut h = Harness::new(&dir, &folder, TestHooks::default(), false);
+    let photos = dir.join("photos");
+    std::fs::create_dir_all(&photos).unwrap();
+    let data = vec![LocalData {
+        name: "照片库".into(),
+        path: photos.to_string_lossy().into_owned(),
+        read_only: false,
+    }];
+    let rules = |text: &str| Rules::parse(text).unwrap();
+    h.agg.set_rules(
+        rules(r#"{"agents":["w_me/agents/剪辑"],"localData":{"照片库":["w_me/agents/照片"]}}"#),
+        data.clone(),
+    );
+    let init = |recipe: Option<&str>| {
+        let mut p = json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "x", "version": "1"}});
+        if let Some(r) = recipe {
+            p[sig::RECIPE_PARAM] = json!(r);
+        }
+        p
+    };
+
+    // Not listed (another recipe, or the Main Agent naming none): refused at initialize.
+    let params = h.sign("initialize", init(Some("w_me/agents/翻译@2")), "ags_a");
+    let other = h.request("mcs_0", 1, "initialize", params).await;
+    assert_eq!(code_of(&other), "DEVICE_NOT_ALLOWED", "{other}");
+    let params = h.sign("initialize", init(None), "ags_a");
+    let main = h.request("mcs_0", 2, "initialize", params).await;
+    assert_eq!(code_of(&main), "DEVICE_NOT_ALLOWED", "{main}");
+    // The recipe param is signed: rewriting it after signing breaks the digest.
+    let mut forged = h.sign("initialize", init(Some("w_me/agents/翻译@2")), "ags_a");
+    forged[sig::RECIPE_PARAM] = json!("w_me/agents/剪辑@1");
+    let forged = h.request("mcs_0", 3, "initialize", forged).await;
+    assert_eq!(code_of(&forged), "SIGNATURE_INVALID", "{forged}");
+
+    // Listed, at any version: it opens, and its calls run — except one naming the photo folder closed to it.
+    let params = h.sign("initialize", init(Some("w_me/agents/剪辑@5")), "ags_b");
+    let open = h.request("mcs_1", 1, "initialize", params).await;
+    assert!(open["result"].is_object(), "{open}");
+    let inside = format!("cat '{}/2024/a.jpg'", photos.display());
+    let closed = h
+        .call(
+            "mcs_1",
+            2,
+            "ags_b",
+            "host__exec",
+            json!({"command": inside}),
+        )
+        .await;
+    assert_eq!(code_of(&closed), "LOCAL_DATA_NOT_ALLOWED", "{closed}");
+    let sibling = format!("ls '{}2'", photos.display());
+    let elsewhere = h
+        .call(
+            "mcs_1",
+            3,
+            "ags_b",
+            "link__servers",
+            json!({"note": sibling}),
+        )
+        .await;
+    assert_ne!(code_of(&elsewhere), "LOCAL_DATA_NOT_ALLOWED", "{elsewhere}");
+
+    // The owner narrows the rules while the session runs: its next call is refused.
+    h.agg.set_rules(rules(r#"{"agents":[]}"#), data);
+    let after = h
+        .call("mcs_1", 4, "ags_b", "link__servers", json!({}))
+        .await;
+    assert_eq!(code_of(&after), "DEVICE_NOT_ALLOWED", "{after}");
+
+    h.agg.shutdown().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
