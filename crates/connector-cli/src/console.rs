@@ -39,6 +39,8 @@ pub struct LinkOptions {
     pub name: Option<String>,
     /// Started by a double-click (`start.rs`): it said the access line itself; pairing opens the browser.
     pub double_click: bool,
+    /// Started at login by `agentrouter service` (#94): the link state goes to `service-state.json` for `service status`.
+    pub service: bool,
 }
 
 fn now() -> String {
@@ -52,7 +54,7 @@ fn line(text: &str) {
 }
 
 /// A path as the person reads it (no `\\?\`).
-fn shown(path: &Path) -> String {
+pub(crate) fn shown(path: &Path) -> String {
     let text = path.to_string_lossy();
     text.strip_prefix(r"\\?\").unwrap_or(&text).to_string()
 }
@@ -402,7 +404,7 @@ fn project_servers(folder: &Path) -> Vec<Value> {
 }
 
 /// The folders named on the command line (or the current folder), canonical and allowed.
-fn chosen_folders(dirs: &[String], full: bool) -> Result<Vec<PathBuf>, String> {
+pub(crate) fn chosen_folders(dirs: &[String], full: bool) -> Result<Vec<PathBuf>, String> {
     let data = data_dir();
     if dirs.is_empty() {
         if full {
@@ -767,6 +769,9 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
                     match event {
                         Event::Up { .. } => {
                             agg.link_up();
+                            if opts.service {
+                                crate::service::record("online", "");
+                            }
                             if was_up {
                                 line(&format!("{}  重新连上了", now()));
                             } else if opts.double_click {
@@ -781,6 +786,9 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
                         }
                         Event::Down { reason, retry_in } => {
                             agg.link_down();
+                            if opts.service {
+                                crate::service::record("offline", &reason);
+                            }
                             downs += 1;
                             if downs == 1 || downs.is_multiple_of(10) {
                                 line(&format!(
@@ -794,6 +802,14 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
                         Event::Data { s, m } => agg.on_message(&s, m),
                         Event::Close { s } => agg.on_close(&s),
                         Event::Ended(end) => {
+                            if opts.service {
+                                crate::service::record("ended", &match &end {
+                                    End::Stopped => "已停止".to_string(),
+                                    End::Revoked(_) => "这台电脑在网页上被移除了".to_string(),
+                                    End::Replaced => "同样的文件夹在别的终端里又链接了".to_string(),
+                                    End::Refused { code, message } => format!("网关拒绝了这个链接：{code} {message}"),
+                                });
+                            }
                             break match end {
                                 End::Stopped => 0,
                                 End::Revoked(_) => {

@@ -227,6 +227,7 @@ fn start(full: bool, interrupted: &'static AtomicBool) -> i32 {
             gateway: None,
             name: None,
             double_click: true,
+            service: false,
         },
         interrupted,
     )
