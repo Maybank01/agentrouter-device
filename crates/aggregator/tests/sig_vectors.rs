@@ -68,3 +68,32 @@ fn only_initialize_and_tool_calls_need_a_signature() {
         assert!(!sig::must_be_signed(m), "{m}");
     }
 }
+
+/// The owner statement Cloud signs with the vectors' key (Cloud `link-protocol.test.ts` "signs the owner statement
+/// byte for byte"): DEVICES §3.4.
+#[test]
+fn the_owner_statement_is_checked_against_the_pinned_key_and_this_link() {
+    let v: Value = serde_json::from_str(include_str!("link-sig-v3-vectors.json")).unwrap();
+    let key = ControlKey {
+        kid: v["kid"].as_str().unwrap().into(),
+        public_key: v["publicKey"].as_str().unwrap().into(),
+    };
+    let link = v["link"].as_str().unwrap();
+    let statement = serde_json::json!({
+        "v": 1, "kid": key.kid, "link": link, "account": "2006",
+        "sig": "HW3WwaWkkvTGJrdgzllB2n06niWAowyloKnisY7vyg_d3tJWIz5qN_qpQgvuvElwtfvCxrEShHJt0d3dszlmBw",
+    });
+    assert_eq!(sig::check_owner(&statement, link, &key).unwrap(), "2006");
+    let mut other = statement.clone();
+    other["account"] = "7".into();
+    assert_eq!(
+        sig::check_owner(&other, link, &key).unwrap_err().code,
+        "SIGNATURE_INVALID"
+    );
+    assert_eq!(
+        sig::check_owner(&statement, "lnk_ffffffffffffffffffffffffffffffff", &key)
+            .unwrap_err()
+            .code,
+        "WRONG_LINK"
+    );
+}

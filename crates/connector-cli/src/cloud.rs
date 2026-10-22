@@ -327,8 +327,8 @@ pub fn link(opts: CloudOptions, interrupted: &'static AtomicBool) -> i32 {
                 event = events.recv() => {
                     let Some(event) = event else { break 1 };
                     match event {
-                        Event::Up { link } => {
-                            agg.link_up();
+                        Event::Up { link, owner } => {
+                            agg.link_up(owner.as_ref());
                             crate::leases::after_welcome(&agg, &handle);
                             downs = 0;
                             line(&format!("link up {link}"));

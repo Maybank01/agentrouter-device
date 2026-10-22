@@ -106,7 +106,13 @@ async fn hello_frames_heartbeat_reconnect_and_ends() {
     ))
     .await
     .unwrap();
-    assert_eq!(next_event(&mut events).await, Event::Up { link: info().id });
+    assert_eq!(
+        next_event(&mut events).await,
+        Event::Up {
+            link: info().id,
+            owner: None
+        }
+    );
     let head = read_json(&mut ws).await;
     assert_eq!(
         head,

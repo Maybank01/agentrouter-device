@@ -312,6 +312,9 @@ pub struct Inner {
     /// The linked folders now (starts as `cfg.folders`).
     folders: Mutex<Vec<PathBuf>>,
     replay: Mutex<ReplayCache>,
+    /// The account this link belongs to (the control plane's signed owner statement in `welcome`, DEVICES §3.4): a
+    /// session launched under any other account is refused. None until a control plane that sends it welcomes us.
+    owner: Mutex<Option<String>>,
     progress: Mutex<HashMap<ProgressKey, (Peer<RoleServer>, ProgressToken)>>,
     down_since: Mutex<Option<tokio::time::Instant>>,
     closed: CancellationToken,
@@ -516,6 +519,7 @@ impl Aggregator {
             servers: Mutex::new(BTreeMap::new()),
             folders: Mutex::new(folders),
             replay: Mutex::new(ReplayCache::default()),
+            owner: Mutex::new(None),
             progress: Mutex::new(HashMap::new()),
             down_since: Mutex::new(None),
             closed: CancellationToken::new(),
@@ -584,8 +588,23 @@ impl Aggregator {
         }
     }
 
-    pub fn link_up(&self) {
+    /// Welcomed by the gateway, with the control plane's owner statement when it sends one (DEVICES §3.4). A statement
+    /// that does not verify is recorded and ignored; a welcome without one keeps the owner already known.
+    pub fn link_up(&self, owner: Option<&Value>) {
         *self.inner.down_since.lock().unwrap() = None;
+        let Some(statement) = owner else { return };
+        match sig::check_owner(statement, &self.inner.cfg.link, &self.inner.cfg.control) {
+            Ok(account) => *self.inner.owner.lock().unwrap() = Some(account),
+            Err(refused) => self.inner.record(json!({
+                "kind": "owner", "event": "refused", "link": self.inner.cfg.link,
+                "code": refused.code, "why": refused.message,
+            })),
+        }
+    }
+
+    /// The account this link belongs to, once the control plane said so.
+    pub fn owner(&self) -> Option<String> {
+        self.inner.owner.lock().unwrap().clone()
     }
 
     /// One call of the link's own `host` server (its tools are hostd's: jobs, exec, files), outside any MCP session:
@@ -893,6 +912,23 @@ impl Inner {
             }
             if method == "initialize" {
                 let signed = signed.clone().expect("initialize is signed");
+                // The second "may" check (DEVICES §3.4): only what is launched under the owner's account runs here.
+                let owner = self.owner.lock().unwrap().clone();
+                let account = params.get(sig::ACCOUNT_PARAM).and_then(Value::as_str);
+                if let Some(owner) = owner
+                    && account != Some(owner.as_str())
+                {
+                    let failure = Failure::new(
+                        "DEVICE_NOT_ALLOWED",
+                        format!(
+                            "这台电脑只运行它主人的账号启动的 Agent（主人 {owner}，这个会话的账号 {}）",
+                            account.unwrap_or("未注明")
+                        ),
+                    )
+                    .next("这台电脑不会运行它；放到这个账号自己的设备或云端。");
+                    self.deny(s, id, method, params, None, &failure);
+                    return;
+                }
                 self.open_session(s, &signed.session, params);
             }
             let Some(session) = self.session(s) else {

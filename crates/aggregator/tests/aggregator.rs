@@ -790,3 +790,56 @@ async fn a_server_logs_in_on_this_computer_and_its_credential_stays_here() {
     h.agg.shutdown().await;
     let _ = std::fs::remove_dir_all(&base);
 }
+
+/// DEVICES §3.4, the second "may" check: once the control plane told this link whose it is (the signed owner statement
+/// in `welcome`), a session launched under any other account is refused, and so is one that names none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn only_sessions_launched_under_the_owners_account_open() {
+    let dir = scratch("owner");
+    let folder = dir.join("work");
+    let mut h = Harness::new(&dir, &folder, TestHooks::default(), false);
+    let init = |account: Option<&str>| {
+        let mut p = json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "x", "version": "1"}});
+        if let Some(a) = account {
+            p[sig::ACCOUNT_PARAM] = json!(a);
+        }
+        p
+    };
+
+    // No owner known yet (a control plane before 2026-10-23): no account check.
+    let params = h.sign("initialize", init(None), "ags_a");
+    let open = h.request("mcs_0", 1, "initialize", params).await;
+    assert!(open["result"].is_object(), "{open}");
+
+    // A statement that does not verify is ignored.
+    h.agg.link_up(Some(
+        &json!({"v": 1, "kid": h.control.kid, "link": LINK, "account": "7", "sig": "x"}),
+    ));
+    assert_eq!(h.agg.owner(), None);
+    let statement = json!({"v": 1, "kid": h.control.kid, "link": LINK, "account": "7",
+        "sig": h.key.sign(&sig::owner_string(LINK, "7"))});
+    h.agg.link_up(Some(&statement));
+    assert_eq!(h.agg.owner().as_deref(), Some("7"));
+    // A welcome without one keeps it.
+    h.agg.link_up(None);
+    assert_eq!(h.agg.owner().as_deref(), Some("7"));
+
+    let params = h.sign("initialize", init(Some("8")), "ags_b");
+    let other = h.request("mcs_1", 1, "initialize", params).await;
+    assert_eq!(code_of(&other), "DEVICE_NOT_ALLOWED", "{other}");
+    let params = h.sign("initialize", init(None), "ags_b");
+    let none = h.request("mcs_2", 1, "initialize", params).await;
+    assert_eq!(code_of(&none), "DEVICE_NOT_ALLOWED", "{none}");
+    let listed = h.request("mcs_1", 2, "tools/list", json!({})).await;
+    assert_eq!(code_of(&listed), "SESSION_UNKNOWN", "{listed}");
+
+    // The account param is signed: changing it after signing breaks the digest.
+    let mut forged = h.sign("initialize", init(Some("8")), "ags_c");
+    forged[sig::ACCOUNT_PARAM] = json!("7");
+    let forged = h.request("mcs_3", 1, "initialize", forged).await;
+    assert_eq!(code_of(&forged), "SIGNATURE_INVALID", "{forged}");
+
+    let params = h.sign("initialize", init(Some("7")), "ags_d");
+    let own = h.request("mcs_4", 1, "initialize", params).await;
+    assert!(own["result"].is_object(), "{own}");
+}

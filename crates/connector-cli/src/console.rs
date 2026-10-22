@@ -805,8 +805,8 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
                 event = events.recv() => {
                     let Some(event) = event else { break 1 };
                     match event {
-                        Event::Up { .. } => {
-                            agg.link_up();
+                        Event::Up { owner, .. } => {
+                            agg.link_up(owner.as_ref());
                             crate::leases::after_welcome(&agg, &handle);
                             if opts.service {
                                 crate::service::record("online", "");
