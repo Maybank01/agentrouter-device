@@ -34,7 +34,8 @@ fn real(path: &Path) -> PathBuf {
     PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(&text).to_string())
 }
 
-/// `memory`: allocate 64 MB every 500 ms up to 2 GB, printing each step (slow enough for a 2 s sampler).
+/// `memory`: a child allocates 64 MB every 500 ms up to 2 GB, printing each step (slow enough for a 2 s sampler); the
+/// parent stays 4 s after it ends.
 /// `processes`: start 80 node children (each waits 20 s), then print how many are alive. `pid`: print its own pid, wait 5 s.
 const PROBE: &str = r#"
 const { spawn } = require('child_process');
@@ -43,6 +44,13 @@ if (mode === 'pid') {
   console.log(JSON.stringify({ pid: process.pid, ppid: process.ppid }));
   setTimeout(() => {}, 5000);
 } else if (mode === 'memory') {
+  // As with the host server, the hungry process is a command it started; the server stays and says how it ended.
+  const k = spawn(process.execPath, [__filename, 'memory-child'], { stdio: 'inherit' });
+  k.on('exit', (code, signal) => {
+    console.log('child-exit ' + code + ' ' + signal);
+    setTimeout(() => process.exit(0), 4000);
+  });
+} else if (mode === 'memory-child') {
   const keep = [];
   let mb = 0;
   const step = () => {

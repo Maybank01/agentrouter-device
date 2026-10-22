@@ -30,8 +30,10 @@ pub const PROCESSES_MIN: u32 = 8;
 pub const PROCESSES_MAX: u32 = 100_000;
 /// Linux counts tasks (threads included) in `pids.max`; a Node or Java process runs 10–30 threads.
 pub const TASKS_PER_PROCESS: u64 = 32;
-/// How often the sampler looks (macOS, Linux without systemd) and the cgroup watcher reads its events.
+/// How often the sampler looks (macOS, Linux without systemd).
 pub const SAMPLE: Duration = Duration::from_secs(2);
+/// How often the cgroup watcher reads the scope's event counters (two small files).
+pub const EVENTS: Duration = Duration::from_millis(500);
 
 /// One environment's limits. `None` = no limit.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -562,7 +564,7 @@ mod linux {
                     counter(&read("pids.events"), "max "),
                 );
                 while !stop.load(Ordering::SeqCst) && dir.is_dir() {
-                    std::thread::sleep(SAMPLE);
+                    std::thread::sleep(EVENTS);
                     let l = *limits.lock().unwrap();
                     let now = counter(&read("memory.events"), "oom_kill ");
                     if now > oom {
