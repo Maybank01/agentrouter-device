@@ -221,13 +221,14 @@ reinstall never repeats an id). After each `welcome` the link sends it in seq or
 ≤ 1 MiB; a payload is ≤ 32 KiB):
 
 ```text
-         device → gateway  {"op": "events", "host": "<producer>", "items": [{seq, id, space, instance?, event, payload,
-                            key?, cause?, at}]}
+         device → gateway  {"op": "events", "host": "<producer>", "items": [{seq, id, space, instance?, event | table,
+                            payload, key?, cause?, at}]}
          gateway → device  {"op": "events_ack", "host": "<producer>", "seq": n, "refused": [{seq, code, message}],
                             "retry_ms"?}
 ```
 
-`seq` is the highest entry the platform is done with (appended, a duplicate, or refused for good); those leave the
+An item is a declared **event** of the space (`event`, its payload) or a **row** of one of its tables (`table`, the
+row as `payload`; a feed's rows): exactly one of the two. `seq` is the highest entry the platform is done with (appended, a duplicate, or refused for good); those leave the
 outbox, refused ones are kept (last 500) for the status. A partial ack sends the rest again after `retry_ms` (default
 5 s); a batch without an ack within 60 s, or cut by a dropped link, is sent again — the platform dedupes by event id.
 Past the disk cap (256 MiB) a producer's write is refused `OUTBOX_FULL` and it pauses; nothing accepted is dropped.
@@ -271,15 +272,16 @@ Unsigned (harmless, read-only shape): `tools/list`, `ping`, notifications. Failu
   diagnosed after the link ended (Cloud #2703).
 - `link__limits {memoryMb?, processes?, cpuPercent?}`: the environment's resource limits, applied live (§6.6).
 - `link__feeds {instance, space, server, feeds}` (platform only, Cloud #2739 step 2): the feeds of a space's runtime
-  instance on this host (Cloud PROJECT-SERVICE §9.8.5), as the Space Server describes them plus the event's declared
-  payload fields (`{name, tool, args?, everyMs, key, items?, extract?: {json}, into, event, payload: {field: type},
+  instance on this host (Cloud PROJECT-SERVICE §9.8.5), as the Space Server describes them plus the columns of the
+  feed's table (`{name, tool, args?, everyMs, key, items?, extract?: {json}, into: <table>, columns: {column: type},
   backoff?: {on, waitMs}}`); `feeds: []` stops them, an unchanged set keeps its timers. The generic feed runner
   (`agentrouter_aggregator::feeds`) calls the tool of the local server `server` on its timer (±20 % jitter); takes the
   items from `structuredContent` (at `items`, else the result must be the list) or JSON inside a text result at
   `extract.json` — anything else is `FEED_OUTPUT_UNSTRUCTURED` / `FEED_ITEMS_NOT_A_LIST`, prose is never parsed; keeps
-  of each item the declared payload fields (a number for a `text` field becomes text); and writes each item whose key
-  the feed has not seen into the outbox (§3.2) as the declared event with key `<feed>:<item key>` and cause
-  `feed:<instance>/<feed>@<ms>`. The seen-set lives in the outbox database (`seen`, newest 20,000 keys per feed),
+  of each item the table's columns (a number for a `text` column becomes text); and writes each item whose key the feed
+  has not seen into the outbox (§3.2) as a **row** of `into` (`table` instead of `event`) with key `<feed>:<item key>`
+  and cause `feed:<instance>/<feed>@<ms>`. The platform upserts rows by the table's key; the space raises
+  `<table>.inserted|updated` once per row when it lands — a feed raises no event of its own. The seen-set lives in the outbox database (`seen`, newest 20,000 keys per feed),
   marked in the same transaction as the write, so a restart never sends a row twice and a refused write
   (`OUTBOX_FULL`) leaves the key for the next poll. Errors carrying a code of `backoff.on` (HTTP status, JSON-RPC code,
   the server's own `code`; `-412` matches `412`) pause the feed for `waitMs` (`backing_off`, `FEED_BACKING_OFF`); other

@@ -20,7 +20,8 @@ fn ev(n: u64) -> NewEvent {
     NewEvent {
         space: "wrk_feed".into(),
         instance: Some("ins_1".into()),
-        event: "feed.new".into(),
+        event: None,
+        table: Some("feed".into()),
         payload: json!({"id": n.to_string(), "title": format!("item {n}")}),
         key: Some(n.to_string()),
         cause: None,
@@ -100,14 +101,14 @@ fn refused_entries_leave_and_are_kept_for_the_status() {
         o.append(&ev(n)).unwrap();
     }
     let refused = parse_refused(Some(
-        &json!([{"seq": 2, "code": "EVENT_UNDECLARED", "message": "wrk_feed declares no event feed.new"}]),
+        &json!([{"seq": 2, "code": "EVENT_INVALID", "message": "wrk_feed declares no table feed"}]),
     ));
     assert_eq!(o.ack(3, &refused), 3);
     let s = o.status();
     assert_eq!((s.pending, s.refused), (0, 1));
     let last = s.last_refused.unwrap();
-    assert_eq!(last["code"], "EVENT_UNDECLARED");
-    assert_eq!(last["event"], "feed.new");
+    assert_eq!(last["code"], "EVENT_INVALID");
+    assert_eq!(last["table"], "feed");
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
 
@@ -132,7 +133,7 @@ fn the_cap_pauses_producers_and_bad_events_are_refused_at_once() {
     big.payload = json!({"text": "x".repeat(PAYLOAD_MAX)});
     assert_eq!(o.append(&big).unwrap_err().code, "EVENT_TOO_LARGE");
     let mut bad = ev(1);
-    bad.event = "Feed New".into();
+    bad.table = Some("Feed New".into());
     assert_eq!(o.append(&bad).unwrap_err().code, "EVENT_INVALID");
     bad = ev(1);
     bad.payload = json!([1]);
@@ -167,7 +168,8 @@ fn a_feed_key_is_written_once_and_a_refusal_leaves_it_unseen() {
     let row = |key: &str, size: usize| NewEvent {
         space: "spc_1".into(),
         instance: Some("ins_1".into()),
-        event: "feed.new".into(),
+        event: None,
+        table: Some("feed".into()),
         payload: json!({"id": key, "text": "x".repeat(size)}),
         key: Some(format!("f:{key}")),
         cause: None,
