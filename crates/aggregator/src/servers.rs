@@ -220,7 +220,7 @@ pub enum State {
     Crashed(String),
     Stopped,
     /// The sandbox cannot run it (never started unconfined).
-    Unavailable(String),
+    Unavailable(agentrouter_sandbox::Unavailable),
 }
 
 impl State {
@@ -304,7 +304,8 @@ impl Server {
     pub fn view(&self) -> Value {
         let state = self.state();
         let error = match &state {
-            State::Crashed(e) | State::Unavailable(e) => Some(e.clone()),
+            State::Crashed(e) => Some(e.clone()),
+            State::Unavailable(u) => Some(u.to_string()),
             _ => None,
         };
         json!({
@@ -410,8 +411,8 @@ pub async fn supervise(agg: Arc<Inner>, server: Arc<Server>) {
                 agg.server_event(&server, "exited", None);
             }
             Err(StartError::Unavailable(u)) => {
-                server.set_state(State::Unavailable(u.to_string()));
                 agg.server_event(&server, "sandbox_unavailable", Some(u.to_string()));
+                server.set_state(State::Unavailable(u));
                 return;
             }
             Err(StartError::Failed(e)) => {

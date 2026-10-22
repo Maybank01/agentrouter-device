@@ -1,18 +1,24 @@
 //! The runtimes local tools run on (device #116, Cloud #2383): folder mode never asks the person to install anything
 //! (the product is for ordinary people). srt is a Node program and so are `npx` servers; `uvx` servers (serena, in the
-//! default bundle) need uv. The device provisions both itself, once, in `sandbox setup` (the double-click start and
-//! the first `link` run it):
+//! default bundle) need uv. On Linux srt also runs ripgrep (it finds the dangerous files to keep unwritable) and socat
+//! (it relays the sandbox's network to srt's proxy), #119. The device provisions all of them itself, once, in
+//! `sandbox setup` (the double-click start and the first `link` run it). bubblewrap is the one exception: on Ubuntu
+//! 24.04+ only the packaged `/usr/bin/bwrap` may create user namespaces (its AppArmor profile), so a missing one is a
+//! one-line install for the person (`Runtime::status` names the command).
 //!
 //! - **Pinned:** one version per runtime and the project's official portable archive per OS and architecture, its
 //!   SHA-256 written here. Node: from the release's `SHASUMS256.txt`, whose signature was checked against the Node.js
-//!   release keys (`nodejs/release-keys`) when the pin was set. uv: the release's `.sha256` files (the same on GitHub
-//!   and on Astral's mirror). An archive that does not match is deleted, never unpacked.
+//!   release keys (`nodejs/release-keys`) when the pin was set. uv and ripgrep: the release's `.sha256` files (uv's
+//!   are the same on GitHub and on Astral's mirror). socat: our own static build of the official source
+//!   (`.github/workflows/socat.yml`; no maintained upstream static build exists), digests from its release's
+//!   SHA256SUMS. An archive that does not match is deleted, never unpacked.
 //! - **Sources:** the project's own download host first, then a mirror (npmmirror for Node, GitHub for uv); a source
 //!   that stays too slow is left for the next one. The download is in-process (no curl, PowerShell or installer
 //!   program) and lands in `<data>-shared/runtimes/` beside the data folder, never in the temp folder
 //!   (docs/AV-HYGIENE.md).
 //! - **One path:** srt, the Windows sandbox entry, `npm ci`, and `npx`/`uvx` servers use these runtimes, never the
-//!   person's own Node or uv (whatever version that is, if any). They go first on a server's PATH.
+//!   person's own Node or uv (whatever version that is, if any). [`TOOLS`] go first on a server's PATH; srt gets the
+//!   absolute paths of [`SANDBOX_LINUX`] in its settings (`ripgrep.command`, `socatPath`), never the person's own.
 //! - **Bumping a pin:** the new version and all six digests, re-vetted (licence, release notes). The new folder is put
 //!   in place first; the old version's folder is removed after.
 
@@ -38,6 +44,8 @@ pub struct Pinned {
     pub bin_unix: &'static str,
     /// Its programs (without `.exe`/`.cmd`); the first one must exist for the runtime to count as installed.
     pub programs: &'static [&'static str],
+    /// Without it nothing confined starts (`sandbox setup` fails); otherwise only the tools that use it are missing.
+    pub required: bool,
 }
 
 /// The official archive for one OS and architecture (`std::env::consts` names).
@@ -102,6 +110,7 @@ pub const NODE: Pinned = Pinned {
     bin_windows: "",
     bin_unix: "bin",
     programs: &["node", "npm", "npx"],
+    required: true,
 };
 
 /// uv (Astral, MIT/Apache-2.0), for `uvx` servers. 0.13.4, released 2026-10-20; Linux uses the static musl build.
@@ -154,10 +163,80 @@ pub const UV: Pinned = Pinned {
     bin_windows: "",
     bin_unix: "",
     programs: &["uv", "uvx"],
+    required: false,
 };
 
-/// Every runtime the device provisions, in the order `sandbox setup` does them.
-pub const ALL: [&Pinned; 2] = [&NODE, &UV];
+/// ripgrep (BurntSushi, MIT/Unlicense), srt's scan for dangerous files below a folder on Linux. 15.2.0, released
+/// 2026-07-15; the static musl builds (aarch64 musl is new in 15.2.0).
+pub const RG: Pinned = Pinned {
+    title: "ripgrep",
+    name: "rg",
+    version: "15.2.0",
+    sources: &["https://github.com/BurntSushi/ripgrep/releases/download/{version}/{file}"],
+    archives: &[
+        Archive {
+            os: "linux",
+            arch: "x86_64",
+            file: "ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz",
+            sha256: "33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c",
+        },
+        Archive {
+            os: "linux",
+            arch: "aarch64",
+            file: "ripgrep-15.2.0-aarch64-unknown-linux-musl.tar.gz",
+            sha256: "800b1e7206afe799dfb5a6901f23147cfaabe0e52210538100f61e86e1740915",
+        },
+    ],
+    bin_windows: "",
+    bin_unix: "",
+    programs: &["rg"],
+    required: true,
+};
+
+/// socat (GPL-2.0), srt's network relay on Linux: on the host from a Unix socket to srt's proxy, inside bubblewrap
+/// from TCP 3128/1080 to that socket. 1.8.1.3 built statically against musl by `.github/workflows/socat.yml` (release
+/// `socat-static-<version>`, with its source); `-r1` is the build revision.
+pub const SOCAT: Pinned = Pinned {
+    title: "socat",
+    name: "socat",
+    version: "1.8.1.3-r1",
+    sources: &[
+        "https://github.com/Maybank01/agentrouter-device/releases/download/socat-static-{version}/{file}",
+    ],
+    archives: &[
+        Archive {
+            os: "linux",
+            arch: "x86_64",
+            file: "socat-1.8.1.3-x86_64-linux-musl.tar.gz",
+            sha256: "ba3cfa959b4adc7a1fe630cefa501e656edb0a89450e24dddd64422097522f44",
+        },
+        Archive {
+            os: "linux",
+            arch: "aarch64",
+            file: "socat-1.8.1.3-aarch64-linux-musl.tar.gz",
+            sha256: "3622ec76b7d1ec9fbeeb9aed5a6fe74cf476a1c95512f0655b6cb7f4fb90ff81",
+        },
+    ],
+    bin_windows: "",
+    bin_unix: "",
+    programs: &["socat"],
+    required: true,
+};
+
+/// What local tools run on, on every OS (first on their PATH), in the order `sandbox setup` provisions them.
+pub const TOOLS: [&Pinned; 2] = [&NODE, &UV];
+
+/// What srt itself runs on Linux besides Node (it gets their absolute paths).
+pub const SANDBOX_LINUX: [&Pinned; 2] = [&RG, &SOCAT];
+
+/// What srt runs on this OS besides Node: [`SANDBOX_LINUX`] on Linux, nothing elsewhere.
+pub fn sandbox_programs() -> &'static [&'static Pinned] {
+    if cfg!(target_os = "linux") {
+        &SANDBOX_LINUX
+    } else {
+        &[]
+    }
+}
 
 /// The largest archive accepted (Node's macOS archive is ~50 MB).
 const ARCHIVE_MAX: u64 = 256 << 20;
@@ -446,9 +525,25 @@ fn single_folder(dir: &Path) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    fn well_formed(rt: &Pinned, a: &Archive) {
+        assert_eq!(a.sha256.len(), 64, "{}", a.file);
+        assert!(
+            a.sha256
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+            "{}",
+            a.file
+        );
+        let ext = if a.os == "windows" { ".zip" } else { ".tar.gz" };
+        assert!(a.file.ends_with(ext), "{}", a.file);
+        for s in rt.sources {
+            assert!(s.starts_with("https://") && s.contains("{file}"), "{s}");
+        }
+    }
+
     #[test]
-    fn every_pin_covers_six_platforms_with_a_well_formed_digest() {
-        for rt in ALL {
+    fn every_pin_covers_its_platforms_with_a_well_formed_digest() {
+        for rt in TOOLS {
             assert_eq!(rt.archives.len(), 6, "{}", rt.name);
             for os in ["windows", "macos", "linux"] {
                 for arch in ["x86_64", "aarch64"] {
@@ -457,31 +552,49 @@ mod tests {
                         .iter()
                         .find(|a| a.os == os && a.arch == arch)
                         .unwrap_or_else(|| panic!("{} has no {os} {arch}", rt.name));
-                    assert_eq!(a.sha256.len(), 64, "{}", a.file);
-                    assert!(
-                        a.sha256
-                            .bytes()
-                            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
-                    );
-                    let ext = if os == "windows" { ".zip" } else { ".tar.gz" };
-                    assert!(a.file.ends_with(ext), "{}", a.file);
+                    well_formed(rt, a);
                 }
-            }
-            for s in rt.sources {
-                assert!(s.starts_with("https://") && s.contains("{file}"), "{s}");
             }
             assert!(rt.archive().is_some(), "{} on this runner", rt.name);
         }
+        for rt in SANDBOX_LINUX {
+            assert_eq!(rt.archives.len(), 2, "{}", rt.name);
+            for arch in ["x86_64", "aarch64"] {
+                let a = rt
+                    .archives
+                    .iter()
+                    .find(|a| a.os == "linux" && a.arch == arch)
+                    .unwrap_or_else(|| panic!("{} has no linux {arch}", rt.name));
+                well_formed(rt, a);
+                assert!(a.file.contains(arch), "{}", a.file);
+            }
+            assert_eq!(
+                rt.archive().is_some(),
+                cfg!(target_os = "linux"),
+                "{}",
+                rt.name
+            );
+            assert!(rt.required, "{}: srt cannot confine without it", rt.name);
+        }
+        assert_eq!(sandbox_programs().is_empty(), !cfg!(target_os = "linux"));
         for a in NODE.archives {
             assert!(a.file.starts_with(&format!("node-v{}-", NODE.version)));
+        }
+        for a in RG.archives {
+            assert!(a.file.starts_with(&format!("ripgrep-{}-", RG.version)));
+        }
+        let socat_release = SOCAT.version.split("-r").next().unwrap();
+        for a in SOCAT.archives {
+            assert!(a.file.starts_with(&format!("socat-{socat_release}-")));
         }
     }
 
     /// Only the projects' own hosts and their well-known mirrors (docs/AV-HYGIENE.md).
     #[test]
     fn downloads_come_from_the_official_hosts_only() {
-        let hosts: Vec<&str> = ALL
+        let hosts: Vec<&str> = TOOLS
             .iter()
+            .chain(SANDBOX_LINUX.iter())
             .flat_map(|rt| rt.sources.iter())
             .map(|s| s.trim_start_matches("https://").split('/').next().unwrap())
             .collect();
@@ -491,9 +604,18 @@ mod tests {
                 "nodejs.org",
                 "cdn.npmmirror.com",
                 "releases.astral.sh",
+                "github.com",
+                "github.com",
                 "github.com"
             ]
         );
+        // On GitHub: the projects' own release pages (ripgrep's; socat's static build is ours, beside its source).
+        assert!(
+            RG.sources[0].starts_with("https://github.com/BurntSushi/ripgrep/releases/download/")
+        );
+        assert!(SOCAT.sources[0].starts_with(
+            "https://github.com/Maybank01/agentrouter-device/releases/download/socat-static-"
+        ));
     }
 
     fn temp(name: &str) -> PathBuf {

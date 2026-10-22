@@ -499,8 +499,14 @@ call answers `SANDBOX_UNAVAILABLE` with a `next` that tells the person what to r
   another's launch file in `<data>-scratch` before the entry deletes it, or open its processes). The
   boundary is between the servers and the person's files, secrets and network, as on the other OSes.
 - **macOS:** Seatbelt profile generated per link; no setup step.
-- **Linux:** needs `bwrap` and unprivileged user namespaces (Ubuntu 24.04+ AppArmor may block them; the
-  `next` says how to allow it).
+- **Linux:** bubblewrap + a network namespace. srt also runs ripgrep (its scan for dangerous files below a folder)
+  and socat (the network relay: host side a Unix socket to srt's proxy, inside bubblewrap TCP 3128/1080 to that
+  socket); both are the device's own pinned copies (§6.5, device #119) and srt gets their absolute paths
+  (`ripgrep.command`, `socatPath`). `bwrap` is the distribution's, passed as `bwrapPath` (`/usr/bin/bwrap` first: on
+  Ubuntu 24.04+ only the packaged one may create user namespaces, through its AppArmor profile). A missing `bwrap`, or
+  user namespaces the kernel refuses, is `HOSTD_SANDBOX_NEEDS_ADMIN` (Cloud error catalog): `sandbox setup` cannot fix
+  it, and `next` is the exact one line for this distribution (`sudo apt-get install -y bubblewrap`, `dnf`, `pacman`,
+  `zypper`, `apk` from os-release) and what it is for.
 - Screen (Windows-MCP) cannot be confined to a folder and is **off** (owner Q1 「屏幕操作可以先关掉」):
   not in the catalog, `screen on` / `--screen` removed. A separately started screen mode can be designed
   later; it is not planned.
@@ -534,7 +540,10 @@ start and the first `link` run), and `--full` provisions them too:
 - One path: srt, the Windows sandbox entry, `npm ci` (as `node npm-cli.js`, no `npm.cmd`), `npx` and `uvx` use these,
   never the person's own installs; they go first on every local server's PATH. Without uv only `uvx` tools are
   missing (a line in setup, `RUNTIME_MISSING` on start). A cloud placement provisions nothing (its image has them).
-- Still the person's: Linux needs `bwrap`, `socat` and `rg` from the distribution (§6.3).
+- Linux also gets srt's **ripgrep** (15.2.0, the official static musl build) and **socat** (1.8.1.3, built statically
+  from the official source by `.github/workflows/socat.yml`, published with that source; no maintained upstream static
+  build exists), from GitHub, in `sandbox setup` only (`--full` does not need them). srt gets their paths; they are not
+  put on a server's PATH. Still the person's: `bwrap` (§6.3).
 
 ## 7. Audit and undo
 
