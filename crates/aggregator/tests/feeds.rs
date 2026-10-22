@@ -110,6 +110,12 @@ async fn a_feed_writes_new_items_once_and_backs_off_on_declared_codes() {
         Arc::new(TestHooks(sink.clone())),
         Arc::new(|_: &str, _: Value| {}),
     );
+    // The sandbox job hides the runner's Node.js (#116): there the device provisions its own, as on people's PCs.
+    if std::env::var("AGENTROUTER_SANDBOX_TESTS").ok().as_deref() == Some("1") {
+        agentrouter_sandbox::Runtime::new(&base.join("data"))
+            .setup()
+            .expect("sandbox setup on the runner");
+    }
     let def = ServerDef::parse(
         &json!({"name": "feeder", "command": "node", "args": [script.to_string_lossy()]}),
     )
