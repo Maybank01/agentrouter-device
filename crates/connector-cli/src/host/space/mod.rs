@@ -2,13 +2,16 @@
 //! PROJECT-SERVICE.md §5.5, #2767). The OS adapter of read path (b) — commands, tasks, runtimes and editors see normal
 //! files; the Agent's own file tools keep reading through the cache API on the platform side.
 //!
-//! - `space_mount`: mounts (or moves to another version / renews the ticket of) the checkout at a folder. The lower
+//! hostd's own tools (`_…`: the aggregator never lists them, so Agents never see them; Control calls them as
+//! `host___space_*`):
+//!
+//! - `_space_mount`: mounts (or moves to another version / renews the ticket of) the checkout at a folder. The lower
 //!   layer reads the node daemon's content routes with a checkout ticket (`POST /v1/view/checkout` on the platform
 //!   side); the upper layer is this host's own folder under the device home. `prefetch` fetches named files ahead of
 //!   their first read (a task's declared inputs); `settle` drops upper files the new version holds the same.
-//! - `space_changes`: the upper layer as changes (puts with the lower digest they replace, deletes), for the one sync
+//! - `_space_changes`: the upper layer as changes (puts with the lower digest they replace, deletes), for the one sync
 //!   engine, plus this checkout's cache counters.
-//! - `space_unmount`: ends the checkout (the upper layer stays on disk for the next mount at the same folder).
+//! - `_space_unmount`: ends the checkout (the upper layer stays on disk for the next mount at the same folder).
 //!
 //! Linux only for now (`fuser`, MIT, on `/dev/fuse`); Windows (Cloud Files API / ProjFS) and macOS (NFS loopback) are
 //! later steps of #2767 — there these tools answer `CHECKOUT_UNSUPPORTED`, and the platform keeps a full copy.
@@ -29,7 +32,7 @@ use super::{Fail, Host};
 pub(super) fn tools() -> Vec<Value> {
     vec![
         tool(
-            "space_mount",
+            "_space_mount",
             "Platform use: mount a space version (a snapshot root) at a folder of this host as an on-demand checkout — files are fetched from the node cache on first read, writes go copy-on-write into this host's upper layer. Mounting again at the same folder moves it to the given version (settle: drop upper files the new version holds the same). prefetch: files to fetch now. Linux only.",
             json!({"type": "object", "properties": {
                 "path": {"type": "string", "description": "the folder (absolute) the checkout appears at"},
@@ -45,13 +48,13 @@ pub(super) fn tools() -> Vec<Value> {
             false,
         ),
         tool(
-            "space_changes",
+            "_space_changes",
             "Platform use: the changes in a checkout's upper layer (puts with the version digest they replace, deletes) and its cache counters.",
             json!({"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}),
             true,
         ),
         tool(
-            "space_unmount",
+            "_space_unmount",
             "Platform use: end a checkout (its upper layer stays on this host for the next mount at the same folder).",
             json!({"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}),
             false,
@@ -78,13 +81,13 @@ pub(super) struct Spaces;
 #[cfg(not(target_os = "linux"))]
 impl Host {
     pub(super) fn space_mount(&self, _args: &Value) -> Result<Value, Fail> {
-        Err(unsupported("space_mount"))
+        Err(unsupported("_space_mount"))
     }
     pub(super) fn space_changes(&self, _args: &Value) -> Result<Value, Fail> {
-        Err(unsupported("space_changes"))
+        Err(unsupported("_space_changes"))
     }
     pub(super) fn space_unmount(&self, _args: &Value) -> Result<Value, Fail> {
-        Err(unsupported("space_unmount"))
+        Err(unsupported("_space_unmount"))
     }
 }
 
@@ -147,7 +150,7 @@ mod linux {
         else {
             return Err(fail(
                 "INVALID_ARGUMENT",
-                "space_mount",
+                "_space_mount",
                 path,
                 "origin (http/https), root, exp and t are required".into(),
                 false,
@@ -198,7 +201,7 @@ mod linux {
                     m.fs.lower.switch(before);
                     return Err(fail(
                         "CHECKOUT_SOURCE_FAILED",
-                        "space_mount",
+                        "_space_mount",
                         &path,
                         format!("the new version could not be read: {e:?}"),
                         true,
@@ -227,7 +230,7 @@ mod linux {
             .map_err(|e| {
                 fail(
                     "IO_ERROR",
-                    "space_mount",
+                    "_space_mount",
                     &state,
                     e.to_string(),
                     false,
@@ -238,7 +241,7 @@ mod linux {
             lower.dir("").map_err(|e| {
                 fail(
                     "CHECKOUT_SOURCE_FAILED",
-                    "space_mount",
+                    "_space_mount",
                     &path,
                     format!("the version's top could not be read: {e:?}"),
                     true,
@@ -272,7 +275,7 @@ mod linux {
             let fs = Arc::new(SpaceFs::new(lower, &state, owner).map_err(|e| {
                 fail(
                     "IO_ERROR",
-                    "space_mount",
+                    "_space_mount",
                     &state,
                     e.to_string(),
                     false,
@@ -282,7 +285,7 @@ mod linux {
             std::fs::create_dir_all(&path).map_err(|e| {
                 fail(
                     "IO_ERROR",
-                    "space_mount",
+                    "_space_mount",
                     &path,
                     e.to_string(),
                     false,
@@ -303,7 +306,7 @@ mod linux {
             };
             config.n_threads = Some(8);
             let session = fuser::spawn_mount(Shared(fs.clone()), &path, &config).map_err(|e| {
-                fail("CHECKOUT_MOUNT_FAILED", "space_mount", &path, format!("FUSE mount: {e}"), false, "the environment needs /dev/fuse (and fusermount3 when hostd is not root); the platform falls back to a full copy")
+                fail("CHECKOUT_MOUNT_FAILED", "_space_mount", &path, format!("FUSE mount: {e}"), false, "the environment needs /dev/fuse (and fusermount3 when hostd is not root); the platform falls back to a full copy")
             })?;
             mounts.insert(
                 path.clone(),
@@ -337,17 +340,17 @@ mod linux {
             let Some(fs) = fs else {
                 return Err(fail(
                     "CHECKOUT_NOT_MOUNTED",
-                    "space_changes",
+                    "_space_changes",
                     &path,
                     "no checkout is mounted here".into(),
                     false,
-                    "mount it first with host__space_mount",
+                    "mount it first with host___space_mount",
                 ));
             };
             let changes = fs.changes().map_err(|e| {
                 fail(
                     "CHECKOUT_CHANGES_FAILED",
-                    "space_changes",
+                    "_space_changes",
                     &path,
                     e.to_string(),
                     true,

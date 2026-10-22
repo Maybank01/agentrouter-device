@@ -272,9 +272,9 @@ impl Host {
             "spill_write" => self.spill_write(args)?,
             "out_release" => self.out_release(args)?,
             "out_status" => self.out_status()?,
-            "space_mount" => self.space_mount(args)?,
-            "space_changes" => self.space_changes(args)?,
-            "space_unmount" => self.space_unmount(args)?,
+            "_space_mount" => self.space_mount(args)?,
+            "_space_changes" => self.space_changes(args)?,
+            "_space_unmount" => self.space_unmount(args)?,
             #[cfg(unix)]
             "_port_bridge" => self.port_bridge(args)?,
             other => return Err(format!("没有这个工具：{other}").into()),
