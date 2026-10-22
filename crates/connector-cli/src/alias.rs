@@ -6,6 +6,7 @@ mod cloud;
 mod console;
 #[path = "mcp_serve.rs"]
 mod mcp_serve;
+mod service;
 mod start;
 
 fn main() {

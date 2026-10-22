@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use agentrouter_device::util::data_dir;
 
 /// Set by Ctrl+C (one handler for the whole run: pairing, then the link).
-static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+pub(crate) static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
 const USAGE: &str = "AgentRouter（agentrouter）：在任意文件夹里运行 agentrouter link，云端对话里的 Agent 就能在这个文件夹里干活
 link 启动 hostd（宿主守护进程）；agentrouter hostd 是同一条命令
@@ -43,6 +43,12 @@ link 启动 hostd（宿主守护进程）；agentrouter hostd 是同一条命令
   sudo agentrouter sandbox userns install|remove
                                 Ubuntu 这类限制用户命名空间的 Linux：给 AgentRouter 自己的隔离程序 bubblewrap
                                 加一条只管它的 AppArmor 规则（装一份 root 所有的副本）；remove 撤销
+  agentrouter service install [文件夹…] [--read-only | --full] [--yes-servers]
+                                开机自动连接（只有你运行这条命令才会打开）：登录这台电脑后自动链接这些文件夹，断了自己重连。
+                                由系统自己的机制启动（Linux systemd 用户服务、macOS 登录项 LaunchAgent、Windows 任务计划程序）；
+                                要先用 agentrouter link 确认过这台电脑。启动后没有人回答 y/N，要问的一律当作「不」
+  agentrouter service status    开机自动连接：开着没有、在不在运行、哪些文件夹、链接状态
+  agentrouter service uninstall 关掉开机自动连接（删掉系统里的启动项；这台电脑仍然链接着账号）
   agentrouter status            账号、网关、沙箱、当前文件夹
   agentrouter logout            这台电脑退出链接（删掉本机的链接身份）
 ";
@@ -143,6 +149,7 @@ pub fn main() {
                 gateway: flags.gateway.clone(),
                 name: flags.name.clone(),
                 double_click: false,
+                service: false,
             },
             &INTERRUPTED,
         ),
@@ -169,6 +176,13 @@ pub fn main() {
             crate::console::audit_cmd(verify, n)
         }
         "sandbox" => cmd_sandbox(flags),
+        "service" => crate::service::cmd(
+            flags.positional.first().map(String::as_str),
+            flags.positional.get(1..).unwrap_or_default(),
+            flags.read_only,
+            flags.full,
+            flags.yes_servers,
+        ),
         "status" => crate::console::status(),
         "logout" => crate::console::logout(),
         "version" | "--version" | "-V" => {
