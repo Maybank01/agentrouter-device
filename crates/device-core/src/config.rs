@@ -112,6 +112,9 @@ pub struct Config {
     pub labels: Vec<String>,
     /// How many environments (Agents' workplaces) this host takes at once; unset = from cores and memory.
     pub max_environments: Option<u32>,
+    /// The pool the owner puts this host in (「渲染机」, `rack-2`; Cloud VISION §4 D2): a definition may admit it as
+    /// `pool:<name>`. Unset = the person's default pool. 1–40 characters, no control characters (else not sent).
+    pub pool: Option<String>,
 }
 
 impl Default for Config {
@@ -126,6 +129,7 @@ impl Default for Config {
             start_folder: None,
             labels: Vec::new(),
             max_environments: None,
+            pool: None,
         }
     }
 }
@@ -133,6 +137,13 @@ impl Default for Config {
 impl Config {
     pub fn path() -> PathBuf {
         data_dir().join("config.json")
+    }
+
+    /// [`Config::pool`] when it is a usable name (trimmed, 1–40 characters, no control characters).
+    pub fn pool_name(&self) -> Option<String> {
+        let p = self.pool.as_deref()?.trim();
+        (!p.is_empty() && p.chars().count() <= 40 && !p.chars().any(char::is_control))
+            .then(|| p.to_string())
     }
 
     pub fn load() -> Config {
@@ -160,6 +171,21 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pool_is_sent_only_when_it_is_a_usable_name() {
+        let with = |p: &str| Config {
+            pool: Some(p.into()),
+            ..Config::default()
+        };
+        assert_eq!(Config::default().pool_name(), None);
+        assert_eq!(with(" 渲染机 ").pool_name().as_deref(), Some("渲染机"));
+        assert_eq!(with("   ").pool_name(), None);
+        assert_eq!(with("a\u{0}b").pool_name(), None);
+        assert_eq!(with(&"x".repeat(41)).pool_name(), None);
+        let parsed: Config = serde_json::from_str(r#"{"pool": "rack-2"}"#).unwrap();
+        assert_eq!(parsed.pool_name().as_deref(), Some("rack-2"));
+    }
 
     #[test]
     fn access_round_trip() {
