@@ -30,7 +30,7 @@
 //! person's secrets and the device data folder; network = package mirrors + the server's catalog list, through
 //! srt's proxy, or the open web for a catalog preset whose list is [`OPEN_WEB`] ([`Launch::open_web`]); local ports
 //! as in the person's terminal ([`Runtime::local_binding`], #139); the person's tool configuration read-only
-//! ([`PROFILE_ENV`], #138); file watching on macOS ([`MACOS_MACH_SERVICES`], #141). There is no unconfined
+//! ([`PROFILE_ENV`], #138); file watching and terminals on macOS ([`MACOS_MACH_SERVICES`], #141; `allowPty`). There is no unconfined
 //! fallback: when the sandbox cannot run, [`Unavailable`] says what to do.
 
 use std::path::{Component, Path, PathBuf};
@@ -1035,6 +1035,13 @@ impl Runtime {
             policy["windows"] =
                 json!({"proxyPortRange": [WINDOWS_PROXY_PORTS.0, WINDOWS_PROXY_PORTS.1]});
         }
+        if cfg!(target_os = "macos") {
+            // Terminals (Cloud #2383, parity run 39718508921 T5: `openpty: Operation not permitted`): srt's Seatbelt
+            // profile denies pseudo-terminals unless asked (srt README `allowPty`: `(allow pseudo-tty)` and /dev/ptmx,
+            // /dev/ttys*). The host server's persistent terminals and every command that opens its own pty need it, as in
+            // the person's terminal. Linux and Windows do not read it.
+            policy["allowPty"] = json!(true);
+        }
         self.linux_programs(&mut policy);
         Ok(policy)
     }
@@ -1758,13 +1765,14 @@ mod tests {
         if !cfg!(windows) {
             assert_eq!(rt.local_binding(), cfg!(target_os = "macos"));
         }
-        // macOS: file watchers reach FSEvents (device #141); nothing extra elsewhere.
+        // macOS: file watchers reach FSEvents (device #141) and commands open terminals; nothing extra elsewhere.
         let p = rt.policy_with(&launch, false).unwrap();
         let mach = &p["network"]["allowMachLookup"];
         if cfg!(target_os = "macos") {
             assert_eq!(mach, &json!(["com.apple.FSEvents"]));
+            assert_eq!(p["allowPty"], json!(true));
         } else {
-            assert!(mach.is_null(), "{p}");
+            assert!(mach.is_null() && p["allowPty"].is_null(), "{p}");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
