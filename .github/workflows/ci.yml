@@ -269,6 +269,9 @@ jobs:
         run: cargo test -p agentrouter-hostd-link -- --nocapture
       - name: The whole chain through the real CLI, and the escape cases (issue #50)
         run: cargo test -p agentrouter-device-cli --test link_e2e -- --nocapture
+      # The task step on every OS (macOS has no other job that runs hostd's unit tests).
+      - name: hostd's task step stages, collects and picks on this OS (Cloud #2836)
+        run: cargo test -p agentrouter-device-cli --bin agentrouter host::task -- --nocapture
       # #122: remove undoes it and the status asks again; without the restriction (Debian, Fedora, Arch…) the device's
       # own copy needs no admin step.
       - name: Remove undoes it; without the restriction nothing needs an admin (Linux)
