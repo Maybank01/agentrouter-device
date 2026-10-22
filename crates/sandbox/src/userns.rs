@@ -264,7 +264,8 @@ pub fn remove() -> Result<Vec<String>, String> {
     Ok(done)
 }
 
-#[cfg(test)]
+// Unix paths and shell words (the module is for Linux; Windows never runs it).
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
