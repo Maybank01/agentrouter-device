@@ -20,7 +20,8 @@ name: Parity bench (PC)
 #            npm @steipete/peekaboo-mcp has not changed since 2025-11 and is not used)
 #   Linux    no maintained screenshot MCP exists; DesktopCommander (MIT, active; npm @wonderwhy-er/desktop-commander
 #            0.3.0, 2026-10-13) granted the screen runs the person's own screenshot command (ImageMagick `import`) on
-#            the runner's Xvfb display; installed with npm first (#150), not started cold by npx
+#            the runner's Xvfb display; installed with npm first (#150), not started cold by npx, with --no-onboarding
+#            (no welcome page in a browser on its first start, Cloud #2703)
 
 on:
   workflow_dispatch:
@@ -150,7 +151,10 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "npm install desktop-commander exited $LASTEXITCODE" }
             "desktop-commander installed in $([int]$t.Elapsed.TotalSeconds) s"
             $dc = (Get-Command desktop-commander -ErrorAction Stop).Source
-            & $env:PB_HOSTD mcp add screen --display --yes --title "Desktop Commander" -- $dc
+            # --no-onboarding (Cloud #2703): on a first run DesktopCommander may (an A/B experiment) open its welcome page
+            # with `xdg-open` and answers MCP `initialize` only after xdg-open returns. With no desktop environment
+            # (this Xvfb), xdg-open runs the browser in the foreground, so the tool stayed `starting` for the whole task.
+            & $env:PB_HOSTD mcp add screen --display --yes --title "Desktop Commander" -- $dc --no-onboarding
           }
           if ($LASTEXITCODE -ne 0) { throw "mcp add exited $LASTEXITCODE" }
           & $env:PB_HOSTD mcp list
