@@ -11,9 +11,11 @@ out=${2:?output folder}
 
 apk add --no-cache build-base linux-headers >/dev/null
 
+mkdir -p "$out"
+out=$(cd "$out" && pwd)
 work=/tmp/socat-build
 rm -rf "$work"
-mkdir -p "$work" "$out"
+mkdir -p "$work"
 tar -xzf "$tarball" -C "$work"
 src=$(find "$work" -mindepth 1 -maxdepth 1 -type d | head -n 1)
 cd "$src"
