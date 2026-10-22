@@ -463,6 +463,11 @@ impl Server {
             "display": self.def.display,
             "state": state.label(),
             "error": error,
+            // The catalog code of a server that cannot run (a sandbox or install failure), for the cloud's error.
+            "code": match &state {
+                State::Unavailable(u) => Some(u.code),
+                _ => None,
+            },
             "tools": self.tools.lock().unwrap().len(),
             "restarts": self.restarts.load(Ordering::SeqCst),
             "limitEvents": self.limit_events.lock().unwrap().iter().rev().take(5).map(|(_, l)| l.clone()).collect::<Vec<_>>(),

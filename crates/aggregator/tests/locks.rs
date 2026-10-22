@@ -362,10 +362,25 @@ async fn catalog_servers_install_from_their_locks_and_run_confined() {
         );
         let mut args = args;
         args["name"] = json!(format!("bad{what}"));
+        let name = format!("bad{what}");
         let added = link.call("link__server_add", args).await;
-        assert_eq!(
-            added["error"]["data"]["code"], "MCP_DIGEST_MISMATCH",
-            "{what}: {added}"
+        // Within its wait the answer is the error; a slower refusal (npm retries a bad file on Windows) shows on the
+        // server's state and code, and on every call of its tools.
+        let mut code = added["error"]["data"]["code"].clone();
+        let deadline = Instant::now() + Duration::from_secs(600);
+        while code.is_null() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            let called = link.call(&format!("{name}__anything"), json!({})).await;
+            let got = &called["error"]["data"]["code"];
+            if got != "SERVER_STARTING" {
+                code = got.clone();
+            }
+        }
+        assert_eq!(code, "MCP_DIGEST_MISMATCH", "{what}: {added}");
+        let servers = link.call("link__servers", json!({})).await;
+        assert!(
+            servers.to_string().contains("install_failed"),
+            "{what}: {servers}"
         );
     }
 
