@@ -79,12 +79,12 @@ pub fn forget() {
 }
 
 #[cfg(windows)]
-fn write_private(p: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_private(p: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::write(p, bytes)
 }
 
 #[cfg(unix)]
-fn write_private(p: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_private(p: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     let mut f = std::fs::OpenOptions::new()
@@ -101,6 +101,17 @@ const ENTROPY: &[u8] = b"agentrouter-device/identity/v1";
 
 #[cfg(windows)]
 fn seal(plain: &[u8]) -> std::io::Result<Vec<u8>> {
+    seal_with(ENTROPY, plain)
+}
+
+#[cfg(windows)]
+fn unseal(sealed: &[u8]) -> std::io::Result<Vec<u8>> {
+    unseal_with(ENTROPY, sealed)
+}
+
+/// Seal bytes so only this OS user on this computer can open them (DPAPI with `entropy` as the purpose).
+#[cfg(windows)]
+pub(crate) fn seal_with(entropy_bytes: &[u8], plain: &[u8]) -> std::io::Result<Vec<u8>> {
     use windows_sys::Win32::Security::Cryptography::{
         CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData,
     };
@@ -109,8 +120,8 @@ fn seal(plain: &[u8]) -> std::io::Result<Vec<u8>> {
         pbData: plain.as_ptr() as *mut u8,
     };
     let entropy = CRYPT_INTEGER_BLOB {
-        cbData: ENTROPY.len() as u32,
-        pbData: ENTROPY.as_ptr() as *mut u8,
+        cbData: entropy_bytes.len() as u32,
+        pbData: entropy_bytes.as_ptr() as *mut u8,
     };
     let mut output = CRYPT_INTEGER_BLOB {
         cbData: 0,
@@ -135,7 +146,7 @@ fn seal(plain: &[u8]) -> std::io::Result<Vec<u8>> {
 }
 
 #[cfg(windows)]
-fn unseal(sealed: &[u8]) -> std::io::Result<Vec<u8>> {
+pub(crate) fn unseal_with(entropy_bytes: &[u8], sealed: &[u8]) -> std::io::Result<Vec<u8>> {
     use windows_sys::Win32::Security::Cryptography::{
         CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptUnprotectData,
     };
@@ -144,8 +155,8 @@ fn unseal(sealed: &[u8]) -> std::io::Result<Vec<u8>> {
         pbData: sealed.as_ptr() as *mut u8,
     };
     let entropy = CRYPT_INTEGER_BLOB {
-        cbData: ENTROPY.len() as u32,
-        pbData: ENTROPY.as_ptr() as *mut u8,
+        cbData: entropy_bytes.len() as u32,
+        pbData: entropy_bytes.as_ptr() as *mut u8,
     };
     let mut output = CRYPT_INTEGER_BLOB {
         cbData: 0,
@@ -187,6 +198,17 @@ fn seal(plain: &[u8]) -> std::io::Result<Vec<u8>> {
 
 #[cfg(not(windows))]
 fn unseal(sealed: &[u8]) -> std::io::Result<Vec<u8>> {
+    Ok(sealed.to_vec())
+}
+
+/// Elsewhere the protection is the owner-only file ([`write_private`]); the bytes are kept as they are.
+#[cfg(not(windows))]
+pub(crate) fn seal_with(_entropy: &[u8], plain: &[u8]) -> std::io::Result<Vec<u8>> {
+    Ok(plain.to_vec())
+}
+
+#[cfg(not(windows))]
+pub(crate) fn unseal_with(_entropy: &[u8], sealed: &[u8]) -> std::io::Result<Vec<u8>> {
     Ok(sealed.to_vec())
 }
 

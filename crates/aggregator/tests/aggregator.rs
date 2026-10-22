@@ -28,6 +28,13 @@ fn test_root() -> PathBuf {
     std::env::temp_dir()
 }
 
+/// One sandbox test at a time in this binary. `sandbox setup` refreshes srt's profile read grant, which is one per
+/// computer: while a refresh runs no confined server can start (`profile status` = `in_progress`), and a refresh is
+/// refused while confined servers run (srt-win exit 24). Two tests setting up side by side (the default parallel test
+/// threads) therefore broke each other on the Windows runner. Each test holds this until its servers are shut down.
+static SANDBOX_TESTS: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
 const LINK: &str = "lnk_00000000000000000000000000000001";
 
 #[derive(Default)]
@@ -225,6 +232,8 @@ async fn the_protocol_gate_audit_and_no_unconfined_fallback() {
         [
             "link__servers",
             "link__server_add",
+            "link__login",
+            "link__logout",
             "link__server_remove",
             "link__server_logs",
             "link__folder_add",
@@ -393,6 +402,7 @@ async fn a_confined_server_end_to_end() {
         eprintln!("skipped: set AGENTROUTER_SANDBOX_TESTS=1 (CI runners only)");
         return;
     }
+    let _one = SANDBOX_TESTS.lock().await;
     let base = test_root().join(format!("agentrouter-agg-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(base.join("work")).unwrap();
@@ -587,6 +597,194 @@ async fn a_confined_server_end_to_end() {
     assert!(
         confined["description"] == "Write a file." && confined.get("_meta").is_none(),
         "{confined}"
+    );
+
+    h.agg.shutdown().await;
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// A server with its own login (HOSTD-MCP §13.7): `login` prints an address and a key, `login_check` writes the
+/// credential file named by `SITE_COOKIE_FILE`, `whoami` echoes that file (to prove results are blanked).
+const FAKE_LOGIN: &str = r#"
+const fs = require('fs');
+const send = (m) => process.stdout.write(JSON.stringify(m) + '\n');
+const text = (id, t, isError) => send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: String(t) }], isError: !!isError } });
+let buf = '';
+process.stdin.on('data', (d) => {
+  buf += d;
+  let i;
+  while ((i = buf.indexOf('\n')) >= 0) {
+    const line = buf.slice(0, i); buf = buf.slice(i + 1);
+    let m; try { m = JSON.parse(line); } catch { continue; }
+    if (m.method === 'initialize') send({ jsonrpc: '2.0', id: m.id, result: { protocolVersion: m.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'fake-login', version: '1' } } });
+    else if (m.method === 'tools/list') send({ jsonrpc: '2.0', id: m.id, result: { tools: [
+      { name: 'login', inputSchema: { type: 'object' } },
+      { name: 'login_check', inputSchema: { type: 'object' } },
+      { name: 'whoami', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } },
+    ] } });
+    else if (m.method === 'tools/call') {
+      const a = m.params.arguments || {};
+      const file = process.env.SITE_COOKIE_FILE;
+      try {
+        if (m.params.name === 'login') text(m.id, 'Scan:\nhttps://login.example.test/qr?c=1\n{ "loginKey": "K123" }');
+        else if (m.params.name === 'login_check') {
+          if (a.loginKey !== 'K123') text(m.id, 'wrong key ' + a.loginKey, true);
+          else if (!fs.existsSync(process.env.FAKE_SCANNED)) text(m.id, 'not scanned', true);
+          else { fs.writeFileSync(file, JSON.stringify({ sessdata: 's3cr3t-value-1', uid: '7' })); text(m.id, 'logged in'); }
+        } else text(m.id, 'cookie: ' + fs.readFileSync(file, 'utf8'));
+      } catch (e) { text(m.id, 'failed: ' + (e.code || e.message), true); }
+    } else if (m.id !== undefined && m.method) send({ jsonrpc: '2.0', id: m.id, result: {} });
+  }
+});
+"#;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_server_logs_in_on_this_computer_and_its_credential_stays_here() {
+    if std::env::var("AGENTROUTER_SANDBOX_TESTS").ok().as_deref() != Some("1") {
+        eprintln!("skipped: set AGENTROUTER_SANDBOX_TESTS=1 (CI runners only)");
+        return;
+    }
+    let _one = SANDBOX_TESTS.lock().await;
+    let base = test_root().join(format!("agentrouter-agg-login-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(base.join("work")).unwrap();
+    std::fs::create_dir_all(base.join("tools")).unwrap();
+    let base = std::fs::canonicalize(&base).unwrap();
+    let base = PathBuf::from(
+        base.to_string_lossy()
+            .trim_start_matches(r"\\?\")
+            .to_string(),
+    );
+    let folder = base.join("work");
+    let fake = base.join("tools").join("fake-login.cjs");
+    std::fs::write(&fake, FAKE_LOGIN).unwrap();
+    let mut h = Harness::new(&base, &folder, TestHooks::default(), true);
+    agentrouter_sandbox::Runtime::new(&h.data)
+        .setup()
+        .expect("sandbox setup on the runner");
+    h.open("mcs_1", "ags_a").await;
+    let scanned = base.join("scanned");
+    let def = json!({"name": "site", "command": "node", "args": [fake.to_string_lossy()], "waitMs": 120000,
+        "env": {"FAKE_SCANNED": scanned.to_string_lossy()},
+        "credentials": [{"name": "cookie", "fileEnv": "SITE_COOKIE_FILE"}],
+        "login": {"credential": "cookie", "start": "login", "url": "https://\\S+",
+                  "key": "\"loginKey\": \"([^\"]+)\"", "check": "login_check", "keyArg": "loginKey"}});
+    let added = h
+        .call("mcs_1", 2, "ags_a", "link__server_add", def.clone())
+        .await;
+    assert_eq!(
+        added["result"]["structuredContent"]["state"], "ready",
+        "{added}"
+    );
+    assert_eq!(
+        added["result"]["structuredContent"]["credentials"][0]["state"], "missing",
+        "{added}"
+    );
+
+    // The login tools are hostd's: not listed, refused by name.
+    let listed = h.request("mcs_1", 3, "tools/list", json!({})).await;
+    let names: Vec<&str> = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        names.contains(&"site__whoami")
+            && !names.contains(&"site__login")
+            && !names.contains(&"site__login_check"),
+        "{names:?}"
+    );
+    let refused = h.call("mcs_1", 4, "ags_a", "site__login", json!({})).await;
+    assert_eq!(code_of(&refused), "HOST_ONLY_TOOL", "{refused}");
+
+    // The person logs in on this computer: the address is shown here and answered; the check runs in the background.
+    std::fs::write(&scanned, "yes").unwrap();
+    let login = h
+        .call("mcs_1", 5, "ags_a", "link__login", json!({"name": "site"}))
+        .await;
+    assert_eq!(
+        login["result"]["structuredContent"]["url"], "https://login.example.test/qr?c=1",
+        "{login}"
+    );
+    assert!(
+        h.hooks
+            .feed
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|f| matches!(f, Feed::Login { url, .. } if url.contains("login.example.test")))
+    );
+    let mut state = Value::Null;
+    for id in 6..60 {
+        let servers = h
+            .call("mcs_1", id, "ags_a", "link__servers", json!({}))
+            .await;
+        state = servers["result"]["structuredContent"]["servers"][0]["credentials"][0].clone();
+        if state["state"] == "ok" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert_eq!(state["state"], "ok", "{state}");
+    let kept = agentrouter_device::local_secrets::get(&h.data, "site/cookie")
+        .unwrap()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&kept).contains("s3cr3t-value-1"));
+
+    // Its results never carry the value; a restart hands the kept credential back through the file.
+    let who = h
+        .call("mcs_1", 70, "ags_a", "site__whoami", json!({}))
+        .await;
+    let text = who["result"]["content"][0]["text"].as_str().unwrap_or("");
+    assert!(
+        text.contains("[secret]") && !text.contains("s3cr3t-value-1"),
+        "{who}"
+    );
+    h.call(
+        "mcs_1",
+        71,
+        "ags_a",
+        "link__server_remove",
+        json!({"name": "site"}),
+    )
+    .await;
+    let again = h.call("mcs_1", 72, "ags_a", "link__server_add", def).await;
+    assert_eq!(
+        again["result"]["structuredContent"]["credentials"][0]["state"], "ok",
+        "{again}"
+    );
+    let who = h
+        .call("mcs_1", 73, "ags_a", "site__whoami", json!({}))
+        .await;
+    assert!(
+        who["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or("")
+            .contains("[secret]"),
+        "{who}"
+    );
+    assert!(!h.audit().contains("s3cr3t-value-1"), "never in the audit");
+
+    // Logging out forgets it on this computer (nobody scans the login the restart shows).
+    std::fs::remove_file(&scanned).unwrap();
+    let out = h
+        .call(
+            "mcs_1",
+            74,
+            "ags_a",
+            "link__logout",
+            json!({"name": "site"}),
+        )
+        .await;
+    assert_eq!(
+        out["result"]["structuredContent"]["forgotten"],
+        json!(["cookie"]),
+        "{out}"
+    );
+    assert_eq!(
+        agentrouter_device::local_secrets::get(&h.data, "site/cookie").unwrap(),
+        None
     );
 
     h.agg.shutdown().await;

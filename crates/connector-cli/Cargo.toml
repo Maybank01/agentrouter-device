@@ -41,6 +41,8 @@ notify = "8.2.0"
 # Opens the pairing page in the default browser on a double-click start: Byron/open-rs, MIT. On Windows through
 # ShellExecuteExW (`shellexecute-on-windows`), never its default hidden PowerShell launcher (docs/AV-HYGIENE.md).
 open = { version = "5.4.4", features = ["shellexecute-on-windows"] }
+# A local server's login address as a QR in the terminal (`link__login`): kennytm/qrcode-rust, MIT / Apache-2.0.
+qrcode = { version = "0.14.1", default-features = false }
 
 # TLS: native-tls by default (the person's PC); `--no-default-features --features rustls` for the static Linux
 # build of hostd that cloud sandboxes run (musl, no OpenSSL; HOSTD-MCP §13.1, .github/workflows/hostd.yml).

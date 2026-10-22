@@ -189,6 +189,8 @@ fn userns_needs_admin(detail: Option<&str>) -> Unavailable {
     }
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
+const NEXT_PROFILE_BUSY: &str = "等那次设置完成（用户文件夹大时要几分钟）再试，不用再运行 setup。";
 const NEXT_SETUP: &str = "请用户在这台电脑上运行 agentrouter sandbox setup（装好隔离环境；Windows 会弹一次管理员确认），然后再试。";
 
 /// One process to start confined.
@@ -778,6 +780,14 @@ impl Runtime {
                 .map_err(|e| Unavailable::new(e, NEXT_SETUP))?;
             let profile_env = match windows_profile_state(&self.srt_win()) {
                 Ok((state, env)) if state == "current" => env,
+                // A grant or forget is running right now (another `sandbox setup`, half a minute to minutes on a large
+                // profile; srt starts no session meanwhile). Transient: running setup again would not help.
+                Ok((state, _)) if state == "in_progress" => {
+                    return Err(Unavailable::new(
+                        "隔离账户对你用户文件夹的读取权限正在写入（这台电脑上有一次 agentrouter sandbox setup 正在运行）",
+                        NEXT_PROFILE_BUSY,
+                    ));
+                }
                 Ok((state, _)) => {
                     return Err(Unavailable::new(
                         format!("隔离账户还不能读你的用户文件夹（{state}）"),
@@ -867,9 +877,14 @@ impl Runtime {
         let out = cmd.output().map_err(|e| format!("srt-win 起不来：{e}"))?;
         match out.status.code() {
             Some(0) => Ok(()),
-            Some(24) | Some(25) => Err(
+            // srt-win exits: 24 = sessions or commands are running (the grant is written only while none is),
+            // 25 = another grant or forget is running (srt `throwIfRefusedBesideOthers`).
+            Some(24) => Err(
                 "有正在运行的隔离命令，这次没改；关掉这台电脑上其他 agentrouter 链接后再运行 agentrouter sandbox setup".into(),
             ),
+            Some(25) => Err(format!(
+                "这台电脑上另一次 agentrouter sandbox setup 正在写入用户文件夹的读取权限，这次没改；{NEXT_PROFILE_BUSY}"
+            )),
             _ => Err(format!(
                 "隔离账户读不了你的用户文件夹（srt-win profile grant：{}{}）",
                 String::from_utf8_lossy(&out.stdout).trim(),

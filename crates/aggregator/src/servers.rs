@@ -6,6 +6,8 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, Weak};
+
+use sha2::Digest;
 use std::time::{Duration, Instant};
 
 #[allow(deprecated)]
@@ -91,6 +93,176 @@ pub struct ServerDef {
     pub display: bool,
     /// The cloud's hash of the definition (a different one replaces the running server).
     pub hash: String,
+    /// Credentials it reads from a file whose path is in an environment variable (a cookie jar): kept on this computer
+    /// only ([`agentrouter_device::local_secrets`]), never sent to the cloud (Cloud CONNECTIONS §3.2 `local:`).
+    pub credentials: Vec<CredentialFile>,
+    /// Its tools that only `hostd` runs (log in, refresh a cookie): never listed to the cloud, refused if called.
+    pub host_only: Vec<String>,
+    /// How the person logs in on this computer (`link__login`).
+    pub login: Option<LoginSpec>,
+}
+
+/// [`ServerDef::credentials`]: `{"name": "cookie", "fileEnv": <the variable the server reads the file path from>}`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CredentialFile {
+    pub name: String,
+    pub env: String,
+}
+
+/// [`ServerDef::login`]: the server's own login tools, run by `hostd` on this computer. `start` answers with a text
+/// holding the address to open or scan (`url`, a pattern) and a key (`key`, a pattern whose first group is the key);
+/// `check` is then called with `{<keyArg>: key}` and waits until the person has logged in, after which the server
+/// has written the credential file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoginSpec {
+    pub credential: String,
+    pub start: String,
+    pub url: String,
+    pub key: Option<String>,
+    pub check: Option<String>,
+    pub key_arg: String,
+}
+
+const CREDENTIALS_MAX: usize = 8;
+
+fn valid_credential(name: &str) -> bool {
+    (1..=48).contains(&name.len())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+}
+
+fn valid_env_name(k: &str) -> bool {
+    !k.is_empty() && k.len() <= 128 && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn pattern(text: &str, field: &str) -> Result<String, Failure> {
+    if text.is_empty() || text.len() > 300 {
+        return Err(Failure::new(
+            "HOSTD_ARGS_INVALID",
+            format!("login.{field} 要是 1–300 个字符的正则"),
+        ));
+    }
+    regex::Regex::new(text)
+        .map(|_| text.to_string())
+        .map_err(|e| {
+            Failure::new(
+                "HOSTD_ARGS_INVALID",
+                format!("login.{field} 不是有效的正则：{e}"),
+            )
+        })
+}
+
+fn parse_credentials(
+    args: &Value,
+    env: &[(String, String)],
+) -> Result<Vec<CredentialFile>, Failure> {
+    let list = args
+        .get("credentials")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if list.len() > CREDENTIALS_MAX {
+        return Err(Failure::new(
+            "HOSTD_ARGS_INVALID",
+            format!("credentials 最多 {CREDENTIALS_MAX} 个"),
+        ));
+    }
+    let mut out: Vec<CredentialFile> = Vec::new();
+    for c in list {
+        let name = str_of(&c, "name").trim().to_string();
+        let file_env = str_of(&c, "fileEnv").trim().to_string();
+        if !valid_credential(&name) || out.iter().any(|o| o.name == name) {
+            return Err(Failure::new(
+                "HOSTD_ARGS_INVALID",
+                format!("credentials.name {name:?} 要是不重复的小写字母、数字、_ 或 -"),
+            ));
+        }
+        if !valid_env_name(&file_env)
+            || reserved_env(&file_env)
+            || env.iter().any(|(k, _)| k == &file_env)
+        {
+            return Err(Failure::new(
+                "HOSTD_ARGS_INVALID",
+                format!(
+                    "credentials.{name}.fileEnv {file_env:?} 要是没在 env 里用过的环境变量名（不能是 AGENTROUTER_ 开头）"
+                ),
+            ));
+        }
+        out.push(CredentialFile {
+            name,
+            env: file_env,
+        });
+    }
+    Ok(out)
+}
+
+fn parse_login(
+    args: &Value,
+    credentials: &[CredentialFile],
+    host_only: &mut Vec<String>,
+) -> Result<Option<LoginSpec>, Failure> {
+    let Some(l) = args.get("login").filter(|v| v.is_object()) else {
+        return Ok(None);
+    };
+    let credential = str_of(l, "credential").trim().to_string();
+    if !credentials.iter().any(|c| c.name == credential) {
+        return Err(Failure::new(
+            "HOSTD_ARGS_INVALID",
+            format!("login.credential {credential:?} 不在 credentials 里"),
+        ));
+    }
+    let tool_name = |field: &str| -> Result<Option<String>, Failure> {
+        match str_of(l, field).trim() {
+            "" => Ok(None),
+            t if t.len() <= 128 && !t.starts_with('_') => Ok(Some(t.to_string())),
+            t => Err(Failure::new(
+                "HOSTD_ARGS_INVALID",
+                format!("login.{field} {t:?} 不是工具名"),
+            )),
+        }
+    };
+    let Some(start) = tool_name("start")? else {
+        return Err(Failure::new(
+            "HOSTD_ARGS_INVALID",
+            "login.start 要写登录工具的名字",
+        ));
+    };
+    let check = tool_name("check")?;
+    let key = match str_of(l, "key") {
+        "" => None,
+        k => Some(pattern(k, "key")?),
+    };
+    if check.is_some() && key.is_none() {
+        return Err(Failure::new(
+            "HOSTD_ARGS_INVALID",
+            "login.check 需要 login.key（从 start 的答复里取出的登录码）",
+        ));
+    }
+    let key_arg = match str_of(l, "keyArg").trim() {
+        "" => "key".to_string(),
+        k if valid_env_name(k) => k.to_string(),
+        k => {
+            return Err(Failure::new(
+                "HOSTD_ARGS_INVALID",
+                format!("login.keyArg {k:?} 不是参数名"),
+            ));
+        }
+    };
+    // The login tools are hostd's: the cloud never lists or calls them.
+    for t in std::iter::once(&start).chain(check.iter()) {
+        if !host_only.contains(t) {
+            host_only.push(t.clone());
+        }
+    }
+    Ok(Some(LoginSpec {
+        credential,
+        start,
+        url: pattern(str_of(l, "url"), "url")?,
+        key,
+        check,
+        key_arg,
+    }))
 }
 
 fn str_of<'a>(args: &'a Value, key: &str) -> &'a str {
@@ -213,6 +385,9 @@ impl ServerDef {
             t => agentrouter_device::util::clip(t, 20),
         };
         let preset = Some(str_of(args, "preset").trim().to_string()).filter(|p| !p.is_empty());
+        let credentials = parse_credentials(args, &env)?;
+        let mut host_only = strings(args, "hostOnly", 32, 128)?;
+        let login = parse_login(args, &credentials, &mut host_only)?;
         Ok(ServerDef {
             name,
             title,
@@ -230,6 +405,9 @@ impl ServerDef {
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
             hash: agentrouter_device::util::clip(str_of(args, "hash"), 80),
+            credentials,
+            host_only,
+            login,
         })
     }
 
@@ -355,6 +533,22 @@ pub struct Server {
     pub enforced: Mutex<Option<agentrouter_device::limits::Enforced>>,
     /// When a limit was reached, newest last (at most [`LIMIT_EVENTS`]).
     pub limit_events: Mutex<VecDeque<(Instant, String)>>,
+    /// Its credential files ([`ServerDef::credentials`]): what was last kept, the values to blank, a login under way.
+    pub cred: Mutex<CredState>,
+}
+
+#[derive(Default)]
+pub struct CredState {
+    /// Credential name → the file the server reads.
+    pub files: Vec<(String, PathBuf)>,
+    /// Credential name → sha256 of the value this computer keeps.
+    pub kept: std::collections::HashMap<String, Vec<u8>>,
+    /// The values (and their parts) blanked in results, logs and the audit.
+    pub values: Vec<String>,
+    /// A login started with `link__login` and not finished: the credential and since when.
+    pub waiting: Option<(String, Instant)>,
+    /// The last login that did not finish, in words.
+    pub last_error: Option<String>,
 }
 
 /// Where one server's log lines go on disk, under the device data folder (hidden from every sandbox).
@@ -394,7 +588,38 @@ impl Server {
             crashes: Mutex::new(VecDeque::new()),
             enforced: Mutex::new(None),
             limit_events: Mutex::new(VecDeque::new()),
+            cred: Mutex::new(CredState::default()),
         })
+    }
+
+    /// Every value to blank: the definition's secret environment and the credentials this computer keeps for it.
+    pub fn secrets(&self) -> Vec<String> {
+        let mut all = self.def.secrets();
+        all.extend(self.cred.lock().unwrap().values.iter().cloned());
+        all
+    }
+
+    /// The local secret name of one of its credentials (one account per server name on this computer).
+    pub fn local_name(&self, credential: &str) -> String {
+        format!("{}/{}", self.def.name, credential)
+    }
+
+    /// Per credential: `ok` (this computer keeps one), `missing`, or `waiting_login`; never a value.
+    pub fn credentials_view(&self) -> Vec<Value> {
+        let cred = self.cred.lock().unwrap();
+        self.def
+            .credentials
+            .iter()
+            .map(|c| {
+                let kept = cred.kept.contains_key(&c.name);
+                let state = match &cred.waiting {
+                    Some((name, _)) if name == &c.name => "waiting_login",
+                    _ if kept => "ok",
+                    _ => "missing",
+                };
+                json!({"name": c.name, "state": state, "lastError": cred.last_error})
+            })
+            .collect()
     }
 
     /// The limit lines reached since `at` (a call's start), oldest first.
@@ -419,7 +644,7 @@ impl Server {
 
     pub fn log(&self, line: &str) {
         let mut text = line.to_string();
-        for s in self.def.secrets() {
+        for s in self.secrets() {
             text = text.replace(s.as_str(), "[secret]");
         }
         let text = agentrouter_device::util::clip(&text, LOG_LINE_MAX);
@@ -458,6 +683,11 @@ impl Server {
             .collect();
     }
 
+    /// One of its tools only `hostd` runs ([`ServerDef::host_only`]).
+    pub fn host_only(&self, tool: &str) -> bool {
+        self.def.host_only.iter().any(|t| t == tool)
+    }
+
     pub fn view(&self) -> Value {
         let state = self.state();
         let error = match &state {
@@ -482,6 +712,7 @@ impl Server {
             "tools": self.tools.lock().unwrap().len(),
             "restarts": self.restarts.load(Ordering::SeqCst),
             "limitEvents": self.limit_events.lock().unwrap().iter().rev().take(5).map(|(_, l)| l.clone()).collect::<Vec<_>>(),
+            "credentials": self.credentials_view(),
         })
     }
 }
@@ -602,6 +833,23 @@ pub async fn supervise(agg: Arc<Inner>, server: Arc<Server>) {
                 server.set_state(State::Ready);
                 agg.server_event(&server, "ready", None);
                 agg.notify_tools_changed().await;
+                // Not logged in yet: the login shows on this computer at once (HOSTD-MCP §13.7), so installing a
+                // server that needs an account is enough for the person to see the QR; `link__login` starts it again.
+                if let Some(login) = &server.def.login
+                    && !server
+                        .cred
+                        .lock()
+                        .unwrap()
+                        .kept
+                        .contains_key(&login.credential)
+                {
+                    let (agg, name) = (agg.clone(), server.def.name.clone());
+                    tokio::spawn(async move {
+                        if let Err(f) = agg.login(&json!({ "name": name })).await {
+                            agg.feed_login_problem(&name, &f.message);
+                        }
+                    });
+                }
                 let ct = running.cancellation_token();
                 let mut waiting = Box::pin(running.waiting());
                 let stopped = tokio::select! {
@@ -616,6 +864,7 @@ pub async fn supervise(agg: Arc<Inner>, server: Arc<Server>) {
                 };
                 *server.peer.lock().unwrap() = None;
                 end(&server, pid);
+                sync_credentials(&agg, &server);
                 if stopped {
                     break;
                 }
@@ -747,6 +996,7 @@ async fn start_once(
             .path_with_runtimes(std::env::var_os("PATH").as_deref());
         env.push(("PATH".into(), path.to_string_lossy().into_owned()));
     }
+    prepare_credentials(agg, server, &mut env).map_err(StartError::Failed)?;
     env.push(("PYTHONIOENCODING".into(), "utf-8".into()));
     env.push(("PYTHONUTF8".into(), "1".into()));
     #[cfg(windows)]
@@ -773,7 +1023,7 @@ async fn start_once(
     #[cfg(not(windows))]
     let prepared: Option<(agentrouter_device::limits::Enforced, String)> = None;
     let launch = agentrouter_sandbox::Launch {
-        key: &format!("{}\u{1}{}", def.name, agg.cfg.link),
+        key: &sandbox_key(def, &agg.cfg.link),
         program: &program,
         args: &args,
         env: &env,
@@ -1122,6 +1372,160 @@ fn kill_tree(pid: Option<u32>) {
     let _ = pid;
 }
 
+/// The sandbox key of a server on a link: one scratch folder and one policy file per key.
+pub fn sandbox_key(def: &ServerDef, link: &str) -> String {
+    format!("{}\u{1}{}", def.name, link)
+}
+
+/// The values to blank for a credential: the whole text and, for a JSON file or a cookie header, each value of at
+/// least 8 characters inside it.
+fn credential_values(bytes: &[u8]) -> Vec<String> {
+    let text = String::from_utf8_lossy(bytes).trim().to_string();
+    let mut out = Vec::new();
+    fn walk(v: &Value, out: &mut Vec<String>) {
+        match v {
+            Value::String(s) if s.len() >= 8 => out.push(s.clone()),
+            Value::Array(a) => a.iter().for_each(|v| walk(v, out)),
+            Value::Object(m) => m.values().for_each(|v| walk(v, out)),
+            _ => {}
+        }
+    }
+    if let Ok(v) = serde_json::from_str::<Value>(&text) {
+        walk(&v, &mut out);
+    } else {
+        for part in text.split([';', '\n']) {
+            if let Some((_, v)) = part.split_once('=') {
+                let v = v.trim();
+                if v.len() >= 8 {
+                    out.push(v.to_string());
+                }
+            }
+        }
+    }
+    if text.len() >= 8 {
+        out.push(text);
+    }
+    out
+}
+
+/// Before a start: write each credential this computer keeps into the server's own scratch folder (owner-only) and
+/// put the file's path — never the value — in its environment. A credential not kept yet gets the path only, so
+/// the server's own login writes it there.
+fn prepare_credentials(
+    agg: &Inner,
+    server: &Server,
+    env: &mut Vec<(String, String)>,
+) -> Result<(), String> {
+    if server.def.credentials.is_empty() {
+        return Ok(());
+    }
+    let dir = agg
+        .sandbox
+        .scratch(&sandbox_key(&server.def, &agg.cfg.link))
+        .join("credentials");
+    let mut cred = server.cred.lock().unwrap();
+    cred.files.clear();
+    for c in &server.def.credentials {
+        let file = dir.join(&c.name);
+        let name = server.local_name(&c.name);
+        match agentrouter_device::local_secrets::get(&agg.cfg.data_dir, &name) {
+            Ok(Some(value)) => {
+                agentrouter_device::local_secrets::write_owner_only(&file, &value).map_err(
+                    |e| {
+                        format!(
+                            "credential {} could not be handed to the server: {e}",
+                            c.name
+                        )
+                    },
+                )?;
+                cred.kept
+                    .insert(c.name.clone(), sha2::Sha256::digest(&value).to_vec());
+                for v in credential_values(&value) {
+                    if !cred.values.contains(&v) {
+                        cred.values.push(v);
+                    }
+                }
+            }
+            Ok(None) => {
+                cred.kept.remove(&c.name);
+                let _ = std::fs::remove_file(&file);
+                std::fs::create_dir_all(&dir)
+                    .map_err(|e| format!("credential folder {}: {e}", dir.display()))?;
+            }
+            Err(e) => {
+                return Err(format!(
+                    "credential {} could not be read on this computer: {e}",
+                    c.name
+                ));
+            }
+        }
+        env.push((c.env.clone(), file.to_string_lossy().into_owned()));
+        cred.files.push((c.name.clone(), file));
+    }
+    Ok(())
+}
+
+/// After a call, a login or an exit: a credential file the server wrote or rewrote (a login, a cookie refresh) is
+/// kept on this computer; the cloud hears only its name. Returns the credentials that changed.
+pub fn sync_credentials(agg: &Inner, server: &Server) -> Vec<String> {
+    let files = server.cred.lock().unwrap().files.clone();
+    let mut changed = Vec::new();
+    for (name, file) in files {
+        let Ok(value) = std::fs::read(&file) else {
+            continue;
+        };
+        if value.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        let hash = sha2::Sha256::digest(&value).to_vec();
+        if server.cred.lock().unwrap().kept.get(&name) == Some(&hash) {
+            continue;
+        }
+        match agentrouter_device::local_secrets::put(
+            &agg.cfg.data_dir,
+            &server.local_name(&name),
+            &value,
+        ) {
+            Ok(()) => {
+                let mut cred = server.cred.lock().unwrap();
+                cred.kept.insert(name.clone(), hash);
+                if cred.waiting.as_ref().is_some_and(|(w, _)| w == &name) {
+                    cred.waiting = None;
+                    cred.last_error = None;
+                }
+                for v in credential_values(&value) {
+                    if !cred.values.contains(&v) {
+                        cred.values.push(v);
+                    }
+                }
+                drop(cred);
+                server.log(&format!(
+                    "[agentrouter] credential {name} kept on this computer"
+                ));
+                agg.server_event(server, "credential_saved", Some(name.clone()));
+                changed.push(name);
+            }
+            Err(e) => server.log(&format!(
+                "[agentrouter] credential {name} could not be kept: {e}"
+            )),
+        }
+    }
+    changed
+}
+
+/// Forget a credential on this computer (log out) and blank the file the server reads.
+pub fn forget_credential(agg: &Inner, server: &Server, name: &str) -> std::io::Result<()> {
+    agentrouter_device::local_secrets::remove(&agg.cfg.data_dir, &server.local_name(name))?;
+    let mut cred = server.cred.lock().unwrap();
+    cred.kept.remove(name);
+    if let Some((_, file)) = cred.files.iter().find(|(n, _)| n == name) {
+        let _ = std::fs::remove_file(file);
+    }
+    drop(cred);
+    agg.server_event(server, "credential_forgotten", Some(name.to_string()));
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1147,6 +1551,87 @@ mod tests {
             args[k] = v.clone();
         }
         ServerDef::parse(&args).unwrap()
+    }
+
+    fn login_args() -> Value {
+        json!({
+            "credentials": [{"name": "cookie", "fileEnv": "SITE_COOKIE_FILE"}],
+            "hostOnly": ["refresh"],
+            "login": {"credential": "cookie", "start": "login", "url": "https://\\S+",
+                      "key": "\"loginKey\": \"([^\"]+)\"", "check": "login_check", "keyArg": "loginKey"},
+        })
+    }
+
+    #[test]
+    fn credentials_and_login_parse_and_login_tools_become_host_only() {
+        let d = def(login_args());
+        assert_eq!(
+            d.credentials,
+            vec![CredentialFile {
+                name: "cookie".into(),
+                env: "SITE_COOKIE_FILE".into()
+            }]
+        );
+        let login = d.login.clone().unwrap();
+        assert_eq!(
+            (
+                login.start.as_str(),
+                login.check.as_deref(),
+                login.key_arg.as_str()
+            ),
+            ("login", Some("login_check"), "loginKey")
+        );
+        assert_eq!(
+            d.host_only,
+            vec!["refresh".to_string(), "login".into(), "login_check".into()]
+        );
+        let server = Server::new(d, None);
+        assert!(
+            server.host_only("login")
+                && server.host_only("refresh")
+                && !server.host_only("video_info")
+        );
+        assert_eq!(server.local_name("cookie"), "browser/cookie");
+    }
+
+    #[test]
+    fn bad_credential_and_login_declarations_are_refused_by_field() {
+        let refused = |extra: Value| {
+            let mut args = json!({"name": "site", "command": "npx"});
+            for (k, v) in extra.as_object().unwrap() {
+                args[k] = v.clone();
+            }
+            ServerDef::parse(&args).unwrap_err().message
+        };
+        assert!(
+            refused(json!({"credentials": [{"name": "c", "fileEnv": "AGENTROUTER_X"}]}))
+                .contains("fileEnv")
+        );
+        assert!(
+            refused(json!({"env": {"F": "x"}, "credentials": [{"name": "c", "fileEnv": "F"}]}))
+                .contains("fileEnv")
+        );
+        assert!(
+            refused(json!({"credentials": [{"name": "C!", "fileEnv": "F"}]}))
+                .contains("credentials.name")
+        );
+        assert!(refused(json!({"credentials": [{"name": "c", "fileEnv": "F"}], "login": {"credential": "x", "start": "l", "url": "u"}})).contains("login.credential"));
+        assert!(refused(json!({"credentials": [{"name": "c", "fileEnv": "F"}], "login": {"credential": "c", "start": "l", "url": "("}})).contains("login.url"));
+        assert!(refused(json!({"credentials": [{"name": "c", "fileEnv": "F"}], "login": {"credential": "c", "start": "l", "url": "u", "check": "k"}})).contains("login.key"));
+    }
+
+    #[test]
+    fn credential_values_cover_json_leaves_and_cookie_pairs() {
+        let json_values = credential_values(
+            br#"{"sessdata": "abcdefgh123", "uid": "42", "nested": {"jct": "0123456789"}}"#,
+        );
+        assert!(
+            json_values.contains(&"abcdefgh123".to_string())
+                && json_values.contains(&"0123456789".to_string())
+        );
+        assert!(!json_values.contains(&"42".to_string()));
+        let header = credential_values(b"SESSDATA=abcdefgh123; uid=4");
+        assert!(header.contains(&"abcdefgh123".to_string()) && !header.contains(&"4".to_string()));
     }
 
     #[test]
