@@ -11,7 +11,7 @@
 //! One module per concern: [`files`] (read, write, stat, list), [`search`] (ripgrep), [`run`] (commands, streamed),
 //! [`jobs`] (background commands), [`pty`] (interactive programs),
 //! [`info`] (what this computer is), [`watch`] (what changed in the folders), [`out`] (the environment's output
-//! folder: long output stays here, a path travels).
+//! folder: long output stays here, a path travels), [`task`] (the file work of a declared space task, Control's).
 //! Every call runs on its own thread with a [`Call`]: its progress token (output streams as MCP progress) and its
 //! cancel flag (`notifications/cancelled` ends what it runs).
 
@@ -25,6 +25,7 @@ mod pty;
 mod run;
 mod search;
 mod space;
+mod task;
 mod watch;
 
 use std::collections::HashMap;
@@ -58,6 +59,7 @@ fn tools() -> Value {
     all.extend(watch::tools());
     all.extend(out::tools());
     all.extend(space::tools());
+    all.extend(task::tools());
     #[cfg(unix)]
     all.extend(bridge::tools());
     Value::Array(all)
@@ -275,6 +277,7 @@ impl Host {
             "_space_mount" => self.space_mount(args)?,
             "_space_changes" => self.space_changes(args)?,
             "_space_unmount" => self.space_unmount(args)?,
+            "_task" => self.task(args)?,
             #[cfg(unix)]
             "_port_bridge" => self.port_bridge(args)?,
             other => return Err(format!("没有这个工具：{other}").into()),
