@@ -374,9 +374,15 @@ device → gateway  {"op":"port_error","id","code"}   PORT_CLOSED | PORT_DIAL_FA
 
 - One WebSocket per TCP connection: MCP frames on the link never wait behind preview bytes; each stream has its own
   flow control; HTTP keep-alive and WebSocket upgrades (HMR) are plain bytes. At most 64 open per link.
-- **Loopback only.** 完全访问 and cloud hosts serve any loopback port. Folder mode answers `PORT_SANDBOXED` for now:
-  the commands' dev server listens inside the OS sandbox (on Linux its own network namespace); the bridge is the host
-  server inside the sandbox (next step).
+- **Loopback only.** 完全访问 and cloud hosts serve any loopback port. In folder mode the commands' dev server listens
+  inside the OS sandbox. **Linux** (device #136): the sandbox has its own network namespace, so the link's `host`
+  server — in the same sandbox and namespace — bridges: hostd makes two FIFOs in the host server's scratch folder and
+  calls its internal tool `_port_bridge {port, input, output}` (tools named `_…` are hostd's own and never listed to
+  Agents); it connects to `127.0.0.1:<port>` (then `[::1]`) there, answers `PORT_CLOSED` when nothing listens, and moves
+  the bytes over the FIFOs (no sockets inside the sandbox: seccomp refuses `AF_UNIX`, and the namespace has no route
+  out). Only the sandbox's own ports exist there, so the person's own local services are never reachable this way.
+  **Windows and macOS** share the computer's loopback and answer `PORT_SANDBOXED` until their own step (Windows: only
+  ports whose listener is in the link's Job object, #129; macOS: srt's `allowLocalBinding`).
 - The gateway checks the ticket (one use, short-lived, bound to `id` and link) and splices the stream to Control's
   internal request; it never reads the bytes. Evaluated and not used: frp, chisel, wstunnel (separate programs with
   their own servers), yamux over the link (one TCP stream for everything; no maintained JS side).

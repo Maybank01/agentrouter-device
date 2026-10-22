@@ -15,6 +15,8 @@
 //! Every call runs on its own thread with a [`Call`]: its progress token (output streams as MCP progress) and its
 //! cancel flag (`notifications/cancelled` ends what it runs).
 
+#[cfg(unix)]
+mod bridge;
 mod files;
 mod info;
 mod jobs;
@@ -54,6 +56,8 @@ fn tools() -> Value {
     all.extend(info::tools());
     all.extend(watch::tools());
     all.extend(out::tools());
+    #[cfg(unix)]
+    all.extend(bridge::tools());
     Value::Array(all)
 }
 
@@ -239,6 +243,8 @@ impl Host {
             "spill_write" => self.spill_write(args)?,
             "out_release" => self.out_release(args)?,
             "out_status" => self.out_status()?,
+            #[cfg(unix)]
+            "_port_bridge" => self.port_bridge(args)?,
             other => return Err(format!("没有这个工具：{other}").into()),
         };
         // A call that may add output carries the folder's accounting once a threshold is crossed (#102): the runner
@@ -512,10 +518,19 @@ mod tests {
             ("out_release", false),
         ];
         let list = tools();
+        // `_…` tools are hostd's own (`_port_bridge`, #136): the aggregator never lists them.
+        assert_eq!(
+            list.as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t["name"] == "_port_bridge"),
+            cfg!(unix)
+        );
         let got: Vec<(&str, bool)> = list
             .as_array()
             .unwrap()
             .iter()
+            .filter(|t| !t["name"].as_str().unwrap().starts_with('_'))
             .map(|t| {
                 (
                     t["name"].as_str().unwrap(),

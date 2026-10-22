@@ -11,13 +11,14 @@
 //! **Which ports:** loopback only, never another address. In 完全访问 and in a cloud sandbox every loopback port
 //! (the person's own rights, or the sandbox is the boundary). In folder mode the commands run inside the OS sandbox
 //! (on Linux its own network namespace, so the dev server's loopback is not this process's): refused with
-//! `PORT_SANDBOXED` until the host server inside the sandbox bridges it (HOSTD-MCP §3.8).
+//! `PORT_SANDBOXED` unless the consumer gives a [`Bridge`]: on Linux the link's host server, which runs in the same
+//! sandbox, connects to the port in the sandbox's own loopback and hands the bytes over (device #136, HOSTD-MCP §3.8).
 
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::Semaphore;
 use tokio_tungstenite::tungstenite::Message;
@@ -72,6 +73,18 @@ pub fn stream_url(link_url: &str, id: &str) -> Option<String> {
         .map(|base| format!("{base}{PORT_PATH}{id}"))
 }
 
+/// Both directions of one stream's local end (a loopback TCP connection, or a bridge's pipes).
+pub trait Duplex: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> Duplex for T {}
+
+/// Opens one stream's local end for a port inside the sandbox (folder mode): `Err(code)` as for [`serve`]
+/// (`PORT_CLOSED`, `PORT_SANDBOXED` when nothing can bridge now).
+pub type Bridge = std::sync::Arc<
+    dyn Fn(u16) -> futures_util::future::BoxFuture<'static, Result<Box<dyn Duplex>, &'static str>>
+        + Send
+        + Sync,
+>;
+
 /// Whether this link serves preview streams at all (see the module docs).
 pub fn allowed(info: &crate::LinkInfo) -> bool {
     info.full || info.placement == "cloud"
@@ -94,9 +107,13 @@ async fn connect_loopback(port: u16) -> Option<TcpStream> {
 }
 
 /// Serves one stream to its end. `Err(code)` when it could not be opened (`PORT_CLOSED`: nothing listens there;
-/// `PORT_DIAL_FAILED`: the gateway's stream endpoint could not be reached).
-pub async fn serve(url: &str, open: &Open) -> Result<(), &'static str> {
-    let tcp = connect_loopback(open.port).await.ok_or("PORT_CLOSED")?;
+/// `PORT_DIAL_FAILED`: the gateway's stream endpoint could not be reached). `bridge`: the local end comes from it
+/// (folder mode) instead of this process's loopback.
+pub async fn serve(url: &str, open: &Open, bridge: Option<&Bridge>) -> Result<(), &'static str> {
+    let local: Box<dyn Duplex> = match bridge {
+        Some(bridge) => bridge(open.port).await?,
+        None => Box::new(connect_loopback(open.port).await.ok_or("PORT_CLOSED")?),
+    };
     let mut request = url.into_client_request().map_err(|_| "PORT_DIAL_FAILED")?;
     let auth = HeaderValue::from_str(&format!("Bearer {}", open.ticket))
         .map_err(|_| "PORT_DIAL_FAILED")?;
@@ -109,7 +126,7 @@ pub async fn serve(url: &str, open: &Open) -> Result<(), &'static str> {
         .map_err(|_| "PORT_DIAL_FAILED")?
         .map_err(|_| "PORT_DIAL_FAILED")?;
     let (mut sink, mut stream) = ws.split();
-    let (mut rd, mut wr) = tcp.into_split();
+    let (mut rd, mut wr) = tokio::io::split(local);
     let up = async {
         let mut buf = vec![0u8; CHUNK];
         loop {
@@ -256,7 +273,7 @@ mod tests {
             ticket: "abcdefghijklmnop".into(),
         };
         let url = stream_url(&format!("ws://{gw}{}", crate::PATH), ID).unwrap();
-        serve(&url, &open).await.unwrap();
+        serve(&url, &open, None).await.unwrap();
         let (auth, got) = seen.await.unwrap();
         assert_eq!(auth, "Bearer abcdefghijklmnop");
         assert_eq!(got, b"GET /");
@@ -273,7 +290,7 @@ mod tests {
             ticket: "abcdefghijklmnop".into(),
         };
         assert_eq!(
-            serve("ws://127.0.0.1:9/device/v2/port/x", &open).await,
+            serve("ws://127.0.0.1:9/device/v2/port/x", &open, None).await,
             Err("PORT_CLOSED")
         );
     }

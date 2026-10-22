@@ -277,6 +277,8 @@ pub fn link(opts: CloudOptions, interrupted: &'static AtomicBool) -> i32 {
             tokens: agentrouter_hostd_link::host_token(token_file, token_value),
             audit_head: Arc::new(move || for_head.audit_head()),
             load: Some(Arc::new(move || meter.sample(&load_home, for_load.environments()))),
+            // A cloud sandbox serves its loopback directly (the sandbox is the boundary).
+            bridge: None,
         });
         let _ = handle_cell.set(handle.clone());
 

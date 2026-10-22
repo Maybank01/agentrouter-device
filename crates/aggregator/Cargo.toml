@@ -21,6 +21,8 @@ tokio-util = { version = "0.7", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+# FIFOs: preview streams into the sandbox through the host server (#136).
+tokio = { workspace = true, features = ["net"] }
 
 [target.'cfg(windows)'.dependencies]
 # Named pipes: a confined server's stdio on Windows (#112).
