@@ -112,7 +112,7 @@ pub(crate) fn stdin_lines() -> &'static Mutex<Receiver<String>> {
 }
 
 /// A y/N on this computer; no terminal or no answer in time = no.
-fn ask(question: &str) -> bool {
+pub(crate) fn ask(question: &str) -> bool {
     if !std::io::stdin().is_terminal() {
         line(&format!("{question}\n（没有终端可以回答：按不同意处理）"));
         return false;
@@ -272,11 +272,7 @@ impl Hooks for Console {
     }
 
     fn confirm_server(&self, def: &ServerDef) -> BoxFuture<bool> {
-        let question = format!(
-            "\n云端想在这台电脑上运行一个不在目录里的本机工具：\n  {}：{}\n它和别的本机工具一样受这次链接的限制。同意吗？",
-            def.title,
-            def.shown()
-        );
+        let question = server_question(def);
         let asking = self.asking.clone();
         Box::pin(async move {
             let _one = asking.lock().await;
@@ -364,6 +360,25 @@ impl Hooks for Console {
     }
 }
 
+/// The y/N for a local tool (HOSTD-MCP §5, §6.7). A display grant says what it means in the owner's words (draft
+/// 2026-10-22): it sees and drives the screen, so it runs with the person's own rights, outside the folders.
+pub(crate) fn server_question(def: &ServerDef) -> String {
+    if def.display {
+        format!(
+            "\n本机工具 {}：{}\n{} 要能看到并操作你的屏幕，所以它以你自己的权限运行，不受文件夹限制。允许？",
+            def.title,
+            def.shown(),
+            def.title
+        )
+    } else {
+        format!(
+            "\n云端想在这台电脑上运行一个不在目录里的本机工具：\n  {}：{}\n它和别的本机工具一样受这次链接的限制。同意吗？",
+            def.title,
+            def.shown()
+        )
+    }
+}
+
 /// Servers the project itself names in `.agentrouter/mcp.json` (the common `mcpServers` format). They are custom:
 /// each needs the person's y here.
 fn project_servers(folder: &Path) -> Vec<Value> {
@@ -379,7 +394,7 @@ fn project_servers(folder: &Path) -> Vec<Value> {
         .map(|m| {
             m.iter()
                 .map(|(name, d)| {
-                    json!({"name": name, "title": name, "command": d.get("command"), "args": d.get("args"), "env": d.get("env")})
+                    json!({"name": name, "title": name, "command": d.get("command"), "args": d.get("args"), "env": d.get("env"), "display": d.get("display")})
                 })
                 .collect()
         })
@@ -718,23 +733,23 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
             });
         }
 
-        // The project's own servers: asked here, one by one.
-        let project = project_servers(&first);
-        if !project.is_empty() {
+        // The person's own tools (`agentrouter mcp add`) and the project's (`.agentrouter/mcp.json`): one by one, each
+        // asked here unless granted before (device #97; `--yes-servers` grants).
+        let mut defined: Vec<(&'static str, Value)> =
+            agentrouter_aggregator::grants::own(&console.data).into_iter().map(|a| ("agentrouter mcp add", a)).collect();
+        defined.extend(project_servers(&first).into_iter().map(|a| (".agentrouter/mcp.json", a)));
+        if !defined.is_empty() {
             let agg = agg.clone();
-            let console = console.clone();
-            let yes = opts.yes_servers;
             tokio::spawn(async move {
-                for args in project {
+                for (from, args) in defined {
                     let def = match ServerDef::parse(&args) {
                         Ok(d) => d,
                         Err(e) => {
-                            line(&format!("  .agentrouter/mcp.json 里的 {}：{}", args["name"], e.message));
+                            line(&format!("  {from} 里的 {}：{}", args["name"], e.message));
                             continue;
                         }
                     };
-                    let approved = yes || console.confirm_server(&def).await;
-                    if approved && let Err(e) = agg.add_server(def, Duration::from_secs(120)).await {
+                    if let Err(e) = agg.add_person_server(def, Duration::from_secs(120)).await {
                         line(&format!("{}  本机工具没装上：{}", now(), e.message));
                     }
                 }

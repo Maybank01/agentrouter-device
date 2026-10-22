@@ -66,6 +66,10 @@ pub struct ServerDef {
     pub network: Vec<String>,
     /// The catalog preset it comes from.
     pub preset: Option<String>,
+    /// It asks to see and drive the screen (device #97): granted only by the person on this computer
+    /// ([`crate::grants`]), it then runs with the person's own rights, outside the folder sandbox — any display access
+    /// drives every other window, so a sandbox around it would be nominal (docs/HOSTD-MCP.md §6.7).
+    pub display: bool,
     /// The cloud's hash of the definition (a different one replaces the running server).
     pub hash: String,
 }
@@ -149,6 +153,10 @@ impl ServerDef {
             pin,
             network: strings(args, "network", 32, 253)?,
             preset,
+            display: args
+                .get("display")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
             hash: agentrouter_device::util::clip(str_of(args, "hash"), 80),
         })
     }
@@ -160,6 +168,18 @@ impl ServerDef {
             && self.pin.is_some()
             && matches!(self.command.as_str(), "npx" | "uvx")
             && self.args.iter().any(|a| a == PACKAGE_ARG))
+    }
+
+    /// The person says yes on this computer before it runs (or granted this exact definition before,
+    /// [`crate::grants`]): a custom command, or any tool that asks for the display.
+    pub fn needs_yes(&self) -> bool {
+        self.is_custom() || self.display
+    }
+
+    /// It runs outside the folder sandbox, with the person's rights: a display grant (the link's 完全访问 runs every
+    /// server so anyway).
+    pub fn unconfined(&self) -> bool {
+        self.display
     }
 
     /// Its sandbox may reach the open web: a pinned catalog preset whose catalog list holds
@@ -333,6 +353,8 @@ impl Server {
             "title": self.def.title,
             "preset": self.def.preset,
             "hash": self.def.hash,
+            // A display grant: it runs with the person's own rights (「以你的权限运行」), outside the folder sandbox.
+            "display": self.def.display,
             "state": state.label(),
             "error": error,
             "tools": self.tools.lock().unwrap().len(),
@@ -541,8 +563,10 @@ async fn start_once(
     // scope; on Windows a Job object holds the tree (in folder mode one made before the start, which the sandbox entry
     // joins from inside, #129); on macOS the sampler takes it right after the spawn.
     let limits = agg.limits();
+    // 完全访问, or a display grant (device #97): the person's own rights, no folder sandbox.
+    let unconfined = agg.cfg.full || def.unconfined();
     #[cfg(windows)]
-    let prepared = if agg.cfg.full {
+    let prepared = if unconfined {
         None
     } else {
         named_job(agg, server, limits)?
@@ -565,14 +589,20 @@ async fn start_once(
             .zip(agg.cfg.device_program.as_deref())
             .map(|((_, name), program)| agentrouter_sandbox::JobJoin { name, program }),
     };
-    let (policy, std_cmd, pipe) = if agg.cfg.full {
-        // 完全访问 (§6.4): the person's own rights and environment, no sandbox.
+    let (policy, std_cmd, pipe) = if unconfined {
+        // 完全访问 (§6.4) or a display grant (§6.7): the person's own rights and environment, no sandbox. Still the
+        // environment's limits, the argument audit and the link's lifetime.
         let mut cmd = std::process::Command::new(&program);
         cmd.args(&args).current_dir(&home);
         for (k, v) in &env {
             cmd.env(k, v);
         }
-        (json!({"full": true}), cmd, None)
+        let policy = if agg.cfg.full {
+            json!({"full": true})
+        } else {
+            json!({"display": true, "unconfined": true})
+        };
+        (policy, cmd, None)
     } else {
         let policy = agg
             .sandbox
