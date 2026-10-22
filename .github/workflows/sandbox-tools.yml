@@ -6,8 +6,14 @@
 #   the corresponding source (`runtimes::CARRIER_SOURCE`), each checked against the SHA-256 pinned in runtimes.rs, and
 #   writes the package; `npm pack` makes the tarball (uploaded as an artifact, its SHA-256 and npm integrity in the
 #   summary).
-# - Publish: by a maintainer, like the CLI packages (no npm token in CI): `npm publish <tgz> --access public`. A
-#   published version is never overwritten: a new socat or bubblewrap pin bumps `CARRIER`'s version.
+# - Publish (job `publish`, on main or by hand): once the repository secret `NPM_TOKEN` exists, CI publishes the
+#   tarball it just packed (`npm publish --access public --provenance`). The secret is an npm *granular access token*
+#   with read and write on the `@agentrouter-top` scope (npmjs.com → Access Tokens → Generate New Token → Granular),
+#   added as `gh secret set NPM_TOKEN -R Maybank01/agentrouter-device` (paste it at the prompt, never on the command
+#   line). Without the secret the job says so and succeeds; a maintainer can still run `npm publish <tgz> --access
+#   public` with the artifact. A published version is never overwritten: the job skips a version npm already has with
+#   the same integrity and fails on a different one (a new socat or bubblewrap pin bumps `CARRIER`'s version). After the
+#   first publish, npm Trusted Publishing (OIDC, package settings on npmjs.com → this workflow) can replace the token.
 name: sandbox tools (npm)
 
 on:
@@ -70,3 +76,50 @@ jobs:
           name: sandbox-tools-linux
           path: dist/*.tgz
           retention-days: 30
+
+  publish:
+    name: Publish to npm (when NPM_TOKEN exists)
+    needs: pack
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write # npm provenance
+    env:
+      HAS_TOKEN: ${{ secrets.NPM_TOKEN != '' }}
+    steps:
+      - name: No token yet
+        if: env.HAS_TOKEN != 'true'
+        run: echo "NPM_TOKEN is not set; nothing published (see the header of sandbox-tools.yml)." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/setup-node@v6
+        if: env.HAS_TOKEN == 'true'
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@v7
+        if: env.HAS_TOKEN == 'true'
+        with:
+          name: sandbox-tools-linux
+          path: dist
+      - name: npm publish (never over a published version)
+        if: env.HAS_TOKEN == 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          cd dist
+          tgz=$(ls *.tgz)
+          manifest=$(tar -xzOf "$tgz" package/package.json)
+          name=$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0,"utf8")).name)' <<<"$manifest")
+          version=$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0,"utf8")).version)' <<<"$manifest")
+          integrity="sha512-$(openssl dgst -sha512 -binary "$tgz" | base64 -w0)"
+          published=$(npm view "${name}@${version}" dist.integrity 2>/dev/null || true)
+          if [ "$published" = "$integrity" ]; then
+            echo "${name}@${version} is on npm with this integrity; nothing to do." >> "$GITHUB_STEP_SUMMARY"
+          elif [ -n "$published" ]; then
+            echo "::error::${name}@${version} is on npm with another tarball (${published}, this one ${integrity}). A version is never overwritten: bump CARRIER's version in crates/sandbox/src/runtimes.rs."
+            exit 1
+          else
+            npm publish "$tgz" --access public --provenance
+            echo "Published ${name}@${version} (${integrity}); npmmirror syncs it within minutes." >> "$GITHUB_STEP_SUMMARY"
+          fi
