@@ -35,6 +35,7 @@ fn info() -> LinkInfo {
         pool: None,
         resources: serde_json::Value::Null,
         software: serde_json::Value::Null,
+        local_data: serde_json::Value::Null,
     }
 }
 

@@ -106,6 +106,9 @@ pub struct LinkInfo {
     /// Installed software (Cloud DEVICES §2.3): the full list, `[{id, name, version, source, path, …}]`; null until the
     /// first discovery finished. Owned by [`Handle::set_software`]: [`Handle::set_info`] keeps the current list.
     pub software: Value,
+    /// Named local data (Cloud DEVICES §2.5, `agentrouter_device::local_data::view`): `[{name, path, readOnly?,
+    /// present}]`; null on a cloud sandbox (it has none).
+    pub local_data: Value,
 }
 
 impl LinkInfo {
@@ -133,6 +136,9 @@ impl LinkInfo {
         }
         if !self.software.is_null() {
             v["software"] = self.software.clone();
+        }
+        if !self.local_data.is_null() {
+            v["localData"] = self.local_data.clone();
         }
         v
     }

@@ -121,6 +121,9 @@ pub struct Config {
     /// Installed-software discovery (Cloud DEVICES §2.3): per-source switches, hidden ids and the person's own entries
     /// (`agentrouter software add|hide`). Unset = every source on.
     pub software: crate::software::SoftwareConfig,
+    /// Named local data (Cloud DEVICES §2.5): folders the person registered once with a name (`agentrouter data add`),
+    /// reported as `link.localData` and, in folder mode, inside the link's grants.
+    pub local_data: Vec<crate::local_data::LocalData>,
 }
 
 impl Default for Config {
@@ -138,6 +141,7 @@ impl Default for Config {
             pool: None,
             limits: Default::default(),
             software: Default::default(),
+            local_data: Vec::new(),
         }
     }
 }
