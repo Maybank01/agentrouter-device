@@ -1,0 +1,147 @@
+# socat for Linux folder mode (#119): srt relays a sandbox's network through socat (host side: a Unix socket to its
+# proxy; inside bubblewrap: TCP 3128/1080 to that socket), and srt has no other relay. The person installs nothing, so
+# the device provisions socat like Node.js and uv (crates/sandbox/src/runtimes.rs). No maintained upstream static build
+# exists (the third-party static sets are stale or archived), so this workflow builds one from the official source:
+#
+# - Source: socat's official tarball, SHA-256 pinned below; the same file Alpine's aports packages (sha512 cd5f88a3… in
+#   main/socat/APKBUILD). Its download host serves plain HTTP only, so the pin is the check; Alpine's distfiles mirror
+#   (HTTPS) is the fallback.
+# - Build: inside a digest-pinned Alpine image, statically against musl, without OpenSSL/readline/libwrap
+#   (scripts/build-socat-static.sh). Checked here on Ubuntu (outside Alpine): static, runs, relays like srt does.
+# - Publish (push to main / dispatch): pre-release `socat-static-<version>-r<n>` with both archives, the source tarball
+#   and the build script (GPL-2.0: the corresponding source ships beside the binary) and SHA256SUMS. A tag that exists is
+#   never overwritten: a rebuild bumps REVISION, and the device pins the new digests.
+name: socat (static Linux)
+
+on:
+  push:
+    branches: [main]
+    paths: ["scripts/build-socat-static.sh", ".github/workflows/socat.yml"]
+  pull_request:
+    paths: ["scripts/build-socat-static.sh", ".github/workflows/socat.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: socat-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  VERSION: 1.8.1.3
+  REVISION: "1"
+  SOURCE_SHA256: 06602ffd591e98c75b3dc1d66f0f19136cc666b0b2d95caad987d6ab2cb28097
+  # alpine:3.24.3 (multi-arch index).
+  ALPINE: alpine@sha256:1b7232cda4ca3dc20b5d1247bdc9bfb631f2661d15d323bdd6fccc035ed1a9e7
+
+jobs:
+  build:
+    name: socat ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, os: ubuntu-latest }
+          - { arch: aarch64, os: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Source (pinned SHA-256)
+        run: |
+          file="socat-${VERSION}.tar.gz"
+          for url in "http://www.dest-unreach.org/socat/download/${file}" "https://distfiles.alpinelinux.org/distfiles/v3.24/${file}"; do
+            if curl -fsSL --retry 2 --max-time 120 -o "$file" "$url" && echo "${SOURCE_SHA256}  ${file}" | sha256sum -c -; then
+              echo "source: $url"; exit 0
+            fi
+            rm -f "$file"
+          done
+          echo "no source matched ${SOURCE_SHA256}"; exit 1
+      - name: Build (Alpine, musl, static)
+        run: docker run --rm -v "$PWD:/w" -w /w "$ALPINE" sh scripts/build-socat-static.sh "socat-${VERSION}.tar.gz" build
+      - name: Static, runs, relays like srt (outside Alpine)
+        run: |
+          bin=build/socat
+          file "$bin"
+          file "$bin" | grep -Eq 'statically linked|static-pie linked'
+          if ldd "$bin" 2>/dev/null | grep -q '=>'; then echo "dynamically linked"; exit 1; fi
+          "$bin" -V | grep -q "socat version ${VERSION}"
+          # srt's two relays: a Unix socket to the host proxy port, and TCP (IPv6 with IPv4 mapped) to that socket.
+          mkdir -p www && echo relayed-ok > www/index.html
+          python3 -m http.server 18080 --bind 127.0.0.1 --directory www >/dev/null 2>&1 & web=$!
+          sock="$RUNNER_TEMP/srt-bridge.sock"
+          "$bin" "UNIX-LISTEN:${sock},fork,reuseaddr" "TCP:localhost:18080,keepalive,keepidle=10,keepintvl=5,keepcnt=3" & host=$!
+          "$bin" TCP6-LISTEN:13128,ipv6only=0,fork,reuseaddr,backlog=4096 "UNIX-CONNECT:${sock}" & inner=$!
+          ok=0
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -fsS --max-time 5 http://127.0.0.1:13128/ | grep -q relayed-ok; then ok=1; break; fi
+            sleep 0.5
+          done
+          kill "$inner" "$host" "$web" 2>/dev/null || true
+          test "$ok" = 1
+      - name: Package
+        run: |
+          name="socat-${VERSION}-${{ matrix.arch }}-linux-musl"
+          folder="socat-${VERSION}-r${REVISION}"
+          mkdir -p "pkg/${folder}" dist
+          cp build/socat build/COPYING build/README "pkg/${folder}/"
+          printf '%s\n' \
+            "socat ${VERSION} (GPL-2.0, see COPYING), one static program for Linux ${{ matrix.arch }} (musl)." \
+            "Built by AgentRouter device's .github/workflows/socat.yml, commit ${GITHUB_SHA}, from the official source" \
+            "socat-${VERSION}.tar.gz (SHA-256 ${SOURCE_SHA256}) with scripts/build-socat-static.sh." \
+            "The source tarball and the build script are attached to the same release." > "pkg/${folder}/BUILD.txt"
+          tar --sort=name --mtime='2026-01-01 00:00Z' --owner=0 --group=0 --numeric-owner -C pkg -cf - "$folder" \
+            | gzip -9n > "dist/${name}.tar.gz"
+          (cd dist && sha256sum "${name}.tar.gz" | tee "${name}.tar.gz.sha256")
+      - uses: actions/upload-artifact@v7
+        with:
+          name: socat-${{ matrix.arch }}
+          path: dist/
+          retention-days: 30
+
+  publish:
+    name: Publish pre-release
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+          pattern: socat-*
+          merge-multiple: true
+      - name: Release socat-static-<version>-r<revision>
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="socat-static-${VERSION}-r${REVISION}"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "$tag exists; never overwritten (bump REVISION for a rebuild)"; exit 0
+          fi
+          file="socat-${VERSION}.tar.gz"
+          for url in "http://www.dest-unreach.org/socat/download/${file}" "https://distfiles.alpinelinux.org/distfiles/v3.24/${file}"; do
+            if curl -fsSL --retry 2 --max-time 120 -o "artifacts/$file" "$url" && echo "${SOURCE_SHA256}  artifacts/${file}" | sha256sum -c -; then break; fi
+            rm -f "artifacts/$file"
+          done
+          test -f "artifacts/$file"
+          cp scripts/build-socat-static.sh artifacts/
+          cd artifacts
+          sha256sum socat-*-linux-musl.tar.gz "$file" build-socat-static.sh > SHA256SUMS
+          cat SHA256SUMS
+          {
+            echo "socat ${VERSION} built statically against musl for Linux folder mode (agentrouter-device #119), commit ${GITHUB_SHA}."
+            echo "The device downloads these archives itself and checks the SHA-256 pinned in crates/sandbox/src/runtimes.rs."
+            echo "GPL-2.0: the official source tarball and the build script are attached. Not a device release."
+            echo
+            echo '```'
+            cat SHA256SUMS
+            echo '```'
+          } > notes.md
+          gh release create "$tag" socat-*-linux-musl.tar.gz "$file" build-socat-static.sh SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false \
+            --title "socat ${VERSION} static (r${REVISION})" --notes-file notes.md
