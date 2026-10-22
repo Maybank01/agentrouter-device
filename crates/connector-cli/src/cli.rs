@@ -248,7 +248,11 @@ fn sandbox_job_join(args: &[String]) -> i32 {
     #[cfg(windows)]
     {
         match agentrouter_device::limits::join(name, pid) {
-            Ok(()) => 0,
+            Ok(()) => {
+                // The entry starts the server only on this exact answer (another program answering 0 is no join).
+                println!("joined");
+                0
+            }
             Err(e) => {
                 eprintln!("{e}");
                 1

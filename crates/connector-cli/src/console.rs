@@ -640,6 +640,7 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
                 yes_servers: opts.yes_servers,
                 cloud: false,
                 limits: cfg.limits.sane(),
+                device_program: std::env::current_exe().ok(),
             },
             console.clone(),
             Arc::new(move |s: &str, m: Value| {

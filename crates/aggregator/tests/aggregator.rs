@@ -88,6 +88,8 @@ impl Harness {
                 yes_servers,
                 cloud: false,
                 limits: Default::default(),
+                // CI builds the CLI first (Sandbox jobs): Windows folder mode joins the limits' job with it (#129).
+                device_program: std::env::var_os("AGENTROUTER_DEVICE_EXE").map(PathBuf::from),
             },
             hooks.clone(),
             Arc::new(move |s: &str, m: Value| {

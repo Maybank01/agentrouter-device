@@ -112,6 +112,8 @@ fn run(rt: &Runtime, node: &Path, folder: &Path, mode: &str, l: Limits, confined
     });
     #[cfg(not(windows))]
     let named: Option<(Enforced, String)> = None;
+    // The device program that joins it (CI builds the CLI first and names it).
+    let joiner = std::env::var_os("AGENTROUTER_DEVICE_EXE").map(PathBuf::from);
     let launch = Launch {
         key: &key,
         program: node,
@@ -123,7 +125,12 @@ fn run(rt: &Runtime, node: &Path, folder: &Path, mode: &str, l: Limits, confined
         readable: &[],
         read_only: false,
         open_web: false,
-        job: named.as_ref().map(|(_, name)| name.as_str()),
+        job: named
+            .as_ref()
+            .map(|(_, name)| agentrouter_sandbox::JobJoin {
+                name,
+                program: joiner.as_deref().expect("AGENTROUTER_DEVICE_EXE"),
+            }),
     };
     let unit = format!("agentrouter-test-{mode}-{}", std::process::id());
     #[cfg_attr(not(unix), allow(unused_mut))]

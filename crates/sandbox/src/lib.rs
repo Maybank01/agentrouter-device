@@ -195,9 +195,17 @@ pub struct Launch<'a> {
     pub open_web: bool,
     /// Windows (device #129): the named Job object the sandbox entry joins before it starts the program, so the
     /// environment's limits hold on the confined tree. The caller made the job (and holds its limits); the entry
-    /// joins it with `agentrouter sandbox job-join` and refuses to start the program when that fails. Ignored
+    /// joins it with `<program> sandbox job-join` and refuses to start the program when that fails. Ignored
     /// elsewhere (Linux scopes and macOS sampling work from outside).
-    pub job: Option<&'a str>,
+    pub job: Option<JobJoin<'a>>,
+}
+
+/// [`Launch::job`]: the job's name and the device program that joins it (`agentrouter`, which the sandbox account
+/// already runs as the link's `host` server).
+#[derive(Debug, Clone, Copy)]
+pub struct JobJoin<'a> {
+    pub name: &'a str,
+    pub program: &'a Path,
 }
 
 /// What `agentrouter sandbox status` shows and `hello` reports.
@@ -657,45 +665,16 @@ impl Runtime {
         Ok(self.ready()?.sid)
     }
 
-    /// `{name, exe}` of the launch file's `job` (device #129): the job's name and this program, which the entry runs
-    /// as `<exe> sandbox job-join <name> <its pid>`. The sandbox account gets read+execute on this program's file
-    /// alone (an explicit ACE on the file; the folders above stay as they are), once per process.
-    #[cfg(windows)]
-    fn windows_job_spec(&self, job: &str, sid: &str) -> Result<Value, Unavailable> {
-        let fail = |e: String| {
-            Unavailable::new(
-                format!("资源上限的作业对象接不上隔离环境：{e}"),
-                "请重新运行 agentrouter；仍然不行就在 agentrouter-device 仓库报告这一行（device #129）。",
-            )
-        };
-        if !job.starts_with("Local\\")
-            || !job[6..]
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-        {
-            return Err(fail(format!("作业对象的名字不对：{job}")));
-        }
-        let exe = std::env::current_exe().map_err(|e| fail(format!("找不到本程序：{e}")))?;
-        self.windows_grant(&exe, sid, false).map_err(fail)?;
-        Ok(json!({"name": job, "exe": shown(&exe)}))
-    }
-
     #[cfg(windows)]
     fn windows_read_grant(&self, dir: &Path, sid: &str) -> Result<(), String> {
-        self.windows_grant(dir, sid, true)
-    }
-
-    /// One read+execute ACE for `sid` on `path` (`tree`: inherited by everything below a folder).
-    #[cfg(windows)]
-    fn windows_grant(&self, path: &Path, sid: &str, tree: bool) -> Result<(), String> {
         static DONE: std::sync::Mutex<Vec<(PathBuf, String)>> = std::sync::Mutex::new(Vec::new());
-        let dir = path.to_path_buf();
+        let dir = dir.to_path_buf();
         let key = (dir.clone(), sid.to_string());
         let mut done = DONE.lock().unwrap_or_else(|e| e.into_inner());
         if done.contains(&key) {
             return Ok(());
         }
-        let args = icacls_grant(&dir, sid, tree)?;
+        let args = icacls_read_grant(&dir, sid)?;
         let icacls = std::env::var_os("SystemRoot")
             .map(|r| PathBuf::from(r).join("System32").join("icacls.exe"))
             .filter(|p| p.is_file())
@@ -706,7 +685,7 @@ impl Runtime {
             .map_err(|e| format!("icacls 起不来：{e}"))?;
         if !out.status.success() {
             return Err(format!(
-                "隔离账户读不了 {}（icacls：{}{}）",
+                "隔离账户读不了隔离环境 {}（icacls：{}{}）",
                 shown(&dir),
                 String::from_utf8_lossy(&out.stdout).trim(),
                 String::from_utf8_lossy(&out.stderr).trim()
@@ -1059,8 +1038,8 @@ impl Runtime {
                 "cwd": shown(launch.cwd),
             });
             #[cfg(windows)]
-            if let Some(job) = launch.job {
-                spec["job"] = self.windows_job_spec(job, &ready.sid)?;
+            if let Some(job) = &launch.job {
+                spec["job"] = windows_job_spec(job)?;
             }
             #[cfg(windows)]
             if stdio_pipe {
@@ -1103,6 +1082,30 @@ impl Runtime {
         }
         Ok(Confined { command: cmd, pipe })
     }
+}
+
+/// `{name, exe}` of the launch file's `job` (device #129): the job's name and the device program, which the entry runs
+/// as `<exe> sandbox job-join <name> <its pid>` (it must answer `joined`).
+#[cfg(windows)]
+fn windows_job_spec(job: &JobJoin) -> Result<Value, Unavailable> {
+    let fail = |e: String| {
+        Unavailable::new(
+            format!("资源上限的作业对象接不上隔离环境：{e}"),
+            "请重新运行 agentrouter；仍然不行就在 agentrouter-device 仓库报告这一行（device #129）。",
+        )
+    };
+    let name = job.name;
+    if !name.starts_with("Local\\")
+        || !name[6..]
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    {
+        return Err(fail(format!("作业对象的名字不对：{name}")));
+    }
+    if !job.program.is_file() {
+        return Err(fail(format!("找不到 {}", shown(job.program))));
+    }
+    Ok(json!({"name": name, "exe": shown(job.program)}))
 }
 
 /// A new [`StdioPipe`] for one server: its name and the server end. The DACL is protected (nothing inherited) and has
@@ -1400,10 +1403,9 @@ fn srt_win_json(srt_win: &Path, args: &[&str]) -> Result<Value, String> {
 }
 
 /// `icacls <dir> /grant:r *<sid>:(OI)(CI)RX /Q`: replace this SID's explicit grant on `dir` with read+execute,
-/// inherited by everything below (`tree`), or on one file (`icacls <file> /grant:r *<sid>:RX /Q`). Only a well-formed
-/// SID is passed on.
+/// inherited by everything below. Only a well-formed SID is passed on.
 #[cfg_attr(not(windows), allow(dead_code))]
-fn icacls_grant(dir: &Path, sid: &str, tree: bool) -> Result<Vec<std::ffi::OsString>, String> {
+fn icacls_read_grant(dir: &Path, sid: &str) -> Result<Vec<std::ffi::OsString>, String> {
     let well_formed = sid.starts_with("S-1-")
         && sid[4..]
             .split('-')
@@ -1414,7 +1416,7 @@ fn icacls_grant(dir: &Path, sid: &str, tree: bool) -> Result<Vec<std::ffi::OsStr
     Ok(vec![
         dir.as_os_str().to_os_string(),
         "/grant:r".into(),
-        format!("*{sid}:{}RX", if tree { "(OI)(CI)" } else { "" }).into(),
+        format!("*{sid}:(OI)(CI)RX").into(),
         "/Q".into(),
     ])
 }
@@ -1453,10 +1455,9 @@ mod tests {
 
     #[test]
     fn the_runtime_read_grant_names_one_sid_and_inherits() {
-        let args = icacls_grant(
+        let args = icacls_read_grant(
             Path::new("C:\\data\\sandbox\\srt-0.0.81"),
             "S-1-5-21-1-2-3-1001",
-            true,
         )
         .unwrap();
         let args: Vec<String> = args
@@ -1481,19 +1482,8 @@ mod tests {
             "S-1-5--1",
             "S-1-5-21-1-2-3-1001:F",
         ] {
-            assert!(
-                icacls_grant(Path::new("C:\\d"), bad, true).is_err(),
-                "{bad}"
-            );
+            assert!(icacls_read_grant(Path::new("C:\\d"), bad).is_err(), "{bad}");
         }
-        // One file (the program the sandbox entry runs to join the limits' job, #129): no inheritance flags.
-        let file = icacls_grant(
-            Path::new("C:\\bin\\agentrouter.exe"),
-            "S-1-5-21-1-2-3-1001",
-            false,
-        )
-        .unwrap();
-        assert_eq!(file[2].to_string_lossy(), "*S-1-5-21-1-2-3-1001:RX");
     }
 
     fn launch_in(dir: &Path) -> (Runtime, PathBuf) {

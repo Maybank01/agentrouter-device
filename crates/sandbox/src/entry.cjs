@@ -51,10 +51,11 @@ function escapeArgument(arg, doubleEscape) {
 
 if (spec.job) {
   const joined = spawnSync(spec.job.exe, ['sandbox', 'job-join', spec.job.name, String(process.pid)], {
-    stdio: ['ignore', 'ignore', 'pipe'],
+    stdio: ['ignore', 'pipe', 'pipe'],
     encoding: 'utf8',
   });
-  if (joined.status !== 0) {
+  // Only this exact answer is a join (another program exiting 0 is not).
+  if (joined.status !== 0 || (joined.stdout || '').trim() !== 'joined') {
     const why = joined.error ? joined.error.message : `${(joined.stderr || '').trim()} (exit ${joined.status})`;
     process.stderr.write(`agentrouter sandbox: 没能进入资源上限的作业对象，所以没有启动（device #129）：${why}\n`);
     process.exit(124);

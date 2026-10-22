@@ -554,7 +554,10 @@ async fn start_once(
         readable: &readable,
         read_only: agg.cfg.read_only,
         open_web: def.open_web(),
-        job: prepared.as_ref().map(|(_, name)| name.as_str()),
+        job: prepared
+            .as_ref()
+            .zip(agg.cfg.device_program.as_deref())
+            .map(|((_, name), program)| agentrouter_sandbox::JobJoin { name, program }),
     };
     let (policy, std_cmd, pipe) = if agg.cfg.full {
         // 完全访问 (§6.4): the person's own rights and environment, no sandbox.
@@ -623,13 +626,16 @@ fn named_job(
     server: &Arc<Server>,
     limits: agentrouter_device::limits::Limits,
 ) -> Result<Option<(agentrouter_device::limits::Enforced, String)>, StartError> {
-    let made = agg
-        .sandbox
-        .windows_sid()
-        .map_err(|u| u.to_string())
-        .and_then(|sid| {
-            agentrouter_device::limits::Enforced::named(&sid, limits, on_limit(agg, server))
-        });
+    let made = match &agg.cfg.device_program {
+        None => Err("没有 agentrouter 程序来加入作业对象".to_string()),
+        Some(_) => agg
+            .sandbox
+            .windows_sid()
+            .map_err(|u| u.to_string())
+            .and_then(|sid| {
+                agentrouter_device::limits::Enforced::named(&sid, limits, on_limit(agg, server))
+            }),
+    };
     match made {
         Ok(named) => Ok(Some(named)),
         Err(e) if limits.is_empty() => {

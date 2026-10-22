@@ -239,6 +239,10 @@ pub struct Config {
     /// The owner's ceiling on the environment's resource limits (`config.json` `limits`, device #127): the platform's
     /// (`link__limits`) never go above it.
     pub limits: agentrouter_device::limits::Limits,
+    /// This device program (`agentrouter`): on Windows the sandbox entry runs it to join the limits' Job object
+    /// (`sandbox job-join`, device #129). `None` (a test without the binary): folder mode starts servers without that
+    /// job, and non-empty limits are refused.
+    pub device_program: Option<PathBuf>,
 }
 
 /// The audit log of one link.
