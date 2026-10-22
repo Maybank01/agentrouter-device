@@ -294,7 +294,7 @@
       "status": 424,
       "retry": "never",
       "log": "info",
-      "agent": "Folder mode on the person's computer cannot confine local tools for {operation}{on_target}: its sandbox needs a one-time change only that computer's administrator can make (on Ubuntu, an AppArmor rule that lets AgentRouter's own sandbox program make user namespaces: `sudo agentrouter sandbox userns install`; elsewhere, a kernel setting); `agentrouter sandbox setup` cannot make it",
+      "agent": "Folder mode on the person's computer cannot confine local tools for {operation}{on_target}: its sandbox needs a one-time change only that computer's administrator can make (on Ubuntu, an AppArmor rule that lets AgentRouter's own sandbox program make user namespaces: `sudo agentrouter computer userns install`; elsewhere, a kernel setting); `agentrouter computer setup` cannot make it",
       "next": "Do not retry. Tell the person, in one plain sentence, the exact command the cause gives and what it is for (it asks for the computer's login password); after they ran it, call once more. Until then nothing runs in that folder.",
       "user": "这台电脑要管理员确认一次设置，按提示运行那一行命令后再试。"
     },
@@ -1815,7 +1815,7 @@
       "retry": "never",
       "log": "info",
       "agent": "A program a local tool needs for {operation}{on_target} is not installed on the person's computer (the cause names it)",
-      "next": "Tell the person which program to install (or to run `agentrouter sandbox setup`), then add the tool again.",
+      "next": "Tell the person which program to install (or to run `agentrouter computer setup`), then add the tool again.",
       "user": "电脑上缺少这个工具需要的程序。"
     },
     {
@@ -1988,8 +1988,8 @@
       "retry": "never",
       "log": "info",
       "agent": "The sandbox on the person's computer is not ready for {operation}{on_target}",
-      "next": "Ask the person to run `agentrouter sandbox setup` on that computer, then call again.",
-      "user": "电脑的隔离环境还没准备好：在电脑上运行 agentrouter sandbox setup。"
+      "next": "Ask the person to run `agentrouter computer setup` on that computer, then call again.",
+      "user": "电脑的隔离环境还没准备好：在电脑上运行 agentrouter computer setup。"
     },
     {
       "code": "NETWORK",
@@ -2308,7 +2308,7 @@
       "retry": "never",
       "log": "info",
       "agent": "The gateway requires a sandboxed link for {operation}{on_target}, and the person's computer has no working sandbox",
-      "next": "Ask the person to run `agentrouter sandbox setup` on that computer, then link again.",
+      "next": "Ask the person to run `agentrouter computer setup` on that computer, then link again.",
       "user": "需要先在电脑上准备隔离环境。"
     },
     {

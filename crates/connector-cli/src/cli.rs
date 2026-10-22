@@ -51,9 +51,9 @@ link 启动 hostd（宿主守护进程）；agentrouter hostd 是同一条命令
                                 看、改名、拿掉命名文件夹（拿掉后 Agent 立刻用不到它）
                                 从 JSON 文件（- 为标准输入）设规则，比如 {\"agents\":[\"我的空间/agents/剪辑\"],\"localData\":{\"照片库\":[]}}；
                                 reset 回到默认（你账号的 Agent 都能用、命名文件夹都开放）。这台电脑自己再查一遍，平台弄错也越不过它
-  agentrouter sandbox setup|status|remove
+  agentrouter computer setup|status|remove
                                 本机工具的隔离环境（Windows 会弹一次管理员确认）
-  sudo agentrouter sandbox userns install|remove
+  sudo agentrouter computer userns install|remove
                                 Ubuntu 这类限制用户命名空间的 Linux：给 AgentRouter 自己的隔离程序 bubblewrap
                                 加一条只管它的 AppArmor 规则（装一份 root 所有的副本）；remove 撤销
   agentrouter service install [文件夹…] [--read-only | --full] [--yes-servers]
@@ -62,7 +62,7 @@ link 启动 hostd（宿主守护进程）；agentrouter hostd 是同一条命令
                                 要先用 agentrouter link 确认过这台电脑。启动后没有人回答 y/N，要问的一律当作「不」
   agentrouter service status    开机自动连接：开着没有、在不在运行、哪些文件夹、链接状态
   agentrouter service uninstall 关掉开机自动连接（删掉系统里的启动项；这台电脑仍然链接着账号）
-  agentrouter status            账号、网关、沙箱、当前文件夹
+  agentrouter status            账号、网关、隔离环境、当前文件夹
   agentrouter logout            这台电脑退出链接（删掉本机的链接身份）
 ";
 
@@ -197,7 +197,10 @@ pub fn main() {
                 .clamp(1, 1000);
             crate::console::audit_cmd(verify, n)
         }
-        "sandbox" => cmd_sandbox(flags),
+        // `computer` prepares this computer for folder mode (Cloud #2825). `sandbox` is its old name, kept working and
+        // out of the help until the upgrade channel's minimum device version has `computer`; the sandbox entry's own
+        // `sandbox job-join` call uses it too.
+        "computer" | "sandbox" => cmd_sandbox(flags),
         "service" => crate::service::cmd(
             flags.positional.first().map(String::as_str),
             flags.positional.get(1..).unwrap_or_default(),
@@ -365,7 +368,7 @@ fn mcp_add(data: &std::path::Path, args: &[String]) -> i32 {
     0
 }
 
-/// `agentrouter sandbox setup|status|remove|userns` (docs/HOSTD-MCP.md §6, #42, #122).
+/// `agentrouter computer setup|status|remove|userns` (docs/HOSTD-MCP.md §6, #42, #122).
 fn cmd_sandbox(flags: Flags) -> i32 {
     // Run inside the sandbox by its entry, as the sandbox account (device #129): nothing here touches a data folder.
     if flags.positional.first().map(String::as_str) == Some("job-join") {
@@ -415,7 +418,7 @@ fn cmd_sandbox(flags: Flags) -> i32 {
             if st.ready { 0 } else { 1 }
         }
         Some(other) => {
-            eprintln!("不认识的 sandbox 子命令：{other}（setup、status、remove 或 userns）");
+            eprintln!("不认识的 computer 子命令：{other}（setup、status、remove 或 userns）");
             2
         }
     }

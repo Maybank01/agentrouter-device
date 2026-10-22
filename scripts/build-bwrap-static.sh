@@ -1,7 +1,7 @@
 #!/bin/sh
 # Builds bubblewrap (bwrap) as one static program against musl, for Linux folder mode (#122): srt confines every local
 # server with bubblewrap, and the device brings its own (as it does socat and ripgrep) so the person installs nothing,
-# and so Ubuntu's AppArmor profile for it can name one root-owned copy (`agentrouter sandbox userns install`). No
+# and so Ubuntu's AppArmor profile for it can name one root-owned copy (`agentrouter computer userns install`). No
 # upstream binary build exists. Runs inside the pinned Alpine image of .github/workflows/bwrap.yml; the source tarball
 # was checked there against its pinned SHA-256 (the one in the upstream release notes).
 #

@@ -580,7 +580,7 @@ anything from the folder** (no git in the folder, no hooks, no folder config).
 | Write inside the folder, denied anyway | `.git/hooks/**`, `.git/config` (planting code that the person's own git would later run at full rights) |
 | Read | Allowed broadly (tools need runtimes and system libraries) **except** a deny list: `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.azure`, `~/.kube`, `~/.docker/config.json`, `~/.config/gh`, `~/.git-credentials`, `~/.npmrc`, browser profile roots, OS credential stores, the AgentRouter device data dir |
 | Network | Allow-list per server from the catalog (`network: [domains]`) plus the package mirrors; custom servers get registries only unless the local `y` included network. **Open web** (owner Q7, 2026-10-20): a pinned catalog preset whose list is `["*"]` (the browser presets `browser`, `browser-firefox`) may reach any public host on any port; loopback/`localhost`, link-local (incl. `169.254.169.254`), multicast, cloud-metadata endpoints, private ranges (`10/8`, `172.16/12`, `192.168/16`, `100.64/10`, `fc00::/7`) and this computer's own addresses stay closed, by name and by IP literal. `*` from a custom server, the project's `.agentrouter/mcp.json` or any other local definition is dropped; no local flag or env var widens it. Mechanism: srt (0.0.81) has no `*` allow entry, so the device starts srt's own CLI through `open-web.mjs`, which passes srt's documented ask callback (`SandboxManager.initialize(config, askCallback)`): it allows public destinations and judges IP literals with srt's resolved-address guard; `network.deniedResolvedAddresses` adds the private ranges to that guard for names. Enforced through the sandbox's egress proxy |
-| Local ports (device #139) | A command reaches a dev server it (or another command of the link) started on `localhost`, as in the person's own terminal. Linux: the sandbox's own network namespace and loopback (the person's local services are not there). macOS and Windows: srt's `network.allowLocalBinding` — loopback is shared, so the person's own local services (a database, a local admin page) are reachable to commands too, as on macOS with srt's setting on. On Windows this is a machine-wide mode of srt-win's WFP fence: `sandbox setup` installs it with `--allow-loopback` (an existing install is re-installed once with `--force`, one UAC prompt); every session asks for the installed mode (`srt-win status` → `wfp.allow_loopback`, or the setup's own record when that is unreadable without elevation), and `sandbox status` notes a machine still installed closed. Everything beyond this computer still goes through the allow-list. Preview streams open only the link's own listeners (§3.8). **Known difference from Linux, kept on purpose** (coordinator decision 2026-10-22, Cloud #2383): on macOS and Windows a sandboxed command can reach the person's own loopback services, exactly as the person's own terminal and a local CLI Agent can (PC parity target). What bounds it is who may run commands at all: on Cloud, every call on a person's computer needs input trust `delegated` or higher (the owner, their own Agents, team grants, their schedules; CONNECTIONS §4.5, Cloud #2556 / #2647), so a public or merely known sender can never make an Agent run a command here. A closed loopback would break the dev-server case and is not offered |
+| Local ports (device #139) | A command reaches a dev server it (or another command of the link) started on `localhost`, as in the person's own terminal. Linux: the sandbox's own network namespace and loopback (the person's local services are not there). macOS and Windows: srt's `network.allowLocalBinding` — loopback is shared, so the person's own local services (a database, a local admin page) are reachable to commands too, as on macOS with srt's setting on. On Windows this is a machine-wide mode of srt-win's WFP fence: `computer setup` installs it with `--allow-loopback` (an existing install is re-installed once with `--force`, one UAC prompt); every session asks for the installed mode (`srt-win status` → `wfp.allow_loopback`, or the setup's own record when that is unreadable without elevation), and `computer status` notes a machine still installed closed. Everything beyond this computer still goes through the allow-list. Preview streams open only the link's own listeners (§3.8). **Known difference from Linux, kept on purpose** (coordinator decision 2026-10-22, Cloud #2383): on macOS and Windows a sandboxed command can reach the person's own loopback services, exactly as the person's own terminal and a local CLI Agent can (PC parity target). What bounds it is who may run commands at all: on Cloud, every call on a person's computer needs input trust `delegated` or higher (the owner, their own Agents, team grants, their schedules; CONNECTIONS §4.5, Cloud #2556 / #2647), so a public or merely known sender can never make an Agent run a command here. A closed loopback would break the dev-server case and is not offered |
 | The person's tool configuration (device #138) | The sandbox's home is not the person's (Windows: the sandbox account's own profile; macOS/Linux: `HOME` = scratch), so tools would not find their user configuration — git had no identity. The device points each tool at the person's own file, read-only, with srt-win's list of variables: `GIT_CONFIG_GLOBAL` (`~/.gitconfig`, else the XDG `git/config`), `NPM_CONFIG_USERCONFIG`, `PIP_CONFIG_FILE`, `MAVEN_ARGS`, `RUSTUP_HOME`, `CARGO_HOME`. Windows: what `srt-win profile status` offers (`env`); macOS/Linux: the same names found under the person's home. A file on the read deny list (e.g. `~/.npmrc`) is never named; a variable the server's environment (or, for commands, the person's terminal environment, #95) sets wins. `git config --global` inside the sandbox therefore fails (the file is read-only); repository config is unaffected |
 | File watching (device #141) | Watchers inside the sandbox see changes, as in the person's terminal: the host server's change feed (`host__changes`), and the person's own tools (`fs.watch` on a folder, chokidar, a dev server's hot reload). Linux (inotify) and Windows (`ReadDirectoryChangesW`) need nothing. macOS: every watcher goes through the FSEvents service, which srt's Seatbelt profile does not list, so the device adds it (`network.allowMachLookup: ["com.apple.FSEvents"]`); without it a watch starts without error and never reports anything. FSEvents reports changed paths, never contents |
 | Terminals (Cloud #2383) | Commands and the host server's persistent terminals open pseudo-terminals, as in the person's terminal. macOS: srt's `allowPty` (`(allow pseudo-tty)`, `/dev/ptmx`, `/dev/ttys*`); without it `openpty` fails with "Operation not permitted". srt's documented setting for a command that allocates a pty of its own. Linux and Windows need nothing |
@@ -601,11 +601,11 @@ anything from the folder** (no git in the folder, no hooks, no folder config).
 No fallback to "unconfined": if the sandbox is not available (setup refused, unsupported filesystem,
 Linux without user namespaces), the link still connects, `tools/list` contains only `link__*`, and every
 call answers `SANDBOX_UNAVAILABLE` with a `next` that tells the person what to run
-(`agentrouter sandbox setup`).
+(`agentrouter computer setup`).
 
 ### 6.3 Per OS notes
 
-- **Windows:** first `link` runs `agentrouter sandbox setup` (one UAC prompt: create the `srt` sandbox
+- **Windows:** first `link` runs `agentrouter computer setup` (one UAC prompt: create the `srt` sandbox
   account and WFP filters). Setup then makes two read grants without elevation (device #66):
   - srt's **profile read grant** (`srt-win profile grant`, srt ≥ 0.0.81). The profile becomes readable to the
     account except srt's built-in credential stores (keys, browser and password-manager data, registry
@@ -620,8 +620,8 @@ call answers `SANDBOX_UNAVAILABLE` with a `next` that tells the person what to r
   refuses a session that grants a read inside an excluded path, and the data folder stays secret
   as a whole.
 
-  Every start checks both. A later `sandbox setup` refreshes the profile grant, so items created
-  since the last run become readable. `agentrouter sandbox remove` (`srt-win uninstall`) removes the
+  Every start checks both. A later `computer setup` refreshes the profile grant, so items created
+  since the last run become readable. `agentrouter computer remove` (`srt-win uninstall`) removes the
   grant. FAT/exFAT folders and network shares cannot carry ACEs: `SANDBOX_UNAVAILABLE` for them.
 
   **Stdio (device #112).** srt-win gives a sandboxed child an empty stdin by design (upstream R14: the
@@ -648,12 +648,12 @@ call answers `SANDBOX_UNAVAILABLE` with a `next` that tells the person what to r
   deny capability`). srt's seccomp helper (`apply-seccomp`) runs inside bubblewrap and makes a nested namespace, so it
   fails with `setgroups: Permission denied`. The coordinator decided on least privilege: no global sysctl, and the
   seccomp layer stays on. The device therefore lifts the restriction for one program only:
-  - `sudo agentrouter sandbox userns install` puts a **root-owned** copy of the pinned bubblewrap at
-    `/usr/local/libexec/agentrouter/bwrap-<version>/bwrap`. It is downloaded and checked like `sandbox setup` does.
+  - `sudo agentrouter computer userns install` puts a **root-owned** copy of the pinned bubblewrap at
+    `/usr/local/libexec/agentrouter/bwrap-<version>/bwrap`. It is downloaded and checked like `computer setup` does.
   - It writes `/etc/apparmor.d/agentrouter-bwrap` in the pattern of Ubuntu's own per-application profiles:
     `abi <abi/4.0>`, `flags=(unconfined)`, `userns,`, attached to that exact path, nothing else. Then it loads the
     profile with `apparmor_parser --replace`. The apparmor service loads it again at boot.
-  - It is idempotent. `sudo agentrouter sandbox userns remove` unloads and deletes both.
+  - It is idempotent. `sudo agentrouter computer userns remove` unloads and deletes both.
   - Everything bubblewrap starts inherits the profile: srt's relay, `apply-seccomp`, and the command. The command runs
     under the helper's filter, which refuses new user namespaces, so the grant ends at the helper.
   - The grant never names a path the person's processes can write. A profile on a home-folder path would hand
@@ -679,12 +679,12 @@ reading arguments (not the kernel) is bypassed by any shell command (`cat ~/.ssh
 promise a protection that is not there. The console says it in one line (§8). Kept: argument-level audit (the chain
 head still goes to the cloud on every heartbeat, so a rewritten log is detected), checkpoints (§7.2), the local `y`
 for custom servers, Ctrl+C. Folder mode is unchanged (deny list, OS boundary). A full link works on a computer whose
-sandbox is unavailable (e.g. Ubuntu before `sandbox userns install`).
+sandbox is unavailable (e.g. Ubuntu before `computer userns install`).
 
 ### 6.5 The device's own runtimes (device #116)
 
 Folder mode never asks the person to install anything (the product is for ordinary people). srt and `npx` servers run
-on Node.js, `uvx` servers (serena, §13.2) on uv, so the device provisions both in `sandbox setup` (which the double-click
+on Node.js, `uvx` servers (serena, §13.2) on uv, so the device provisions both in `computer setup` (which the double-click
 start and the first `link` run), and `--full` provisions them too:
 
 - One pinned version each (Node.js 22 LTS, uv; Node 24 refuses the Unix socket path srt uses under the macOS data folder, longer than 104 bytes), the project's official portable archive per OS and architecture, the
@@ -708,7 +708,7 @@ start and the first `link` run), and `--full` provisions them too:
   musl, from the npm registry and npmmirror; #154), **socat** (1.8.1.3) and **bubblewrap** (0.13.1). socat and
   bubblewrap are built statically from the official source by `.github/workflows/socat.yml` and `bwrap.yml` and
   published with that source, because upstream has no maintained static build. They come from GitHub or our npm
-  package, in `sandbox setup` only (`--full` does not need them). srt gets their paths; they are not put on a server's PATH.
+  package, in `computer setup` only (`--full` does not need them). srt gets their paths; they are not put on a server's PATH.
   Where Ubuntu restricts user namespaces, the bubblewrap that runs is the root-owned copy of the same pin (§6.3).
 
 - **Catalog servers install from their locks** (Cloud #2740, `crates/sandbox/src/locks.rs`). `link__server_add` of a
@@ -861,7 +861,7 @@ AgentRouter · 链接这个文件夹
 ```
 
 Commands after the change: `link [<dir>…] [--read-only | --full] [--yes-servers]`, `undo [--list] [--journal]`,
-`audit [verify]`, `sandbox setup|status|remove`, `status`, `logout` (unpair this computer).
+`audit [verify]`, `computer setup|status|remove`, `status`, `logout` (unpair this computer).
 Removed: `workspace …`, `deploy …`, `access …`, `mcp on|off`, `screen on|off`, `run --background`,
 `agent list`, `mcp-serve workspace`. (`mcp-serve local` is pending the communication design, §4.)
 
@@ -935,7 +935,7 @@ those count as custom and need the local `y`.
 
 | # | Phase | Repo · module | Task |
 | --- | --- | --- | --- |
-| 1 | 1 Security base | device · `sandbox` (new crate) | Sandbox launcher on `srt` (pinned, digest-checked), policy from §6.1, `agentrouter sandbox setup/status/remove`; today's `mcp.rs` spawns every server through it; no-sandbox = refuse |
+| 1 | 1 Security base | device · `sandbox` (new crate) | Sandbox launcher on `srt` (pinned, digest-checked), policy from §6.1, `agentrouter computer setup/status/remove`; today's `mcp.rs` spawns every server through it; no-sandbox = refuse |
 | 2 | 1 | device · `connector-cli` + `mcp.rs` | Remove `AGENTROUTER_CONSENT` and cloud-supplied consent; strip reserved env names from `mcp_start.env` |
 | 3 | 1 | device · `audit` | Argument-level append-only audit (§7.1) incl. server command lines, redaction, `audit` / `audit verify` |
 | 4 | 2 Link | device · `hostd-link` (formerly `linker`; new crate from `net.rs`) | `/device/v2/link`, `hello v2` with `lnk_`, envelope `{s, m}`, reconnect/heartbeat, `audit_head`; no capabilities |

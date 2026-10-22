@@ -16,7 +16,7 @@ Windows 上也可以**直接双击 `agentrouter.exe`**（测试版）：第一�
 ## 边界
 
 - 每个本机工具（文件、Git、终端、代码理解……都是 MCP 服务）都在系统沙箱里运行：**只能写这个文件夹**，文件夹外的写、删、改名由系统直接拒绝，读不到 `~/.ssh` 等密钥文件夹，网络只放行包镜像和目录里登记的域名。
-- 沙箱不可用时，本机工具一个也不运行（不会在沙箱外运行）：按提示运行 `agentrouter sandbox setup`（Windows 会弹一次管理员确认）。
+- 沙箱不可用时，本机工具一个也不运行（不会在沙箱外运行）：按提示运行 `agentrouter computer setup`（Windows 会弹一次管理员确认）。
 - 不用自己装 Node.js 或 uv：第一次准备隔离环境时，`agentrouter` 从官方地址下载它自己用的固定版本（约 70 MB，校验 SHA-256），放在数据文件夹旁边，不改这台电脑上已有的。
 - 同意只在本机：运行 `link` 就是同意；唯一会问你的是装一个不在目录里的本机工具（终端里 y/N，120 秒不答算不同意）。
 - 每次调用连参数一起记进本机只追加的审计日志；Agent 改文件前自动打检查点，`agentrouter undo` 撤销。
@@ -29,7 +29,7 @@ Windows 上也可以**直接双击 `agentrouter.exe`**（测试版）：第一�
 | `agentrouter start [--full]` | 双击 `agentrouter.exe` 做的事：选工作文件夹（只选一次）、第一次在浏览器里确认、保持连接；云端 Agent 只能在这个文件夹里干活（`--full`：完全访问） |
 | `agentrouter undo [--list] [--journal] [检查点]` | 撤销 Agent 在这个文件夹最近一轮的改动（再运行一次再往前一轮）；`--list` 列出检查点；`--journal` 放回完全访问时改过的文件 |
 | `agentrouter audit [verify] [条数]` | 这个文件夹的审计记录；`verify` 检查有没有被改过 |
-| `agentrouter sandbox setup\|status\|remove` | 本机工具的隔离环境 |
+| `agentrouter computer setup\|status\|remove` | 本机工具的隔离环境 |
 | `agentrouter status` | 账号、网关、沙箱、当前文件夹 |
 | `agentrouter logout` | 这台电脑退出链接 |
 

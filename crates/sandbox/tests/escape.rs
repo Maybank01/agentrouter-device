@@ -193,7 +193,7 @@ srv.listen(0, '127.0.0.1', () => {
 
 /// Parity T6 (device #139): a confined command reaches a dev server it started on loopback — Linux in the sandbox's
 /// own namespace, macOS and Windows through srt's `allowLocalBinding` (Windows: the fence installed with loopback open
-/// by `sandbox setup`).
+/// by `computer setup`).
 fn a_confined_command_reaches_its_own_dev_server(rt: &Runtime, node: &Path, folder: &Path) {
     std::fs::write(folder.join("own-server.js"), OWN_SERVER).unwrap();
     let args = vec![folder.join("own-server.js").to_string_lossy().into_owned()];
@@ -324,7 +324,7 @@ fn a_confined_process_cannot_touch_anything_outside_the_folder() {
     std::fs::write(folder.join("probe.js"), PROBE).unwrap();
 
     let rt = Runtime::new(&data);
-    let done = rt.setup().expect("agentrouter sandbox setup");
+    let done = rt.setup().expect("agentrouter computer setup");
     eprintln!("setup: {done:?}");
     let status = rt.status();
     assert!(status.ready, "sandbox not ready: {:?}", status.problems);
