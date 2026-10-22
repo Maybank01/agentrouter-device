@@ -19,7 +19,7 @@ name: Parity bench (PC)
 #            npm @steipete/peekaboo-mcp has not changed since 2025-11 and is not used)
 #   Linux    no maintained screenshot MCP exists; DesktopCommander (MIT, active; npm @wonderwhy-er/desktop-commander
 #            0.3.0, 2026-10-13) granted the screen runs the person's own screenshot command (ImageMagick `import`) on
-#            the runner's Xvfb display
+#            the runner's Xvfb display; installed with npm first (#150), not started cold by npx
 
 on:
   workflow_dispatch:
@@ -140,7 +140,16 @@ jobs:
           } elseif ($IsMacOS) {
             & $env:PB_HOSTD mcp add screen --display --yes --title "Peekaboo" -- npx -y @steipete/peekaboo@4.9.6 mcp
           } else {
-            & $env:PB_HOSTD mcp add screen --display --yes --title "Desktop Commander" -- npx -y @wonderwhy-er/desktop-commander@0.3.0
+            # Installed first, as a person who uses it has it (#150): its first `npx -y` is a full install of a large tree
+            # (md-to-pdf → puppeteer's Chrome download, sharp, ripgrep…) that outlasted T4 on a fresh runner. Chrome is
+            # not needed for screenshots, so its download is skipped.
+            $env:PUPPETEER_SKIP_DOWNLOAD = '1'
+            $t = [Diagnostics.Stopwatch]::StartNew()
+            npm install -g --no-fund --no-audit @wonderwhy-er/desktop-commander@0.3.0
+            if ($LASTEXITCODE -ne 0) { throw "npm install desktop-commander exited $LASTEXITCODE" }
+            "desktop-commander installed in $([int]$t.Elapsed.TotalSeconds) s"
+            $dc = (Get-Command desktop-commander -ErrorAction Stop).Source
+            & $env:PB_HOSTD mcp add screen --display --yes --title "Desktop Commander" -- $dc
           }
           if ($LASTEXITCODE -ne 0) { throw "mcp add exited $LASTEXITCODE" }
           & $env:PB_HOSTD mcp list
