@@ -1361,7 +1361,8 @@ impl Inner {
                 Failure::new(problem.code, problem.message.clone()).next(problem.next.clone())
             );
         }
-        if let Some(pin) = &def.pin {
+        // A locked package comes from its lock (checked against the same digest), not from link__package_put.
+        if let Some(pin) = def.pin.as_ref().filter(|_| def.lock.is_none()) {
             self.packages.file(pin).map_err(|e| {
                 Failure::new("PACKAGE_NEEDED", e.message)
                     .next("先用 link__package_put 发来这个包，再 link__server_add。")

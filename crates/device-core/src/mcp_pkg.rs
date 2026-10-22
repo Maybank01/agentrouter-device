@@ -6,6 +6,8 @@
 //!   exception is its own pinned Node.js and uv, `agentrouter_sandbox::runtimes`, #116): the cloud sends the package
 //!   file with `mcp_package`, the device checks its digest and keeps it in its data folder,
 //!   and `mcp_start` runs exactly that file (`{{package}}` in the arguments). A file that does not match is refused.
+//!   A preset that comes with its lock (Cloud #2740) is installed from the lock instead, every package checksummed
+//!   (`agentrouter_sandbox::locks`).
 //! - npx cache: an install killed midway (a crash, a stop during the first download) leaves `_npx/<hash>` half
 //!   written, and every later start fails on a missing module. The host clears only that entry and starts once more.
 //! - Keep-out folders: a server that keeps its data in the project (serena's `.serena`) gets the folder created with

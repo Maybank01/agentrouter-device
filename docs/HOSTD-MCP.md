@@ -264,7 +264,7 @@ Unsigned (harmless, read-only shape): `tools/list`, `ping`, notifications. Failu
   `link__servers` (list with state and tools count), `link__server_add` (a catalog preset with its pin,
   or a custom definition — custom ones need the local `y` in §5), `link__server_remove`,
   `link__server_logs`, `link__package_put` (pinned package bytes, digest-checked; replaces
-  `mcp_package`). These manage *which* servers run; they are not capabilities.
+  `mcp_package`; a preset sent with its `lock` installs from that instead, §6.5). These manage *which* servers run; they are not capabilities.
 - A server's log (`link__server_logs`: its last 200 lines) is its stderr, the MCP log messages it sends, and the
   aggregator's own start / handshake / ready / exit lines, secrets blanked. The same lines are appended to
   `<device data>/logs/server-<name>.log` (moved to `.log.1` at 2 MiB), so a server that never got ready can be
@@ -638,6 +638,22 @@ start and the first `link` run), and `--full` provisions them too:
   published with that source, because upstream has no maintained static build. They come from GitHub or our npm
   package, in `sandbox setup` only (`--full` does not need them). srt gets their paths; they are not put on a server's PATH.
   Where Ubuntu restricts user namespaces, the bubblewrap that runs is the root-owned copy of the same pin (§6.3).
+
+- **Catalog servers install from their locks** (Cloud #2740, `crates/sandbox/src/locks.rs`). `link__server_add` of a
+  pinned catalog preset carries `lock`: every package below the pinned one with its registry checksum (npm
+  `package-lock.json`; Python `requirements.txt` with `--hash` lines and `.python-version`), the sources in order, the
+  program and the server's own arguments. The device checks that the lock names exactly the pinned package and digest,
+  installs it once into `<data>-shared/mcp-packages/locks/<key>/` outside the sandbox, with no package code run —
+  `npm ci --omit=dev --ignore-scripts` on the device's Node; `uv venv` on a uv-managed Python
+  (`<data>-shared/mcp-packages/python`) and `uv pip sync --require-hashes`, wheels only except the entry's `build`
+  names — and then runs the installed program (`node <bin script>`, `.venv/{bin,Scripts}/<bin>`) confined, instead of
+  `npx`/`uvx` resolving the tree at every start. Sources: the official registry first, then the mirrors, each one whole
+  attempt with that source in the environment (an attempt that is not the last gives up after 180 s); where an official
+  host already proved slow or unreachable (`.prefer-mirrors`, above) the mirrors go first. The managed Python comes from
+  uv's own host first, then npmmirror's copy. A file whose checksum is not the lock's is `MCP_DIGEST_MISMATCH` (nothing
+  installed); every source failing is `MCP_INSTALL_FAILED` with each source and its answer. The folder counts only
+  with its marker (written last); installs run one at a time. The server's state then is `install_failed` and the
+  error stays until the next `link__server_add`. A definition without `lock` (an older cloud) runs as before.
 
 ### 6.6 Resource limits per environment (Cloud VISION §4 D10, device #127)
 
