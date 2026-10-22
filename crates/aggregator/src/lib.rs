@@ -571,6 +571,97 @@ impl Aggregator {
         *self.inner.down_since.lock().unwrap() = None;
     }
 
+    /// One call of the link's own `host` server (its tools are hostd's: jobs, exec, files), outside any MCP session:
+    /// the structured answer, or why not (`HOST_SERVER_MISSING`, the tool's error text, `HOST_CALL_TIMEOUT`).
+    async fn call_host(&self, tool: &str, args: Value, wait: Duration) -> Result<Value, String> {
+        let server = self.inner.servers.lock().unwrap().get("host").cloned();
+        let peer = server.and_then(|s| s.peer.lock().unwrap().clone());
+        let Some(peer) = peer else {
+            return Err("HOST_SERVER_MISSING: the link's host server is not running".into());
+        };
+        let mut params = CallToolRequestParams::new(tool.to_string());
+        params.arguments = args.as_object().cloned();
+        match tokio::time::timeout(wait, peer.call_tool(params)).await {
+            Ok(Ok(r)) => {
+                let text = || {
+                    r.content
+                        .iter()
+                        .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+                        .collect::<Vec<_>>()
+                        .join("")
+                };
+                if r.is_error == Some(true) {
+                    Err(text())
+                } else {
+                    Ok(r.structured_content
+                        .clone()
+                        .unwrap_or_else(|| serde_json::from_str(&text()).unwrap_or(Value::Null)))
+                }
+            }
+            Ok(Err(e)) => Err(format!("HOST_CALL_FAILED: {tool}: {e}")),
+            Err(_) => Err(format!(
+                "HOST_CALL_TIMEOUT: {tool} did not answer in {} s",
+                wait.as_secs()
+            )),
+        }
+    }
+
+    /// The running jobs that hold a platform instance's control lease (Cloud PROJECT-SERVICE §4.8 "Lease epochs"):
+    /// `[{instance, epoch, job}]`, sent to the platform after every welcome so it can fence them. Empty when the host
+    /// server is not running (its jobs ended with it).
+    pub async fn host_leases(&self) -> Vec<Value> {
+        let Ok(listed) = self
+            .call_host("jobs", json!({}), Duration::from_secs(10))
+            .await
+        else {
+            return Vec::new();
+        };
+        listed
+            .get("jobs")
+            .and_then(Value::as_array)
+            .map(|all| {
+                all.iter()
+                    .filter(|j| j.get("running").and_then(Value::as_bool) == Some(true))
+                    .filter_map(|j| {
+                        let lease = j.get("lease")?;
+                        Some(json!({"instance": lease.get("instance")?, "epoch": lease.get("epoch")?, "job": j.get("job")?}))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The platform's `lease_lost`: stops each named job that still runs under that instance's lease (a job id that
+    /// now names another job is left alone: `LEASE_MISMATCH`), and records each outcome in the audit log.
+    pub async fn lease_lost(&self, jobs: &[Value]) -> Vec<Value> {
+        let mut outcomes = Vec::new();
+        for j in jobs {
+            let (job, instance) = (
+                j.get("job").and_then(Value::as_str).unwrap_or(""),
+                j.get("instance").and_then(Value::as_str).unwrap_or(""),
+            );
+            let reason = j
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or("lease_lost");
+            let args =
+                json!({"job": job, "instance": instance, "reason": "lease_lost", "grace_ms": 3000});
+            let outcome = match self
+                .call_host("job_stop", args, Duration::from_secs(40))
+                .await
+            {
+                Ok(_) => json!({"job": job, "instance": instance, "stopped": true, "why": reason}),
+                Err(e) => {
+                    json!({"job": job, "instance": instance, "stopped": false, "why": reason, "error": e})
+                }
+            };
+            self.inner
+                .record(json!({"kind": "lease", "event": "lost", "outcome": outcome}));
+            outcomes.push(outcome);
+        }
+        outcomes
+    }
+
     /// The servers and the sandbox, as `link__servers` shows them.
     pub fn servers_view(&self) -> Value {
         self.inner.servers_view()
