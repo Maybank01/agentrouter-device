@@ -47,6 +47,9 @@ function attempt(name, f) {
   try { f(); r[name] = 'ok'; } catch (e) { r[name] = 'denied: ' + (e.code || e.message); }
 }
 attempt('insideWrite', () => fs.writeFileSync(path.join(c.folder, 'inside.txt'), 'written in the sandbox'));
+// The temp folder a confined process is handed is writable (the host server keeps terminal command files there, #130).
+attempt('tmpWrite', () => { const d = path.join(require('os').tmpdir(), 'agentrouter-run'); fs.mkdirSync(d, { recursive: true }); fs.writeFileSync(path.join(d, 'probe.txt'), 'x'); });
+r.tmpdir = require('os').tmpdir();
 attempt('insideDelete', () => fs.unlinkSync(path.join(c.folder, 'delete-me.txt')));
 attempt('outsideWrite', () => fs.writeFileSync(path.join(c.outside, 'new.txt'), 'escaped'));
 attempt('outsideOverwrite', () => fs.writeFileSync(path.join(c.outside, 'victim.txt'), 'escaped'));
@@ -257,6 +260,10 @@ fn a_confined_process_cannot_touch_anything_outside_the_folder() {
 
     // The sandbox ran the probe and the folder is usable.
     assert_eq!(r["insideWrite"], "ok", "{r}");
+    assert_eq!(
+        r["tmpWrite"], "ok",
+        "the temp folder the sandbox hands out is writable: {r}"
+    );
     assert_eq!(r["insideDelete"], "ok", "{r}");
     assert!(folder.join("inside.txt").is_file());
     assert!(!folder.join("delete-me.txt").exists());
