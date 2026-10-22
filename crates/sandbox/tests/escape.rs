@@ -143,6 +143,7 @@ fn the_open_web_stays_off_this_computer_and_the_lan(rt: &Runtime, node: &Path, f
             readable: &[],
             read_only: false,
             open_web,
+            job: None,
         };
         let out = rt
             .command(&launch)
@@ -235,6 +236,7 @@ fn a_confined_process_cannot_touch_anything_outside_the_folder() {
         readable: &[],
         read_only: false,
         open_web: false,
+        job: None,
     };
     eprintln!(
         "policy: {}",

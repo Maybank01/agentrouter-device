@@ -7,7 +7,7 @@
 //! | OS | How | Memory | Processes | CPU |
 //! | --- | --- | --- | --- | --- |
 //! | Linux with a user systemd and cgroup v2 | a transient scope per server (`systemd-run --user --scope`, `OOMPolicy=continue`) | `MemoryMax` + `MemorySwapMax=0`: the kernel's OOM killer ends the largest process in the scope, the rest go on | `TasksMax` = processes × [`TASKS_PER_PROCESS`] (the kernel counts threads) | `CPUQuota` |
-//! | Windows | a kill-on-close Job object per server (完全访问; folder mode waits for device #129: [`WINDOWS_CONFINED`]) | job committed memory: allocations beyond it fail | active processes: a start beyond it fails | hard CPU-rate cap |
+//! | Windows | a kill-on-close Job object per server: 完全访问 puts the server in it after the spawn; folder mode makes it named first and the sandbox entry joins it from inside (device #129, [`Enforced::named`]) | job committed memory: allocations beyond it fail | active processes: a start beyond it fails | hard CPU-rate cap |
 //! | macOS, Linux without them | sampling every [`SAMPLE`] (sysinfo) | over it, the largest process ends | over it, the newest processes end | not capped |
 //!
 //! The values are the platform's (`link__limits`, from the environment record) capped field by field by the owner's
@@ -171,24 +171,9 @@ impl Mechanism {
     }
 }
 
-/// Windows folder mode (device #129): srt-win starts the confined server as the sandbox account through Secondary
-/// Logon and puts it in a job of its own, so hostd's Job object holds only srt's launcher. Until the inner named job
-/// lands, limits there are refused with this reason, never claimed.
-pub const WINDOWS_CONFINED: &str = "Windows 文件夹模式下资源上限还不能生效：沙箱账户的进程由系统的二次登录服务启动，不在 hostd 的作业对象里（device #129）";
-
-/// Whether limits can hold on a server started this way (`confined`: inside the folder sandbox).
-pub fn enforceable(confined: bool) -> bool {
-    !(cfg!(windows) && confined)
-}
-
-/// [`Mechanism::view`] for servers started this way: on Windows folder mode every field is unenforced, with why.
-pub fn view(confined: bool) -> Value {
-    let mut v = mechanism().view();
-    if !enforceable(confined) {
-        v["unenforced"] = json!(["memoryMb", "processes", "cpuPercent"]);
-        v["why"] = json!(WINDOWS_CONFINED);
-    }
-    v
+/// [`Mechanism::view`] of this computer.
+pub fn view() -> Value {
+    mechanism().view()
 }
 
 /// This computer's mechanism, found once.
@@ -235,8 +220,6 @@ pub struct Enforced {
     limits: Arc<Mutex<Limits>>,
     stop: Arc<AtomicBool>,
     kind: Kind,
-    /// Limits cannot hold on this tree ([`enforceable`]): any non-empty limits are refused.
-    refuse: bool,
 }
 
 enum Kind {
@@ -252,19 +235,39 @@ enum Kind {
 }
 
 impl Enforced {
-    /// Start enforcing `limits` on the server `pid` (just spawned by [`command`] with the same `unit`; `confined`:
-    /// inside the folder sandbox).
+    /// Windows folder mode (device #129): srt-win starts the confined server as the sandbox account through Secondary
+    /// Logon, in a job of its own that hostd cannot reach, and hostd cannot open that account's processes. So the job
+    /// is made **before** the start, named (`Local\agentrouter-limits-<128 random bits>`), with the limits already
+    /// set and a DACL that lets only the sandbox account (`sandbox_sid`) join it; the sandbox entry joins it from inside
+    /// before it starts the server ([`join`]; `Launch::job`). The job nests under srt's own. Returns the job's name for
+    /// the launch. Only the entry itself (a small Node.js process) runs outside it for a moment, before any of the
+    /// server's code; its memory counts toward the limit afterwards.
+    #[cfg(windows)]
+    pub fn named(
+        sandbox_sid: &str,
+        limits: Limits,
+        on_limit: OnLimit,
+    ) -> Result<(Enforced, String), String> {
+        let shared = Arc::new(Mutex::new(limits));
+        let (job, name) = windows::Job::named(sandbox_sid, shared.clone(), on_limit)?;
+        Ok((
+            Enforced {
+                limits: shared,
+                stop: Arc::new(AtomicBool::new(false)),
+                kind: Kind::Job(job),
+            },
+            name,
+        ))
+    }
+
+    /// Start enforcing `limits` on the server `pid` (just spawned by [`command`] with the same `unit`). Windows folder
+    /// mode uses [`Enforced::named`] instead.
     pub fn start(
         pid: u32,
         unit: &str,
         limits: Limits,
         on_limit: OnLimit,
-        confined: bool,
     ) -> Result<Enforced, String> {
-        let refuse = !enforceable(confined);
-        if refuse && !limits.is_empty() {
-            return Err(WINDOWS_CONFINED.to_string());
-        }
         let shared = Arc::new(Mutex::new(limits));
         let stop = Arc::new(AtomicBool::new(false));
         let kind = match mechanism() {
@@ -292,7 +295,6 @@ impl Enforced {
             limits: shared,
             stop,
             kind,
-            refuse,
         })
     }
 
@@ -302,9 +304,6 @@ impl Enforced {
 
     /// New limits on the running tree (no restart).
     pub fn update(&self, limits: Limits) -> Result<(), String> {
-        if self.refuse && !limits.is_empty() {
-            return Err(WINDOWS_CONFINED.to_string());
-        }
         match &self.kind {
             #[cfg(all(unix, not(target_os = "macos")))]
             Kind::Scope { unit, ctl, cpu } => linux::set(ctl, unit, &limits, *cpu)?,
@@ -330,6 +329,14 @@ impl Drop for Enforced {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
     }
+}
+
+/// `agentrouter sandbox job-join <name> <pid>` (Windows, device #129): run by the sandbox entry inside the sandbox, as
+/// the sandbox account, to put itself (`pid`, the entry's own process) into the named job hostd made for the server
+/// ([`Enforced::named`]) before it starts the server.
+#[cfg(windows)]
+pub fn join(name: &str, pid: u32) -> Result<(), String> {
+    windows::join(name, pid)
 }
 
 /// The process tree under `root` (itself included), from one sysinfo snapshot.
@@ -629,9 +636,15 @@ mod linux {
 mod windows {
     use super::*;
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, LocalFree};
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    };
+    use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
     use windows_sys::Win32::System::IO::{
         CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED, PostQueuedCompletionStatus,
     };
+    use windows_sys::Win32::System::JobObjects::OpenJobObjectW;
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_CPU_RATE_CONTROL_ENABLE,
         JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP, JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
@@ -642,9 +655,46 @@ mod windows {
         JobObjectCpuRateControlInformation, JobObjectExtendedLimitInformation,
         QueryInformationJobObject, SetInformationJobObject,
     };
+
+    /// The job right to assign processes (winnt.h; `Win32_System_SystemServices` in windows-sys).
+    const JOB_OBJECT_ASSIGN_PROCESS: u32 = 0x0001;
     use windows_sys::Win32::System::Threading::{
         OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
     };
+
+    /// [`super::join`]: open the named job for assigning only and put `pid` (the entry's own process) into it.
+    pub fn join(name: &str, pid: u32) -> Result<(), String> {
+        if !name.starts_with("Local\\agentrouter-limits-") {
+            return Err(format!("不是 agentrouter 的作业对象：{name}"));
+        }
+        let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+        // SAFETY: plain Win32 calls; both handles are owned here and closed on return.
+        unsafe {
+            let job = OpenJobObjectW(JOB_OBJECT_ASSIGN_PROCESS, 0, wide.as_ptr());
+            if job.is_null() {
+                return Err(format!(
+                    "打不开作业对象 {name}：{}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+            let job = Handle(job);
+            let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
+            if process.is_null() {
+                return Err(format!(
+                    "打不开进程 {pid}：{}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+            let process = Handle(process);
+            if AssignProcessToJobObject(job.0, process.0) == 0 {
+                return Err(format!(
+                    "进程 {pid} 进不了作业对象 {name}：{}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+        }
+        Ok(())
+    }
 
     const MSG_ACTIVE_PROCESS_LIMIT: u32 = 3;
     const MSG_JOB_MEMORY_LIMIT: u32 = 10;
@@ -687,15 +737,115 @@ mod windows {
     }
 
     impl Job {
+        /// 完全访问: a new anonymous job with the limits, and the server `pid` (hostd's own child) put into it.
         pub fn start(
             pid: u32,
             shared: Arc<Mutex<Limits>>,
             on_limit: OnLimit,
         ) -> Result<Job, String> {
-            let l = *shared.lock().unwrap();
-            // SAFETY: plain Win32 calls on handles owned here from creation on.
+            let this = Job::create(None, shared, on_limit, format!("limits-{pid}"))?;
+            // SAFETY: plain Win32 calls; the process handle is owned here and closed on return.
             unsafe {
-                let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+                let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
+                if process.is_null() {
+                    return Err(format!(
+                        "打不开进程 {pid}：{}",
+                        std::io::Error::last_os_error()
+                    ));
+                }
+                let process = Handle(process);
+                if AssignProcessToJobObject(this.job.0, process.0) == 0 {
+                    return Err(format!(
+                        "进程 {pid} 进不了作业对象：{}",
+                        std::io::Error::last_os_error()
+                    ));
+                }
+            }
+            Ok(this)
+        }
+
+        /// Folder mode ([`Enforced::named`]): a new job named `Local\agentrouter-limits-<32 hex>`, its limits set,
+        /// whose protected DACL lets only `sandbox_sid` assign processes (hostd holds its own handle from the
+        /// creation; the low mandatory label keeps the open working should srt ever run the entry below medium
+        /// integrity, as with the stdio pipe, #112).
+        pub fn named(
+            sandbox_sid: &str,
+            shared: Arc<Mutex<Limits>>,
+            on_limit: OnLimit,
+        ) -> Result<(Job, String), String> {
+            if !sandbox_sid.starts_with("S-1-")
+                || !sandbox_sid[4..]
+                    .split('-')
+                    .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+            {
+                return Err(format!("隔离账户的 SID 不对：{sandbox_sid}"));
+            }
+            let hex: String = crate::util::random_bytes::<16>()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            let name = format!("Local\\agentrouter-limits-{hex}");
+            let sddl =
+                format!("D:P(A;;0x{JOB_OBJECT_ASSIGN_PROCESS:x};;;{sandbox_sid})S:(ML;;NW;;;LW)");
+            let job = Job::create(
+                Some((&name, &sddl)),
+                shared,
+                on_limit,
+                format!("limits-{}", &hex[..8]),
+            )?;
+            Ok((job, name))
+        }
+
+        /// A new kill-on-close job (`named`: its name and SDDL), the limits set, its completion port read by one
+        /// thread (`thread`: its name).
+        fn create(
+            named: Option<(&str, &str)>,
+            shared: Arc<Mutex<Limits>>,
+            on_limit: OnLimit,
+            thread: String,
+        ) -> Result<Job, String> {
+            let l = *shared.lock().unwrap();
+            let wide = |s: &str| {
+                s.encode_utf16()
+                    .chain(std::iter::once(0))
+                    .collect::<Vec<u16>>()
+            };
+            // SAFETY: plain Win32 calls on handles owned here from creation on; the descriptor is LocalAlloc'd by
+            // the conversion and freed right after the creation.
+            unsafe {
+                let job = match named {
+                    None => CreateJobObjectW(std::ptr::null(), std::ptr::null()),
+                    Some((name, sddl)) => {
+                        let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+                        if ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                            wide(sddl).as_ptr(),
+                            SDDL_REVISION_1,
+                            &mut sd,
+                            std::ptr::null_mut(),
+                        ) == 0
+                        {
+                            return Err(format!(
+                                "作业对象的安全描述符：{}",
+                                std::io::Error::last_os_error()
+                            ));
+                        }
+                        let sa = SECURITY_ATTRIBUTES {
+                            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+                            lpSecurityDescriptor: sd,
+                            bInheritHandle: 0,
+                        };
+                        let job = CreateJobObjectW(&sa, wide(name).as_ptr());
+                        let err = std::io::Error::last_os_error();
+                        LocalFree(sd as _);
+                        // A job of that name already there (128 random bits: never by chance) is not ours.
+                        if !job.is_null() && err.raw_os_error() == Some(ERROR_ALREADY_EXISTS as i32)
+                        {
+                            CloseHandle(job);
+                            return Err(format!("作业对象 {name} 已经有了，不是这次建的"));
+                        }
+                        job
+                    }
+                };
                 if job.is_null() {
                     return Err(format!(
                         "建不了作业对象：{}",
@@ -727,22 +877,8 @@ mod windows {
                     cpu_on: std::sync::atomic::AtomicBool::new(false),
                 };
                 this.set(&l)?;
-                let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
-                if process.is_null() {
-                    return Err(format!(
-                        "打不开进程 {pid}：{}",
-                        std::io::Error::last_os_error()
-                    ));
-                }
-                let process = Handle(process);
-                if AssignProcessToJobObject(this.job.0, process.0) == 0 {
-                    return Err(format!(
-                        "进程 {pid} 进不了作业对象：{}",
-                        std::io::Error::last_os_error()
-                    ));
-                }
                 std::thread::Builder::new()
-                    .name(format!("limits-{pid}"))
+                    .name(thread)
                     .spawn(move || {
                         let port = port;
                         loop {

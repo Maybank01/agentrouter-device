@@ -179,6 +179,10 @@ pub fn main() {
 
 /// `agentrouter sandbox setup|status|remove|userns` (docs/HOSTD-MCP.md §6, #42, #122).
 fn cmd_sandbox(flags: Flags) -> i32 {
+    // Run inside the sandbox by its entry, as the sandbox account (device #129): nothing here touches a data folder.
+    if flags.positional.first().map(String::as_str) == Some("job-join") {
+        return sandbox_job_join(&flags.positional[1..]);
+    }
     let rt = agentrouter_sandbox::Runtime::new(&data_dir());
     let report = |done: Result<Vec<String>, String>| match done {
         Ok(lines) if lines.is_empty() => {
@@ -226,6 +230,38 @@ fn cmd_sandbox(flags: Flags) -> i32 {
             eprintln!("不认识的 sandbox 子命令：{other}（setup、status、remove 或 userns）");
             2
         }
+    }
+}
+
+/// `agentrouter sandbox job-join <name> <pid>` (Windows, device #129): the sandbox entry puts itself into the named
+/// Job object hostd made with the environment's limits, before it starts the server. Not for people to run.
+fn sandbox_job_join(args: &[String]) -> i32 {
+    let (Some(name), Some(pid)) = (
+        args.first(),
+        args.get(1).and_then(|p| p.parse::<u32>().ok()),
+    ) else {
+        eprintln!(
+            "用法：agentrouter sandbox job-join <作业对象名> <进程号>（由隔离环境的入口调用）"
+        );
+        return 2;
+    };
+    #[cfg(windows)]
+    {
+        match agentrouter_device::limits::join(name, pid) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("{e}");
+                1
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (name, pid);
+        eprintln!(
+            "sandbox job-join 只用在 Windows 上（Linux 和 macOS 的资源上限从隔离环境外面管）"
+        );
+        2
     }
 }
 

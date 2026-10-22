@@ -193,6 +193,11 @@ pub struct Launch<'a> {
     /// caller decides). Loopback, link-local, multicast, cloud metadata, [`PRIVATE_RANGES`] and this computer's own
     /// addresses stay closed, by name and by IP literal.
     pub open_web: bool,
+    /// Windows (device #129): the named Job object the sandbox entry joins before it starts the program, so the
+    /// environment's limits hold on the confined tree. The caller made the job (and holds its limits); the entry
+    /// joins it with `agentrouter sandbox job-join` and refuses to start the program when that fails. Ignored
+    /// elsewhere (Linux scopes and macOS sampling work from outside).
+    pub job: Option<&'a str>,
 }
 
 /// What `agentrouter sandbox status` shows and `hello` reports.
@@ -646,16 +651,51 @@ impl Runtime {
         Ok(())
     }
 
+    /// The sandbox account's SID (Windows): what a Job object or pipe made for a confined server grants (#112, #129).
+    #[cfg(windows)]
+    pub fn windows_sid(&self) -> Result<String, Unavailable> {
+        Ok(self.ready()?.sid)
+    }
+
+    /// `{name, exe}` of the launch file's `job` (device #129): the job's name and this program, which the entry runs
+    /// as `<exe> sandbox job-join <name> <its pid>`. The sandbox account gets read+execute on this program's file
+    /// alone (an explicit ACE on the file; the folders above stay as they are), once per process.
+    #[cfg(windows)]
+    fn windows_job_spec(&self, job: &str, sid: &str) -> Result<Value, Unavailable> {
+        let fail = |e: String| {
+            Unavailable::new(
+                format!("资源上限的作业对象接不上隔离环境：{e}"),
+                "请重新运行 agentrouter；仍然不行就在 agentrouter-device 仓库报告这一行（device #129）。",
+            )
+        };
+        if !job.starts_with("Local\\")
+            || !job[6..]
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            return Err(fail(format!("作业对象的名字不对：{job}")));
+        }
+        let exe = std::env::current_exe().map_err(|e| fail(format!("找不到本程序：{e}")))?;
+        self.windows_grant(&exe, sid, false).map_err(fail)?;
+        Ok(json!({"name": job, "exe": shown(&exe)}))
+    }
+
     #[cfg(windows)]
     fn windows_read_grant(&self, dir: &Path, sid: &str) -> Result<(), String> {
+        self.windows_grant(dir, sid, true)
+    }
+
+    /// One read+execute ACE for `sid` on `path` (`tree`: inherited by everything below a folder).
+    #[cfg(windows)]
+    fn windows_grant(&self, path: &Path, sid: &str, tree: bool) -> Result<(), String> {
         static DONE: std::sync::Mutex<Vec<(PathBuf, String)>> = std::sync::Mutex::new(Vec::new());
-        let dir = dir.to_path_buf();
+        let dir = path.to_path_buf();
         let key = (dir.clone(), sid.to_string());
         let mut done = DONE.lock().unwrap_or_else(|e| e.into_inner());
         if done.contains(&key) {
             return Ok(());
         }
-        let args = icacls_read_grant(&dir, sid)?;
+        let args = icacls_grant(&dir, sid, tree)?;
         let icacls = std::env::var_os("SystemRoot")
             .map(|r| PathBuf::from(r).join("System32").join("icacls.exe"))
             .filter(|p| p.is_file())
@@ -666,7 +706,7 @@ impl Runtime {
             .map_err(|e| format!("icacls 起不来：{e}"))?;
         if !out.status.success() {
             return Err(format!(
-                "隔离账户读不了隔离环境 {}（icacls：{}{}）",
+                "隔离账户读不了 {}（icacls：{}{}）",
                 shown(&dir),
                 String::from_utf8_lossy(&out.stdout).trim(),
                 String::from_utf8_lossy(&out.stderr).trim()
@@ -1019,6 +1059,10 @@ impl Runtime {
                 "cwd": shown(launch.cwd),
             });
             #[cfg(windows)]
+            if let Some(job) = launch.job {
+                spec["job"] = self.windows_job_spec(job, &ready.sid)?;
+            }
+            #[cfg(windows)]
             if stdio_pipe {
                 let (name, handle) = windows_stdio_pipe(&ready.sid).map_err(|e| {
                     Unavailable::new(
@@ -1356,9 +1400,10 @@ fn srt_win_json(srt_win: &Path, args: &[&str]) -> Result<Value, String> {
 }
 
 /// `icacls <dir> /grant:r *<sid>:(OI)(CI)RX /Q`: replace this SID's explicit grant on `dir` with read+execute,
-/// inherited by everything below. Only a well-formed SID is passed on.
+/// inherited by everything below (`tree`), or on one file (`icacls <file> /grant:r *<sid>:RX /Q`). Only a well-formed
+/// SID is passed on.
 #[cfg_attr(not(windows), allow(dead_code))]
-fn icacls_read_grant(dir: &Path, sid: &str) -> Result<Vec<std::ffi::OsString>, String> {
+fn icacls_grant(dir: &Path, sid: &str, tree: bool) -> Result<Vec<std::ffi::OsString>, String> {
     let well_formed = sid.starts_with("S-1-")
         && sid[4..]
             .split('-')
@@ -1369,7 +1414,7 @@ fn icacls_read_grant(dir: &Path, sid: &str) -> Result<Vec<std::ffi::OsString>, S
     Ok(vec![
         dir.as_os_str().to_os_string(),
         "/grant:r".into(),
-        format!("*{sid}:(OI)(CI)RX").into(),
+        format!("*{sid}:{}RX", if tree { "(OI)(CI)" } else { "" }).into(),
         "/Q".into(),
     ])
 }
@@ -1408,9 +1453,10 @@ mod tests {
 
     #[test]
     fn the_runtime_read_grant_names_one_sid_and_inherits() {
-        let args = icacls_read_grant(
+        let args = icacls_grant(
             Path::new("C:\\data\\sandbox\\srt-0.0.81"),
             "S-1-5-21-1-2-3-1001",
+            true,
         )
         .unwrap();
         let args: Vec<String> = args
@@ -1435,8 +1481,19 @@ mod tests {
             "S-1-5--1",
             "S-1-5-21-1-2-3-1001:F",
         ] {
-            assert!(icacls_read_grant(Path::new("C:\\d"), bad).is_err(), "{bad}");
+            assert!(
+                icacls_grant(Path::new("C:\\d"), bad, true).is_err(),
+                "{bad}"
+            );
         }
+        // One file (the program the sandbox entry runs to join the limits' job, #129): no inheritance flags.
+        let file = icacls_grant(
+            Path::new("C:\\bin\\agentrouter.exe"),
+            "S-1-5-21-1-2-3-1001",
+            false,
+        )
+        .unwrap();
+        assert_eq!(file[2].to_string_lossy(), "*S-1-5-21-1-2-3-1001:RX");
     }
 
     fn launch_in(dir: &Path) -> (Runtime, PathBuf) {
@@ -1482,6 +1539,7 @@ mod tests {
             readable: &[],
             read_only: false,
             open_web: false,
+            job: None,
         };
         let p = rt.policy(&launch).unwrap();
         let writes: Vec<&str> = p["filesystem"]["allowWrite"]
@@ -1574,6 +1632,7 @@ mod tests {
             readable: &[],
             read_only: true,
             open_web: false,
+            job: None,
         };
         let p = rt.policy(&launch).unwrap();
         assert_eq!(
@@ -1600,6 +1659,7 @@ mod tests {
             readable: &[],
             read_only: false,
             open_web: false,
+            job: None,
         };
         for open_web in [false, true] {
             launch.open_web = open_web;
@@ -1647,6 +1707,7 @@ mod tests {
                 readable: &[],
                 read_only: false,
                 open_web: false,
+                job: None,
             };
             assert!(
                 rt.policy(&launch).is_err(),

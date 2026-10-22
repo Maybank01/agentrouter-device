@@ -599,7 +599,7 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
         capacity: {
             // The owner's ceiling and how this computer enforces limits (device #127).
             let mut c = agentrouter_device::capacity::capacity(&first, cfg.max_environments);
-            let mut l = agentrouter_device::limits::view(!opts.full);
+            let mut l = agentrouter_device::limits::view();
             l["ceiling"] = cfg.limits.sane().view();
             c["limits"] = l;
             c
