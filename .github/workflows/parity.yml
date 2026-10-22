@@ -1,7 +1,7 @@
 name: Parity bench (PC)
 
-# The PC parity bench (Cloud deploy/maintenance/parity-bench, umbrella Cloud #2383) on a GitHub-hosted Windows or macOS
-# runner (device #139 added macOS):
+# The PC parity bench (Cloud deploy/maintenance/parity-bench, umbrella Cloud #2383) on a GitHub-hosted Windows, macOS or
+# Linux runner (device #139 added macOS, #145 Linux), the same bench on all three:
 # a Dev conversation whose environment is this runner's `agentrouter link` in folder mode (arm C), tasks T1–T9, each
 # judged by a checker that reads the folder afterwards (#132). On demand only — never on a push or a pull request,
 # never in a loop.
@@ -10,6 +10,16 @@ name: Parity bench (PC)
 # environment `dev-bench`, whose only deployment branch is `main`; the only trigger is workflow_dispatch (write access).
 # Pull requests — from forks or not — never run this workflow, and GitHub gives fork pull requests no secrets anyway.
 # The pairing code never reaches the log (bench.mjs `pair`); only the results and the report are uploaded.
+#
+# T4 (a screenshot) goes through a tool the person granted the screen (device #97, #145): folder mode has no display, so
+# the bench, as the person, adds one with `agentrouter mcp add <name> --display --yes -- …` before linking. Vetted
+# 2026-10-22 (licence, activity):
+#   Windows  Windows-MCP (MIT, active; PyPI windows-mcp 0.8.8, 2026-10-10)
+#   macOS    Peekaboo (MIT, active; npm @steipete/peekaboo 4.9.6, 2026-10-20, which ships `peekaboo mcp`. The separate
+#            npm @steipete/peekaboo-mcp has not changed since 2025-11 and is not used)
+#   Linux    no maintained screenshot MCP exists; DesktopCommander (MIT, active; npm @wonderwhy-er/desktop-commander
+#            0.3.0, 2026-10-13) granted the screen runs the person's own screenshot command (ImageMagick `import`) on
+#            the runner's Xvfb display
 
 on:
   workflow_dispatch:
@@ -17,7 +27,7 @@ on:
       os:
         description: The PC
         type: choice
-        options: [windows, macos]
+        options: [windows, macos, linux]
         default: windows
       tasks:
         description: Tasks to run (comma-separated)
@@ -38,12 +48,12 @@ jobs:
   bench:
     name: Parity bench (${{ inputs.os }}, folder mode)
     if: github.repository == 'Maybank01/agentrouter-device'
-    runs-on: ${{ inputs.os == 'macos' && 'macos-latest' || 'windows-latest' }}
+    runs-on: ${{ inputs.os == 'macos' && 'macos-latest' || inputs.os == 'linux' && 'ubuntu-latest' || 'windows-latest' }}
     environment: dev-bench
     timeout-minutes: 150
     env:
       PB_HOSTD_MODE: folder
-      PB_COMPUTER: gh-${{ inputs.os == 'macos' && 'mac' || 'win' }}-${{ github.run_id }}-${{ github.run_attempt }}
+      PB_COMPUTER: gh-${{ inputs.os == 'macos' && 'mac' || inputs.os == 'linux' && 'linux' || 'win' }}-${{ github.run_id }}-${{ github.run_attempt }}
       PB_TASKS: ${{ inputs.tasks }}
     steps:
       # The fixture's files and their hashes must be the same bytes as on any other PC (T3 packs them).
@@ -86,6 +96,19 @@ jobs:
         run: |
           Set-Service -Name seclogon -StartupType Manual
           Start-Service -Name seclogon
+      # A Linux PC as people have it: a desktop to capture (Xvfb with one window on it), a screenshot program, and Ubuntu's
+      # AppArmor user-namespace restriction on (the person runs the one admin line `sandbox userns install`, below).
+      - name: The person's screen (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends xvfb x11-utils imagemagick
+          Xvfb :99 -screen 0 1280x800x24 -nolisten tcp > "$RUNNER_TEMP/xvfb.log" 2>&1 &
+          for _ in $(seq 1 50); do xdpyinfo -display :99 > /dev/null 2>&1 && break; sleep 0.1; done
+          xdpyinfo -display :99 > /dev/null
+          DISPLAY=:99 xmessage -center "AgentRouter parity bench" > /dev/null 2>&1 &
+          echo "DISPLAY=:99" >> "$GITHUB_ENV"
       - name: Paths and the folder-mode sandbox (sandbox setup, as on a person's first link)
         shell: pwsh
         run: |
@@ -101,7 +124,26 @@ jobs:
           $env:AGENTROUTER_DEVICE_HOME = $home_
           & $hostd sandbox setup
           if ($LASTEXITCODE -ne 0) { throw "sandbox setup exited $LASTEXITCODE" }
+          if ($IsLinux) {
+            sudo $hostd sandbox userns install
+            if ($LASTEXITCODE -ne 0) { throw "sandbox userns install exited $LASTEXITCODE" }
+          }
           & $hostd sandbox status
+          if ($LASTEXITCODE -ne 0) { throw "sandbox status exited $LASTEXITCODE" }
+      # The person adds a screen tool and grants it the screen, on this computer (device #97); every link starts it.
+      - name: A screen tool the person granted the screen (T4)
+        shell: pwsh
+        run: |
+          $env:AGENTROUTER_DEVICE_HOME = $env:PB_DEVICE_HOME
+          if ($IsWindows) {
+            & $env:PB_HOSTD mcp add screen --display --yes --title "Windows 操作" -- uvx windows-mcp@0.8.8
+          } elseif ($IsMacOS) {
+            & $env:PB_HOSTD mcp add screen --display --yes --title "Peekaboo" -- npx -y @steipete/peekaboo@4.9.6 mcp
+          } else {
+            & $env:PB_HOSTD mcp add screen --display --yes --title "Desktop Commander" -- npx -y @wonderwhy-er/desktop-commander@0.3.0
+          }
+          if ($LASTEXITCODE -ne 0) { throw "mcp add exited $LASTEXITCODE" }
+          & $env:PB_HOSTD mcp list
       - name: Pair this runner with the test account
         env:
           SMOKE_ORIGIN: ${{ secrets.PB_SMOKE_ORIGIN }}
