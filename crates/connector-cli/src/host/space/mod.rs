@@ -247,15 +247,27 @@ mod linux {
             })?;
             // SAFETY: getuid/getgid have no preconditions.
             let me = unsafe { (libc::getuid(), libc::getgid()) };
+            // Shown as the owner of the folder it appears in (the session folder belongs to the user commands run as,
+            // so `git` and friends see their own files), unless the caller names one.
+            let around = path
+                .parent()
+                .and_then(|p| std::fs::metadata(p).ok())
+                .map(|m| {
+                    (
+                        std::os::unix::fs::MetadataExt::uid(&m),
+                        std::os::unix::fs::MetadataExt::gid(&m),
+                    )
+                })
+                .unwrap_or(me);
             let owner = (
                 args["owner"]["uid"]
                     .as_u64()
                     .map(|v| v as u32)
-                    .unwrap_or(me.0),
+                    .unwrap_or(around.0),
                 args["owner"]["gid"]
                     .as_u64()
                     .map(|v| v as u32)
-                    .unwrap_or(me.1),
+                    .unwrap_or(around.1),
             );
             let fs = Arc::new(SpaceFs::new(lower, &state, owner).map_err(|e| {
                 fail(
