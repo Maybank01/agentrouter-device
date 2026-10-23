@@ -2,7 +2,7 @@
 //! (the product is for ordinary people). srt is a Node program and so are `npx` servers; `uvx` servers (serena, in the
 //! default bundle) need uv. On Linux srt also runs ripgrep (it finds the dangerous files to keep unwritable) and socat
 //! (it relays the sandbox's network to srt's proxy), #119, and bubblewrap (it makes the namespaces), #122. The device
-//! provisions all of them itself, once, in `sandbox setup` (the double-click start and the first `link` run it). Where
+//! provisions all of them itself, once, in `computer setup` (the double-click start and the first `link` run it). Where
 //! AppArmor restricts unprivileged user namespaces (Ubuntu 23.10+), the bubblewrap that runs is a root-owned copy of
 //! the same pin that one AppArmor profile names (`crate::userns`, one admin line).
 //!
@@ -57,7 +57,7 @@ pub struct Pinned {
     pub bin_unix: &'static str,
     /// Its programs (without `.exe`/`.cmd`); the first one must exist for the runtime to count as installed.
     pub programs: &'static [&'static str],
-    /// Without it nothing confined starts (`sandbox setup` fails); otherwise only the tools that use it are missing.
+    /// Without it nothing confined starts (`computer setup` fails); otherwise only the tools that use it are missing.
     pub required: bool,
 }
 
@@ -364,7 +364,7 @@ pub const SOCAT: Pinned = Pinned {
 
 /// bubblewrap (LGPL-2.0-or-later), what srt confines with on Linux. 0.13.1, released 2026-10-14, built statically
 /// against musl with libcap by `.github/workflows/bwrap.yml` (release `bwrap-static-<version>`, with its source); `-r1`
-/// is the build revision. The same pin is the root-owned copy `sandbox userns install` puts under
+/// is the build revision. The same pin is the root-owned copy `computer userns install` puts under
 /// `/usr/local/libexec/agentrouter` (`crate::userns`).
 pub const BWRAP: Pinned = Pinned {
     title: "bubblewrap",
@@ -428,7 +428,7 @@ pub const CARRIER_SOURCE: &[(&Pinned, &str, &str)] = &[
     ),
 ];
 
-/// What local tools run on, on every OS (first on their PATH), in the order `sandbox setup` provisions them.
+/// What local tools run on, on every OS (first on their PATH), in the order `computer setup` provisions them.
 pub const TOOLS: [&Pinned; 2] = [&NODE, &UV];
 
 /// What srt itself runs on Linux besides Node (it gets their absolute paths).
@@ -650,7 +650,7 @@ impl Pinned {
         }
         let Some(attempt) = fetched else {
             return Err(format!(
-                "{} {}（{}）从 {} 个地址都没下载下来，网络通了以后运行 agentrouter sandbox setup 会再试（{}）",
+                "{} {}（{}）从 {} 个地址都没下载下来，网络通了以后运行 agentrouter computer setup 会再试（{}）",
                 self.title,
                 self.version,
                 archive.file,

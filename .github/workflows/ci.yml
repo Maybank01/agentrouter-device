@@ -132,7 +132,7 @@ jobs:
           - { name: Windows, os: windows-latest }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
-    # Windows (#66): `sandbox setup` gives the sandbox account srt's profile read grant and read+execute on the runtime
+    # Windows (#66): `computer setup` gives the sandbox account srt's profile read grant and read+execute on the runtime
     # (before: "Access is denied", then EPERM on every path under the profile). The boundary test blocks like on the
     # other two.
     env:
@@ -142,7 +142,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # #116: the person installs nothing. `sandbox setup` provisions the device's own pinned Node.js and uv; the
+      # #116: the person installs nothing. `computer setup` provisions the device's own pinned Node.js and uv; the
       # runner's are hidden so nothing here can fall back to them (srt, npm ci, the test servers all run on the
       # device's Node).
       - name: Hide the runner's Node.js and uv (Linux, macOS)
@@ -171,9 +171,9 @@ jobs:
           foreach ($t in 'node', 'npx', 'uvx') {
             if (Get-Command $t -ErrorAction SilentlyContinue) { throw "$t is still on PATH" }
           }
-      # #119, #122: bubblewrap, ripgrep and socat are the device's own (`sandbox setup` provisions them); any on the
+      # #119, #122: bubblewrap, ripgrep and socat are the device's own (`computer setup` provisions them); any on the
       # runner are hidden, so nothing here can fall back to them. Ubuntu's AppArmor user-namespace restriction stays on,
-      # as on people's Ubuntu PCs: the tests below run through the one admin line (`sandbox userns install`).
+      # as on people's Ubuntu PCs: the tests below run through the one admin line (`computer userns install`).
       - name: Linux sandbox dependencies (none from the distribution; user-namespace restriction on)
         if: runner.os == 'Linux'
         run: |
@@ -196,20 +196,20 @@ jobs:
         run: |
           cargo build -q -p agentrouter-device-cli --bin agentrouter
           bin="$PWD/target/debug/agentrouter"
-          "$bin" sandbox setup | tee setup.txt
+          "$bin" computer setup | tee setup.txt
           grep -q "准备好了 bubblewrap" setup.txt && grep -q "准备好了 socat" setup.txt && grep -q "准备好了 ripgrep" setup.txt
-          set +e; "$bin" sandbox status > status.txt; code=$?; set -e
+          set +e; "$bin" computer status > status.txt; code=$?; set -e
           cat status.txt
           test "$code" = 1
-          grep -qF "sudo $bin sandbox userns install" status.txt
-          sudo "$bin" sandbox userns install | tee install.txt
+          grep -qF "sudo $bin computer userns install" status.txt
+          sudo "$bin" computer userns install | tee install.txt
           grep -q "AppArmor 已加载规则 agentrouter-bwrap" install.txt
-          sudo "$bin" sandbox userns install | tee again.txt
+          sudo "$bin" computer userns install | tee again.txt
           if grep -q "装好了\|写好了" again.txt; then echo "the second run changed something"; exit 1; fi
           ls -l /usr/local/libexec/agentrouter/*/bwrap
           test "$(stat -c %u:%a /usr/local/libexec/agentrouter/bwrap-*/bwrap)" = "0:755"
           cat /etc/apparmor.d/agentrouter-bwrap
-          "$bin" sandbox status
+          "$bin" computer status
           own=$(ls "$AGENTROUTER_DEVICE_HOME"-shared/runtimes/bwrap-*/bwrap)
           if "$own" --ro-bind / / --unshare-user --unshare-pid --proc /proc --dev /dev true 2>/dev/null; then
             echo "the user-writable copy made a user namespace with the restriction on"; exit 1
@@ -280,11 +280,12 @@ jobs:
           AGENTROUTER_DEVICE_HOME: ${{ runner.temp }}/userns/data
         run: |
           bin="$PWD/target/debug/agentrouter"
+          # The old name stays a hidden alias until Cloud's minimum device version has `computer` (Cloud #2825).
           sudo "$bin" sandbox userns remove
           test ! -e /etc/apparmor.d/agentrouter-bwrap && test ! -e /usr/local/libexec/agentrouter
-          set +e; "$bin" sandbox status > status.txt; code=$?; set -e
+          set +e; "$bin" computer status > status.txt; code=$?; set -e
           cat status.txt
           test "$code" = 1
-          grep -qF "sandbox userns install" status.txt
+          grep -qF "computer userns install" status.txt
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          "$bin" sandbox status
+          "$bin" computer status

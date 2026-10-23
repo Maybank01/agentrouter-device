@@ -99,7 +99,7 @@ jobs:
           Set-Service -Name seclogon -StartupType Manual
           Start-Service -Name seclogon
       # A Linux PC as people have it: a desktop to capture (Xvfb with one window on it), a screenshot program, and Ubuntu's
-      # AppArmor user-namespace restriction on (the person runs the one admin line `sandbox userns install`, below).
+      # AppArmor user-namespace restriction on (the person runs the one admin line `computer userns install`, below).
       - name: The person's screen (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -111,7 +111,7 @@ jobs:
           xdpyinfo -display :99 > /dev/null
           DISPLAY=:99 xmessage -center "AgentRouter parity bench" > /dev/null 2>&1 &
           echo "DISPLAY=:99" >> "$GITHUB_ENV"
-      - name: Paths and the folder-mode sandbox (sandbox setup, as on a person's first link)
+      - name: Paths and the folder-mode sandbox (computer setup, as on a person's first link)
         shell: pwsh
         run: |
           if ($env:PB_TASKS -notmatch '^T[1-9](,T[1-9])*$') { throw "tasks: comma-separated T1..T9, got '$env:PB_TASKS'" }
@@ -124,14 +124,14 @@ jobs:
           "PB_DEVICE_HOME=$home_" >> $env:GITHUB_ENV
           "PB_ROOT=$root" >> $env:GITHUB_ENV
           $env:AGENTROUTER_DEVICE_HOME = $home_
-          & $hostd sandbox setup
-          if ($LASTEXITCODE -ne 0) { throw "sandbox setup exited $LASTEXITCODE" }
+          & $hostd computer setup
+          if ($LASTEXITCODE -ne 0) { throw "computer setup exited $LASTEXITCODE" }
           if ($IsLinux) {
-            sudo $hostd sandbox userns install
-            if ($LASTEXITCODE -ne 0) { throw "sandbox userns install exited $LASTEXITCODE" }
+            sudo $hostd computer userns install
+            if ($LASTEXITCODE -ne 0) { throw "computer userns install exited $LASTEXITCODE" }
           }
-          & $hostd sandbox status
-          if ($LASTEXITCODE -ne 0) { throw "sandbox status exited $LASTEXITCODE" }
+          & $hostd computer status
+          if ($LASTEXITCODE -ne 0) { throw "computer status exited $LASTEXITCODE" }
       # The person adds a screen tool and grants it the screen, on this computer (device #97); every link starts it.
       - name: A screen tool the person granted the screen (T4)
         shell: pwsh
