@@ -62,7 +62,18 @@ pub const OPEN_WEB_JS: &str = include_str!("open-web.mjs");
 const MACOS_MACH_SERVICES: &[&str] = &["com.apple.FSEvents"];
 /// The loopback ports srt's proxies may use on Windows (the WFP fence permits only these). srt's default is ten
 /// ports (two per server) and srt-win accepts at most 65; 64 ports cover far more servers than one link runs.
-pub const WINDOWS_PROXY_PORTS: (u16, u16) = (60080, 60143);
+///
+/// Below Windows' dynamic (ephemeral) port range, 49152–65535 (Cloud #2383). srt checks the fence once per start by
+/// binding an ephemeral loopback listener that must fall outside this range, and gives up after 5 binds
+/// (`wfp_verify_bind_failed`). Windows hands out ephemeral ports in sequence, so with the range inside the dynamic range
+/// all 5 binds land in it whenever the system's counter passes through it: that server start fails (the flaky
+/// `limits.rs` / `escape.rs` Windows runs, 2026-10-22: "could not bind a loopback listener outside the WFP permit
+/// range [60080,60143] in 5 attempts"). Outside it, no ephemeral bind ever lands in the range, and no outgoing
+/// connection's local port takes a proxy's port either.
+pub const WINDOWS_PROXY_PORTS: (u16, u16) = (47080, 47143);
+/// The range devices installed the fence with before [`WINDOWS_PROXY_PORTS`] moved (no range marker yet). Sessions keep
+/// using the installed range, whatever it is, until `agentrouter sandbox setup` installs the current one.
+const WINDOWS_PROXY_PORTS_BEFORE: (u16, u16) = (60080, 60143);
 /// The error code a call gets when its server cannot be confined (never run unconfined instead).
 pub const UNAVAILABLE: &str = "SANDBOX_UNAVAILABLE";
 /// The sandbox needs a one-time change only the computer's administrator can make (a system package such as
@@ -263,6 +274,9 @@ struct Ready {
     /// The machine's loopback mode ([`Runtime::local_binding`]); every session asks for the installed one.
     #[cfg(windows)]
     loopback: bool,
+    /// The fence's installed loopback-permit range ([`Runtime::windows_ports`]); every session's proxies bind inside it.
+    #[cfg(windows)]
+    ports: (u16, u16),
     /// `srt-win profile status` → `env` ([`PROFILE_ENV`]).
     #[cfg(windows)]
     profile_env: Vec<(String, String)>,
@@ -541,7 +555,8 @@ impl Runtime {
         {
             let before = windows_install(&self.srt_win())?;
             let closed = !before.loopback.unwrap_or_else(|| self.loopback_marked());
-            if before.sid.is_none() || before.stale || closed {
+            let moved = before.sid.is_some() && self.windows_ports(&before) != WINDOWS_PROXY_PORTS;
+            if before.sid.is_none() || before.stale || closed || moved {
                 let range = format!("{}-{}", WINDOWS_PROXY_PORTS.0, WINDOWS_PROXY_PORTS.1);
                 let mut cmd = Command::new(self.srt_win());
                 // Loopback open to the sandbox (device #139): a command reaches the dev server it started, as in the
@@ -564,13 +579,16 @@ impl Runtime {
                 }
                 done.push(if before.sid.is_none() {
                     "建好了 Windows 隔离账户 srt-sandbox 和它的网络限制（命令能连本机端口，比如自己起的开发服务器）".into()
-                } else if before.stale {
+                } else if before.stale || moved {
                     "更新了 Windows 隔离账户和它的网络限制".into()
                 } else {
                     "隔离环境里的命令现在能连本机端口了（比如自己起的开发服务器）".into()
                 });
                 let marker = self.loopback_marker();
                 std::fs::write(&marker, "open\n")
+                    .map_err(|e| format!("写不了 {}：{e}", shown(&marker)))?;
+                let marker = self.ports_marker();
+                std::fs::write(&marker, format!("{range}\n"))
                     .map_err(|e| format!("写不了 {}：{e}", shown(&marker)))?;
             }
             let after = windows_install(&self.srt_win())?;
@@ -686,13 +704,26 @@ impl Runtime {
         };
         let (problems, notes) = match self.ready() {
             #[cfg(windows)]
-            Ok(ready) if !ready.loopback => (
-                Vec::new(),
-                vec![Unavailable::new(
-                    "这台电脑的隔离环境还不让命令连本机端口，命令连不上自己起的开发服务器",
-                    "请用户在这台电脑上运行 agentrouter sandbox setup（会弹一次管理员确认），再重新链接。",
-                )],
-            ),
+            Ok(ready) => {
+                let mut notes = Vec::new();
+                if !ready.loopback {
+                    notes.push(Unavailable::new(
+                        "这台电脑的隔离环境还不让命令连本机端口，命令连不上自己起的开发服务器",
+                        "请用户在这台电脑上运行 agentrouter sandbox setup（会弹一次管理员确认），再重新链接。",
+                    ));
+                }
+                if ready.ports != WINDOWS_PROXY_PORTS {
+                    notes.push(Unavailable::new(
+                        format!(
+                            "这台电脑的隔离环境用的本机端口 {}-{} 在系统临时端口范围里，本机工具偶尔会启动失败",
+                            ready.ports.0, ready.ports.1
+                        ),
+                        "请用户在这台电脑上运行 agentrouter sandbox setup（会弹一次管理员确认），再重新链接。",
+                    ));
+                }
+                (Vec::new(), notes)
+            }
+            #[cfg(not(windows))]
             Ok(_) => (Vec::new(), Vec::new()),
             Err(e) => (vec![e], Vec::new()),
         };
@@ -736,6 +767,22 @@ impl Runtime {
         self.loopback_marker().is_file()
     }
 
+    /// Written by [`Runtime::setup`] with the range it installed the Windows fence with (`47080-47143`).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn ports_marker(&self) -> PathBuf {
+        self.root().join("windows-proxy-ports")
+    }
+
+    /// The loopback-permit range of this machine's installed fence: `srt-win status` when it can read the filters,
+    /// else what this device's setup installed, else [`WINDOWS_PROXY_PORTS_BEFORE`].
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn windows_ports(&self, install: &WindowsInstall) -> (u16, u16) {
+        installed_ports(
+            install.ports,
+            std::fs::read_to_string(self.ports_marker()).ok().as_deref(),
+        )
+    }
+
     fn ready(&self) -> Result<Ready, Unavailable> {
         let node = self.node().map_err(|m| Unavailable::new(m, NEXT_SETUP))?;
         if !self.installed() {
@@ -766,6 +813,7 @@ impl Runtime {
         let sid = {
             let install =
                 windows_install(&self.srt_win()).map_err(|e| Unavailable::new(e, NEXT_SETUP))?;
+            let ports = self.windows_ports(&install);
             let sid = match install.sid {
                 None => return Err(Unavailable::new("Windows 隔离账户还没建", NEXT_SETUP)),
                 Some(_) if install.stale => {
@@ -797,10 +845,10 @@ impl Runtime {
                 Err(e) => return Err(Unavailable::new(e, NEXT_SETUP)),
             };
             let loopback = install.loopback.unwrap_or_else(|| self.loopback_marked());
-            (sid, loopback, profile_env)
+            (sid, loopback, ports, profile_env)
         };
         #[cfg(windows)]
-        let (sid, loopback, profile_env) = sid;
+        let (sid, loopback, ports, profile_env) = sid;
         Ok(Ready {
             node,
             cli: self.cli(),
@@ -808,6 +856,8 @@ impl Runtime {
             sid,
             #[cfg(windows)]
             loopback,
+            #[cfg(windows)]
+            ports,
             #[cfg(windows)]
             profile_env,
         })
@@ -1007,11 +1057,23 @@ impl Runtime {
 
     /// The srt settings for one launch (written to the device data folder, which no sandbox can read or write).
     pub fn policy(&self, launch: &Launch) -> Result<Value, Unavailable> {
-        self.policy_with(launch, self.local_binding())
+        #[cfg(windows)]
+        let ports = windows_install(&self.srt_win())
+            .map(|i| self.windows_ports(&i))
+            .unwrap_or(WINDOWS_PROXY_PORTS);
+        #[cfg(not(windows))]
+        let ports = WINDOWS_PROXY_PORTS;
+        self.policy_with(launch, self.local_binding(), ports)
     }
 
-    /// [`Runtime::policy`] with the loopback mode already known ([`Runtime::local_binding`]).
-    fn policy_with(&self, launch: &Launch, local_binding: bool) -> Result<Value, Unavailable> {
+    /// [`Runtime::policy`] with the loopback mode ([`Runtime::local_binding`]) and, on Windows, the fence's installed
+    /// loopback-permit range ([`Runtime::windows_ports`]) already known.
+    fn policy_with(
+        &self,
+        launch: &Launch,
+        local_binding: bool,
+        windows_ports: (u16, u16),
+    ) -> Result<Value, Unavailable> {
         let home = home_dir();
         let mut writable: Vec<PathBuf> = launch.folders.iter().map(|f| plain(f)).collect();
         let cwd = plain(launch.cwd);
@@ -1120,8 +1182,7 @@ impl Runtime {
             },
         });
         if cfg!(windows) {
-            policy["windows"] =
-                json!({"proxyPortRange": [WINDOWS_PROXY_PORTS.0, WINDOWS_PROXY_PORTS.1]});
+            policy["windows"] = json!({"proxyPortRange": [windows_ports.0, windows_ports.1]});
         }
         if cfg!(target_os = "macos") {
             // Terminals (Cloud #2383, parity run 39718508921 T5: `openpty: Operation not permitted`): srt's Seatbelt
@@ -1173,9 +1234,9 @@ impl Runtime {
     fn confined(&self, launch: &Launch, stdio_pipe: bool) -> Result<Confined, Unavailable> {
         let ready = self.ready()?;
         #[cfg(windows)]
-        let policy = self.policy_with(launch, ready.loopback)?;
+        let policy = self.policy_with(launch, ready.loopback, ready.ports)?;
         #[cfg(not(windows))]
-        let policy = self.policy_with(launch, self.local_binding())?;
+        let policy = self.policy_with(launch, self.local_binding(), WINDOWS_PROXY_PORTS)?;
         let scratch = self.scratch(launch.key);
         let mut env: Vec<(String, String)> = launch.env.to_vec();
         for (k, v) in self.scratch_env(launch.key) {
@@ -1607,6 +1668,19 @@ struct WindowsInstall {
     /// The fence's loopback mode (`wfp.allow_loopback`, srt README "Local servers on Windows"), when `srt-win status`
     /// could read the filter set (it may not without elevation): `Some(true)` = loopback open to the sandbox.
     loopback: Option<bool>,
+    /// The fence's loopback-permit range (`wfp.port_range`), when `srt-win status` could read the filter set.
+    ports: Option<(u16, u16)>,
+}
+
+/// The installed fence's range: what `srt-win status` read, else the range marker setup wrote (`47080-47143`), else
+/// [`WINDOWS_PROXY_PORTS_BEFORE`] (a fence installed by a device from before the marker).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn installed_ports(status: Option<(u16, u16)>, marker: Option<&str>) -> (u16, u16) {
+    let marked = marker.and_then(|m| {
+        let (lo, hi) = m.trim().split_once('-')?;
+        Some((lo.parse().ok()?, hi.parse().ok()?))
+    });
+    status.or(marked).unwrap_or(WINDOWS_PROXY_PORTS_BEFORE)
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -1615,11 +1689,24 @@ fn windows_install_of(v: &Value) -> Result<WindowsInstall, String> {
     let loopback = (v["wfp"]["state"] == "installed")
         .then(|| v["wfp"]["allow_loopback"].as_bool())
         .flatten();
+    let ports = (v["wfp"]["state"] == "installed")
+        .then(|| {
+            let r = v["wfp"]["port_range"].as_array()?;
+            match r.as_slice() {
+                [lo, hi] => Some((
+                    u16::try_from(lo.as_u64()?).ok()?,
+                    u16::try_from(hi.as_u64()?).ok()?,
+                )),
+                _ => None,
+            }
+        })
+        .flatten();
     if user["user"]["exists"] != true || user["cred_present"] != true {
         return Ok(WindowsInstall {
             sid: None,
             stale: false,
             loopback: None,
+            ports: None,
         });
     }
     let sid = user["user"]["sid"]
@@ -1637,6 +1724,7 @@ fn windows_install_of(v: &Value) -> Result<WindowsInstall, String> {
         sid: Some(sid),
         stale,
         loopback,
+        ports,
     })
 }
 
@@ -1647,6 +1735,7 @@ fn windows_install(srt_win: &Path) -> Result<WindowsInstall, String> {
             sid: None,
             stale: false,
             loopback: None,
+            ports: None,
         });
     }
     windows_install_of(&srt_win_json(srt_win, &["status"])?)
@@ -1741,6 +1830,7 @@ mod tests {
                 sid: None,
                 stale: false,
                 loopback: None,
+                ports: None,
             }
         );
         assert!(
@@ -1767,6 +1857,64 @@ mod tests {
         // Without elevation the filter set may be unreadable: unknown, never a guess.
         assert_eq!(mode(json!({"state": "cannot-read"})), None);
         assert_eq!(mode(Value::Null), None);
+    }
+
+    #[test]
+    fn the_proxy_ports_are_outside_windows_dynamic_ports_and_sessions_use_the_installed_range() {
+        // srt's fence check needs one ephemeral bind outside the range in 5 tries; Windows' dynamic range is
+        // 49152–65535 and hands ports out in sequence (Cloud #2383).
+        assert!(WINDOWS_PROXY_PORTS.1 < 49152);
+        assert!(WINDOWS_PROXY_PORTS.0 > 1024);
+        assert!(
+            WINDOWS_PROXY_PORTS.1 - WINDOWS_PROXY_PORTS.0 <= 64,
+            "srt-win accepts at most 65 ports"
+        );
+        let status = |wfp: Value| {
+            json!({"user": {"user": {"exists": true, "sid": "S-1-5-21-1-2-3-1001"}, "cred_present": true},
+                "wfp": wfp})
+        };
+        let read = |wfp: Value| windows_install_of(&status(wfp)).unwrap().ports;
+        assert_eq!(
+            read(json!({"state": "installed", "port_range": [47080, 47143]})),
+            Some((47080, 47143))
+        );
+        assert_eq!(
+            read(json!({"state": "cannot-read", "port_range": [1, 2]})),
+            None
+        );
+        assert_eq!(
+            read(json!({"state": "installed", "port_range": [70000, 2]})),
+            None
+        );
+        // Status first, then setup's marker, then the range every earlier device installed.
+        assert_eq!(installed_ports(Some((1, 2)), Some("47080-47143\n")), (1, 2));
+        assert_eq!(installed_ports(None, Some("47080-47143\n")), (47080, 47143));
+        assert_eq!(
+            installed_ports(None, Some("garbage")),
+            WINDOWS_PROXY_PORTS_BEFORE
+        );
+        assert_eq!(installed_ports(None, None), WINDOWS_PROXY_PORTS_BEFORE);
+        let (rt, folder) = launch_in(&temp("ports"));
+        let folders = vec![folder.clone()];
+        let launch = Launch {
+            key: "ports",
+            program: Path::new("node"),
+            args: &[],
+            env: &[],
+            cwd: &folder,
+            folders: &folders,
+            network: &[],
+            readable: &[],
+            read_only: false,
+            open_web: false,
+            job: None,
+        };
+        let p = rt.policy_with(&launch, true, (60080, 60143)).unwrap();
+        if cfg!(windows) {
+            assert_eq!(p["windows"]["proxyPortRange"], json!([60080, 60143]));
+        } else {
+            assert!(p["windows"].is_null());
+        }
     }
 
     #[test]
@@ -1842,7 +1990,7 @@ mod tests {
             job: None,
         };
         for open in [true, false] {
-            let p = rt.policy_with(&launch, open).unwrap();
+            let p = rt.policy_with(&launch, open, WINDOWS_PROXY_PORTS).unwrap();
             let got = &p["network"]["allowLocalBinding"];
             if cfg!(target_os = "linux") {
                 assert!(got.is_null(), "Linux: the sandbox's own loopback");
@@ -1854,7 +2002,7 @@ mod tests {
             assert_eq!(rt.local_binding(), cfg!(target_os = "macos"));
         }
         // macOS: file watchers reach FSEvents (device #141) and commands open terminals; nothing extra elsewhere.
-        let p = rt.policy_with(&launch, false).unwrap();
+        let p = rt.policy_with(&launch, false, WINDOWS_PROXY_PORTS).unwrap();
         let mach = &p["network"]["allowMachLookup"];
         if cfg!(target_os = "macos") {
             assert_eq!(mach, &json!(["com.apple.FSEvents"]));
