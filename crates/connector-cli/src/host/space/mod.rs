@@ -46,6 +46,7 @@ pub(super) fn tools() -> Vec<Value> {
                 "prefix": {"type": "string", "description": "the snapshot path shown at the folder (e.g. work)"},
                 "owner": {"type": "object", "properties": {"uid": {"type": "integer"}, "gid": {"type": "integer"}}},
                 "settle": {"type": "boolean"},
+                "readOnly": {"type": "boolean", "description": "mount read-only (a space the session only reads: platform, shared); writes fail with EROFS. Takes effect when the folder is first mounted"},
                 "prefetch": {"type": "array", "items": {"type": "string"}, "maxItems": 5000},
             }, "required": ["path", "origin", "root", "exp", "t"]}),
             false,
@@ -308,6 +309,11 @@ mod linux {
                 fuser::MountOption::FSName("agentrouter-space".into()),
                 fuser::MountOption::Subtype("checkout".into()),
             ];
+            // A space the session only reads (Cloud #3026: platform and shared spaces beside its 作品): the kernel refuses
+            // every write (EROFS, root included), so a command never leaves changes that would silently stay here.
+            if arg_bool(args, "readOnly") {
+                config.mount_options.push(fuser::MountOption::RO);
+            }
             // Commands run as another user than hostd: others may use the folder (root may always; else the
             // system's fuse.conf must allow it).
             config.acl = if me.0 == 0 || arg_bool(args, "allowOther") {
