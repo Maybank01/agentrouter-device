@@ -84,6 +84,31 @@ pub fn short_id(prefix: &str) -> String {
     format!("{prefix}{tail}")
 }
 
+/// This computer's machine id: 32 hex digits, made once and kept in the data folder (`machine.id`). It is not a secret and
+/// not the link key: the key is forgotten when the computer is unlinked, this id stays, so the web knows a re-link is the
+/// same computer and restores its device space (Cloud #2836, DEVICES §3.5). Sent with every pairing request.
+pub fn machine_id() -> String {
+    machine_id_in(&data_dir())
+}
+
+fn machine_id_in(dir: &std::path::Path) -> String {
+    let path = dir.join("machine.id");
+    if let Ok(text) = std::fs::read_to_string(&path) {
+        let id = text.trim();
+        if id.len() == 32
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return id.to_string();
+        }
+    }
+    let id = hex(&random_bytes::<16>());
+    // Best effort: a data folder that cannot be written still pairs (the web then cannot tell a re-link).
+    let _ = std::fs::create_dir_all(dir).and_then(|_| std::fs::write(&path, format!("{id}\n")));
+    id
+}
+
 /// Where this app keeps its config, key, audit log and job output. `AGENTROUTER_DEVICE_HOME` overrides it (tests, portable use).
 pub fn data_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("AGENTROUTER_DEVICE_HOME") {
@@ -251,6 +276,27 @@ mod tests {
     fn iso_formats_utc() {
         assert_eq!(iso(0), "1970-01-01T00:00:00.000Z");
         assert_eq!(iso(1_760_000_060_123), "2025-10-09T08:54:20.123Z");
+    }
+
+    #[test]
+    fn machine_id_is_made_once_and_kept() {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/test-tmp")
+            .join(format!("ar-machine-{}", short_id("")));
+        let first = machine_id_in(&dir);
+        assert_eq!(first.len(), 32);
+        assert!(
+            first
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        );
+        assert_eq!(machine_id_in(&dir), first);
+        // A damaged file is replaced, never sent.
+        std::fs::write(dir.join("machine.id"), "not an id").unwrap();
+        let second = machine_id_in(&dir);
+        assert_ne!(second, first);
+        assert_eq!(machine_id_in(&dir), second);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
