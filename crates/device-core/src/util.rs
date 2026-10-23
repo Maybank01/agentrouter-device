@@ -280,7 +280,9 @@ mod tests {
 
     #[test]
     fn machine_id_is_made_once_and_kept() {
-        let dir = std::env::temp_dir().join(format!("ar-machine-{}", hex(&random_bytes::<6>())));
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/test-tmp")
+            .join(format!("ar-machine-{}", short_id("")));
         let first = machine_id_in(&dir);
         assert_eq!(first.len(), 32);
         assert!(
