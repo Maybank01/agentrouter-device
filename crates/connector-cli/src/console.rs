@@ -691,23 +691,32 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
                     pairing.expires_in / 60
                 ));
             });
-            match paired.ok().and_then(|_| keystore::load()) {
-                Some(identity) => {
-                    line(if opts.double_click {
-                        "  确认        已确认"
-                    } else {
-                        "  账号     已确认"
-                    });
-                    identity
-                }
-                None if opts.double_click => {
-                    line(
-                        "没有链接上（配对码过期或被取消）。关掉这个窗口，再双击 agentrouter.exe 试一次。",
-                    );
+            // The real reason, never one guess for every failure (Cloud #2962: a stop signal, a refused or unreachable
+            // gateway and an unsaved key all read "配对码过期或被取消", and a Dev check chased an expiry that was none).
+            let failed = match paired {
+                Ok(_) => match keystore::load() {
+                    Some(identity) => {
+                        line(if opts.double_click {
+                            "  确认        已确认"
+                        } else {
+                            "  账号     已确认"
+                        });
+                        Ok(identity)
+                    }
+                    None => Err("网页上已确认，但这台电脑没能读回刚存下的设备密钥。".to_string()),
+                },
+                Err(why) => Err(why),
+            };
+            match failed {
+                Ok(identity) => identity,
+                Err(why) if opts.double_click => {
+                    line(&format!(
+                        "没有链接上：{why} 关掉这个窗口，再双击 agentrouter.exe 试一次。"
+                    ));
                     return 1;
                 }
-                None => {
-                    eprintln!("没有链接上（配对码过期或被取消）。再运行一次 agentrouter link。");
+                Err(why) => {
+                    eprintln!("没有链接上：{why} 再运行一次 agentrouter link。");
                     return 1;
                 }
             }
