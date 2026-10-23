@@ -296,7 +296,7 @@ fn mcp_add(data: &std::path::Path, args: &[String]) -> i32 {
     use agentrouter_aggregator::grants;
     let Some(split) = args.iter().position(|a| a == "--") else {
         eprintln!(
-            "要在 -- 后面写启动它的命令，比如：agentrouter mcp add screen --display -- uvx windows-mcp"
+            "要在 -- 后面写启动它的命令，比如：agentrouter mcp add screen --display -- uvx windows-mcp serve"
         );
         return 2;
     };
