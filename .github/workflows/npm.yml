@@ -18,48 +18,91 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  windows-x64:
-    runs-on: windows-latest
+  # One release build per platform the npm packages carry (Cloud #2962: only win32-x64 was built, so
+  # `npx @agentrouter-top/cli` said linux-x64 is unsupported although Linux is a supported PC line).
+  # Linux builds on the oldest supported Ubuntu runner so the binary runs on older glibc too.
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: win32-x64, os: windows-latest, binary: target/release/agentrouter.exe }
+          - { platform: linux-x64, os: ubuntu-22.04, binary: target/release/agentrouter }
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Release build
-        shell: pwsh
+        shell: bash
         run: |
           # Paths in panic messages: the runner workspace and cargo home, nothing from a person's machine.
-          $env:RUSTFLAGS = "--remap-path-prefix=$env:GITHUB_WORKSPACE=src --remap-path-prefix=$env:USERPROFILE=~"
+          export RUSTFLAGS="--remap-path-prefix=$GITHUB_WORKSPACE=src --remap-path-prefix=$HOME=~"
           cargo build --release --locked -p agentrouter-device-cli
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bin-${{ matrix.platform }}
+          path: ${{ matrix.binary }}
+          retention-days: 1
+
+  # The main package lists exactly the platform packages packed here (pack.mjs), so all are packed in one run.
+  pack:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: bin-*
+          path: bins
       - name: Pack
-        shell: pwsh
         env:
           VERSION: ${{ inputs.version }}
         run: |
-          $ErrorActionPreference = 'Stop'
-          node npm/pack.mjs --version $env:VERSION --binary win32-x64=target/release/agentrouter.exe
-          New-Item -ItemType Directory -Force dist | Out-Null
-          npm pack ./npm/out/cli-win32-x64 ./npm/out/agentrouter --pack-destination dist
-          Get-ChildItem dist | Format-Table Name, Length
-          Get-FileHash dist/*.tgz -Algorithm SHA256 | Format-Table Hash, Path
-      - name: Smoke (install the tarballs, run the wrapper)
-        shell: pwsh
-        env:
-          VERSION: ${{ inputs.version }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $t = Join-Path $env:RUNNER_TEMP 'npm-smoke'
-          New-Item -ItemType Directory -Force $t | Out-Null
-          $dist = Resolve-Path dist
-          Push-Location $t
-          npm init -y | Out-Null
-          npm install --no-audit --no-fund "$dist/agentrouter-top-cli-win32-x64-$env:VERSION.tgz" "$dist/agentrouter-top-cli-$env:VERSION.tgz"
-          $v = npx --no-install agentrouter version
-          Pop-Location
-          "npx agentrouter version -> $v"
-          if ($v -notmatch '^agentrouter \d+\.\d+\.\d+') { throw 'the npm wrapper did not run the binary' }
+          set -euo pipefail
+          node npm/pack.mjs --version "$VERSION" \
+            --binary win32-x64=bins/bin-win32-x64/agentrouter.exe \
+            --binary linux-x64=bins/bin-linux-x64/agentrouter
+          mkdir -p dist
+          npm pack ./npm/out/cli-win32-x64 ./npm/out/cli-linux-x64 ./npm/out/agentrouter --pack-destination dist
+          ls -l dist
+          sha256sum dist/*.tgz
       - uses: actions/upload-artifact@v7
         with:
           name: npm-${{ inputs.version }}
           path: dist/*.tgz
           retention-days: 30
+
+  # Install the tarballs on each platform and run the wrapper (the binary must start there).
+  smoke:
+    needs: pack
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: win32-x64, os: windows-latest }
+          - { platform: linux-x64, os: ubuntu-22.04 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: npm-${{ inputs.version }}
+          path: dist
+      - name: Smoke (install the tarballs, run the wrapper)
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          dist="$PWD/dist"
+          t="$RUNNER_TEMP/npm-smoke"
+          mkdir -p "$t" && cd "$t"
+          npm init -y > /dev/null
+          npm install --no-audit --no-fund "$dist/agentrouter-top-cli-$PLATFORM-$VERSION.tgz" "$dist/agentrouter-top-cli-$VERSION.tgz"
+          v=$(npx --no-install agentrouter version)
+          echo "npx agentrouter version -> $v"
+          [[ "$v" =~ ^agentrouter\ [0-9]+\.[0-9]+\.[0-9]+ ]] || { echo "the npm wrapper did not run the binary on $PLATFORM"; exit 1; }

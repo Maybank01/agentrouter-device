@@ -184,24 +184,38 @@ pub fn wait_for_approval(
     stop: &AtomicBool,
 ) -> Result<String, String> {
     let deadline = Instant::now() + Duration::from_secs(pairing.expires_in.max(30));
+    // The last poll that failed, if the newest one did: an expiry while the gateway could not be asked says so.
+    let mut failing: Option<HttpError> = None;
     while Instant::now() < deadline && !stop.load(Ordering::SeqCst) {
         match poll_pairing(gateway, pairing) {
             Ok(PollResult::Approved { device, control }) => {
                 keystore::save(key, &device, &control)
-                    .map_err(|e| format!("could not store the device key: {e}"))?;
+                    .map_err(|e| format!("网页上已确认，但设备密钥没能存下（{e}）。"))?;
                 return Ok(device);
             }
-            Ok(PollResult::Expired) => return Err("配对码已过期，请重新链接。".into()),
-            Ok(PollResult::Pending) => {}
-            Err(e) if e.status == 404 => return Err("配对已失效，请重新链接。".into()),
-            Err(e) => log(&format!("pairing poll failed: {e}")),
+            Ok(PollResult::Expired) => {
+                return Err("配对码过期了（10 分钟内没在网页上确认，或网页上取消了）。".into());
+            }
+            Ok(PollResult::Pending) => failing = None,
+            Err(e) if e.status == 404 => {
+                return Err("这次配对在网关上已经不存在了（被取消或已用过）。".into());
+            }
+            Err(e) => {
+                log(&format!("pairing poll failed: {e}"));
+                failing = Some(e);
+            }
         }
         std::thread::sleep(Duration::from_secs(2));
     }
     if stop.load(Ordering::SeqCst) {
-        return Err("已取消链接。".into());
+        return Err("链接被停止了（Ctrl+C 或收到了停止信号），配对没有完成。".into());
     }
-    Err("配对码已过期，请重新链接。".into())
+    match failing {
+        Some(e) => Err(format!(
+            "等确认的这段时间一直问不到 {gateway}（最后一次：{e}）。"
+        )),
+        None => Err("配对码过期了（10 分钟内没在网页上确认）。".into()),
+    }
 }
 
 /// A signed challenge buys a short-lived token for one connection.
