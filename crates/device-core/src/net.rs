@@ -124,7 +124,8 @@ pub fn start_pairing(gateway: &str, key: &DeviceKey, name: &str) -> Result<Pairi
     let v = post(
         gateway,
         "/device/v1/pair",
-        &json!({"publicKey": public_key, "name": name, "os": os, "arch": arch, "signature": signature}),
+        // `machine`: this computer's id across unlinks (util::machine_id), so a re-link restores its device space.
+        &json!({"publicKey": public_key, "name": name, "os": os, "arch": arch, "signature": signature, "machine": crate::util::machine_id()}),
     )?;
     let s = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
     Ok(Pairing {
