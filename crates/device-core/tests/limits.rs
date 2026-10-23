@@ -206,6 +206,13 @@ fn limits_hold_on_a_confined_tree() {
         .filter_map(|l| l.strip_prefix("allocated ")?.trim().parse::<u64>().ok())
         .max()
         .unwrap_or(0);
+    // The probe ran at all: a confined start that failed (srt's own fence check, Cloud #2383) is named as that, not as
+    // a limit that went unreported.
+    assert!(
+        reached > 0,
+        "the confined probe never started: {}",
+        r.stderr.trim()
+    );
     assert!(
         !r.stdout.contains("done"),
         "2 GB allocated under a 512 MB limit"
