@@ -15,7 +15,9 @@ name: Parity bench (PC)
 # T4 (a screenshot) goes through a tool the person granted the screen (device #97, #145): folder mode has no display, so
 # the bench, as the person, adds one with `agentrouter mcp add <name> --display --yes -- …` before linking. Vetted
 # 2026-10-22 (licence, activity):
-#   Windows  Windows-MCP (MIT, active; PyPI windows-mcp 0.8.8, 2026-10-10)
+#   Windows  Windows-MCP (MIT, active; PyPI windows-mcp 0.8.8, 2026-10-10). Since 0.8.x `windows-mcp` is a command
+#            group: the stdio server is `windows-mcp serve` (bare `windows-mcp` exits "Missing command", so
+#            the person's tool never answered initialize; T4 only passed after the Agent added the catalog one)
 #   macOS    Peekaboo (MIT, active; npm @steipete/peekaboo 4.9.6, 2026-10-20, which ships `peekaboo mcp`. The separate
 #            npm @steipete/peekaboo-mcp has not changed since 2025-11 and is not used)
 #   Linux    no maintained screenshot MCP exists; DesktopCommander (MIT, active; npm @wonderwhy-er/desktop-commander
@@ -138,7 +140,7 @@ jobs:
         run: |
           $env:AGENTROUTER_DEVICE_HOME = $env:PB_DEVICE_HOME
           if ($IsWindows) {
-            & $env:PB_HOSTD mcp add screen --display --yes --title "Windows 操作" -- uvx windows-mcp@0.8.8
+            & $env:PB_HOSTD mcp add screen --display --yes --title "Windows 操作" -- uvx windows-mcp@0.8.8 serve
           } elseif ($IsMacOS) {
             & $env:PB_HOSTD mcp add screen --display --yes --title "Peekaboo" -- npx -y @steipete/peekaboo@4.9.6 mcp
           } else {
