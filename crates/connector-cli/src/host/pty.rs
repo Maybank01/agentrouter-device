@@ -459,6 +459,186 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(windows)]
+    /// Everything read from `offset` until `needle` shows in the plain text (or 20 s), raw, and the offset after it.
+    fn read_raw_until(host: &Host, id: &str, offset: &mut u64, needle: &str) -> String {
+        let mut raw = String::new();
+        let until = Instant::now() + Duration::from_secs(20);
+        while !plain(&raw).contains(needle) && Instant::now() < until {
+            let r = host
+                .pty_read(
+                    &json!({"pty": id, "offset": *offset, "wait_ms": 1000}),
+                    &Call::detached(),
+                )
+                .unwrap();
+            raw.push_str(r["data"].as_str().unwrap());
+            *offset = r["next_offset"].as_u64().unwrap();
+            if r["running"] == json!(false) {
+                break;
+            }
+        }
+        raw
+    }
+
+    #[cfg(windows)]
+    /// Types `text` and Enter, then reads until `needle` (read_raw_until).
+    fn send(host: &Host, id: &str, offset: &mut u64, text: &str, needle: &str) -> String {
+        host.pty_write(&json!({"pty": id, "data": format!("{text}\r")}))
+            .unwrap();
+        read_raw_until(host, id, offset, needle)
+    }
+
+    /// The terminal a cloud Agent gets on a Windows computer (Cloud #3008, dsh-host.mjs `TERMINAL_SHELLS.pwsh`): this
+    /// computer's interactive PowerShell on the ConPTY (no `command`), given DSH's terminal settings as the first typed
+    /// line, then DSH's pwsh dialect (`ENCODING_PREAMBLE` + `PWSH_PROMPT_SETUP` of @deepseek-ai/dsh-terminal-bash, same
+    /// text): settings in the environment, the `dsh> ` prompt, exit status, a question answered, Ctrl+C, cwd, exit code.
+    #[cfg(windows)]
+    #[test]
+    fn the_cloud_terminal_is_this_computers_powershell_in_dshs_dialect() {
+        let dir = temp("pty-dsh-pwsh");
+        let host = host_in(&dir);
+        let opened = host
+            .pty_open(&json!({"cwd": dir.to_string_lossy(), "cols": 160, "rows": 40}))
+            .unwrap();
+        let id = opened["pty"].as_str().unwrap().to_string();
+        assert!(
+            matches!(opened["shell"].as_str(), Some("pwsh" | "powershell")),
+            "{opened}"
+        );
+        let mut offset = 0;
+        // DSH's settings, the marker joined only when PowerShell runs the line (the echo never contains it).
+        let out = send(
+            &host,
+            &id,
+            &mut offset,
+            "$env:TERM = 'dumb'; $env:NO_COLOR = '1'; $env:DSH_SESSION_ID = 'it''s-k1'; Write-Output ('__AR_TERMINAL_RE' + 'ADY_t__')",
+            "__AR_TERMINAL_READY_t__",
+        );
+        assert!(plain(&out).contains("__AR_TERMINAL_READY_t__"), "{out:?}");
+        // DSH's pwsh dialect startup: UTF-8 output, its prompt function (OSC 133;D;<exit> then `dsh> `). Needles are
+        // joined at run time, so the shell's echo of a typed line never matches them.
+        send(
+            &host,
+            &id,
+            &mut offset,
+            "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [System.Text.UTF8Encoding]::new($false); function prompt { [Console]::Write([char]27 + ']133;D;' + [int]$LASTEXITCODE + [char]7); 'dsh> ' }",
+            "function prompt",
+        );
+        let mut out = send(
+            &host,
+            &id,
+            &mut offset,
+            "Write-Output ('prompt' + '-ok')",
+            "prompt-ok",
+        );
+        if !plain(&out)
+            .split("prompt-ok")
+            .nth(1)
+            .is_some_and(|t| t.contains("dsh> "))
+        {
+            out.push_str(&read_raw_until(&host, &id, &mut offset, "dsh> "));
+        }
+        assert!(
+            plain(&out)
+                .split("prompt-ok")
+                .nth(1)
+                .is_some_and(|t| t.contains("dsh> ")),
+            "{out:?}"
+        );
+        let out = send(
+            &host,
+            &id,
+            &mut offset,
+            "Write-Output \"$env:TERM/$env:DSH_SESSION_ID/中文\"",
+            "dumb/it's-k1/中文",
+        );
+        assert!(plain(&out).contains("dumb/it's-k1/中文"), "{out:?}");
+        // Exit status reaches the prompt marker; whether ConPTY passes the OSC through decides DSH's readiness signal
+        // (marker, else output silence): reported, not assumed.
+        let out = send(
+            &host,
+            &id,
+            &mut offset,
+            "cmd /c exit 3; Write-Output \"code=$LASTEXITCODE\"",
+            "code=3",
+        );
+        assert!(plain(&out).contains("code=3"), "{out:?}");
+        let out = format!("{out}{}", read_raw_until(&host, &id, &mut offset, "dsh> "));
+        eprintln!(
+            "ConPTY passes OSC 133 through: {}",
+            out.contains("\x1b]133;D;3")
+        );
+        // A program's question, answered by what is typed.
+        let out = send(
+            &host,
+            &id,
+            &mut offset,
+            "$n = Read-Host ('Display ' + 'name')",
+            "Display name:",
+        );
+        assert!(plain(&out).contains("Display name:"), "{out:?}");
+        let out = send(&host, &id, &mut offset, "Star Forge X", "dsh> ");
+        assert!(plain(&out).contains("dsh> "), "{out:?}");
+        let out = send(
+            &host,
+            &id,
+            &mut offset,
+            "Write-Output \"hello $n\"",
+            "hello Star Forge X",
+        );
+        assert!(plain(&out).contains("hello Star Forge X"), "{out:?}");
+        // Ctrl+C ends what runs in the foreground; the shell stays.
+        host.pty_write(&json!({"pty": id, "data": "Start-Sleep -Seconds 60\r"}))
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(1500));
+        let started = Instant::now();
+        host.pty_write(&json!({"pty": id, "data": "\u{3}"}))
+            .unwrap();
+        let out = send(
+            &host,
+            &id,
+            &mut offset,
+            "Write-Output ('after-' + 'ctrl-c')",
+            "after-ctrl-c",
+        );
+        assert!(plain(&out).contains("after-ctrl-c"), "{out:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "Ctrl+C did not end Start-Sleep"
+        );
+        // The terminal starts in the folder it was opened in.
+        let name = dir.file_name().unwrap().to_string_lossy().to_string();
+        let out = send(
+            &host,
+            &id,
+            &mut offset,
+            "Write-Output (Get-Location).Path",
+            &name,
+        );
+        assert!(plain(&out).contains(&name), "{out:?}");
+        // The shell's exit code is the terminal's.
+        host.pty_write(&json!({"pty": id, "data": "exit 7\r"}))
+            .unwrap();
+        let until = Instant::now() + Duration::from_secs(20);
+        let mut last = json!(null);
+        while Instant::now() < until {
+            last = host
+                .pty_read(
+                    &json!({"pty": id, "offset": offset, "wait_ms": 1000}),
+                    &Call::detached(),
+                )
+                .unwrap();
+            offset = last["next_offset"].as_u64().unwrap_or(offset);
+            if last["running"] == json!(false) {
+                break;
+            }
+        }
+        assert_eq!(last["running"], json!(false), "{last}");
+        assert_eq!(last["exit_code"], json!(7), "{last}");
+        host.pty_close(&json!({"pty": id})).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn an_interactive_program_reads_what_is_typed() {
         let dir = temp("pty");
