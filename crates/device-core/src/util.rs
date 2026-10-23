@@ -95,7 +95,11 @@ fn machine_id_in(dir: &std::path::Path) -> String {
     let path = dir.join("machine.id");
     if let Ok(text) = std::fs::read_to_string(&path) {
         let id = text.trim();
-        if id.len() == 32 && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+        if id.len() == 32
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
             return id.to_string();
         }
     }
@@ -279,7 +283,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ar-machine-{}", hex(&random_bytes::<6>())));
         let first = machine_id_in(&dir);
         assert_eq!(first.len(), 32);
-        assert!(first.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
+        assert!(
+            first
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        );
         assert_eq!(machine_id_in(&dir), first);
         // A damaged file is replaced, never sent.
         std::fs::write(dir.join("machine.id"), "not an id").unwrap();
