@@ -462,9 +462,20 @@ mod tests {
     #[cfg(windows)]
     /// Everything read from `offset` until `needle` shows in the plain text (or 20 s), raw, and the offset after it.
     fn read_raw_until(host: &Host, id: &str, offset: &mut u64, needle: &str) -> String {
+        read_raw_while(host, id, offset, |text| !text.contains(needle))
+    }
+
+    #[cfg(windows)]
+    /// Everything read from `offset` while `more(plain text so far)` (at most 20 s), raw; `offset` moves past it.
+    fn read_raw_while(
+        host: &Host,
+        id: &str,
+        offset: &mut u64,
+        more: impl Fn(&str) -> bool,
+    ) -> String {
         let mut raw = String::new();
         let until = Instant::now() + Duration::from_secs(20);
-        while !plain(&raw).contains(needle) && Instant::now() < until {
+        while more(&plain(&raw)) && Instant::now() < until {
             let r = host
                 .pty_read(
                     &json!({"pty": id, "offset": *offset, "wait_ms": 1000}),
@@ -553,8 +564,7 @@ mod tests {
             "dumb/it's-k1/中文",
         );
         assert!(plain(&out).contains("dumb/it's-k1/中文"), "{out:?}");
-        // Exit status reaches the prompt marker; whether ConPTY passes the OSC through decides DSH's readiness signal
-        // (marker, else output silence): reported, not assumed.
+        // Exit status reaches the prompt marker.
         let out = send(
             &host,
             &id,
@@ -564,10 +574,8 @@ mod tests {
         );
         assert!(plain(&out).contains("code=3"), "{out:?}");
         let out = format!("{out}{}", read_raw_until(&host, &id, &mut offset, "dsh> "));
-        eprintln!(
-            "ConPTY passes OSC 133 through: {}",
-            out.contains("\x1b]133;D;3")
-        );
+        // ConPTY passes DSH's prompt marker through (windows-latest, 2026-10-23), so DSH's readiness is its marker.
+        assert!(out.contains("\x1b]133;D;3\x07"), "{out:?}");
         // A program's question, answered by what is typed.
         let out = send(
             &host,
@@ -587,13 +595,27 @@ mod tests {
             "hello Star Forge X",
         );
         assert!(plain(&out).contains("hello Star Forge X"), "{out:?}");
-        // Ctrl+C ends what runs in the foreground; the shell stays.
+        // Ctrl+C ends what runs in the foreground and its prompt comes back (the console drops what was typed before
+        // that, as a Unix terminal does on SIGINT: DSH sends the next input after the prompt); the shell stays.
         host.pty_write(&json!({"pty": id, "data": "Start-Sleep -Seconds 60\r"}))
             .unwrap();
-        std::thread::sleep(Duration::from_millis(1500));
+        let echoed = read_raw_until(&host, &id, &mut offset, "Seconds 60");
+        std::thread::sleep(Duration::from_millis(1000));
         let started = Instant::now();
         host.pty_write(&json!({"pty": id, "data": "\u{3}"}))
             .unwrap();
+        let back = |text: &str| {
+            text.split("Seconds 60")
+                .nth(1)
+                .is_some_and(|t| t.contains("dsh> "))
+        };
+        let out = echoed.clone()
+            + &read_raw_while(&host, &id, &mut offset, |t| !back(&(plain(&echoed) + t)));
+        assert!(back(&plain(&out)), "{out:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "Ctrl+C did not end Start-Sleep"
+        );
         let out = send(
             &host,
             &id,
@@ -602,10 +624,6 @@ mod tests {
             "after-ctrl-c",
         );
         assert!(plain(&out).contains("after-ctrl-c"), "{out:?}");
-        assert!(
-            started.elapsed() < Duration::from_secs(20),
-            "Ctrl+C did not end Start-Sleep"
-        );
         // The terminal starts in the folder it was opened in.
         let name = dir.file_name().unwrap().to_string_lossy().to_string();
         let out = send(
