@@ -1894,9 +1894,7 @@ mod tests {
             WINDOWS_PROXY_PORTS_BEFORE
         );
         assert_eq!(installed_ports(None, None), WINDOWS_PROXY_PORTS_BEFORE);
-        let rt =
-            Runtime::new(&std::env::temp_dir().join(format!("ar-ports-{}", std::process::id())));
-        let folder = std::env::temp_dir().join(format!("ar-ports-work-{}", std::process::id()));
+        let (rt, folder) = launch_in(&temp("ports"));
         let folders = vec![folder.clone()];
         let launch = Launch {
             key: "ports",
