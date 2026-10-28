@@ -812,6 +812,12 @@ impl Inner {
         let real = check_folder(path, &self.cfg.data_dir).map_err(|e| {
             Failure::new("FOLDER_INVALID", e).next("换一个具体的项目文件夹（真实存在的目录）。")
         })?;
+        if !self.cfg.full {
+            agentrouter_sandbox::folder_grantable(&real).map_err(|e| {
+                Failure::new("FOLDER_INVALID", e)
+                    .next("请这台电脑的主人换一个自己建的文件夹，或按上面的命令把文件夹交给自己。")
+            })?;
+        }
         let folders = {
             let mut folders = self.folders.lock().unwrap();
             if folders.contains(&real) {

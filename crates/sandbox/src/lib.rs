@@ -1629,6 +1629,44 @@ fn home_dir() -> PathBuf {
     plain(&std::env::var_os(var).map(PathBuf::from).unwrap_or_default())
 }
 
+/// Whether folder mode can hand `folder` to the sandbox on this computer (#194). On Windows the sandbox account's
+/// access is explicit ACEs that srt writes on the folder at every server start, so the person's own (non-elevated)
+/// account must be able to change the folder's permissions (`WRITE_DAC`): the owner can, an Administrators-owned folder
+/// (made from an elevated shell or by an installer) usually cannot. Checked before linking, so the failure is one
+/// clear sentence instead of every local tool crash-looping on `SetNamedSecurityInfoW … 0x00000005`. Other systems:
+/// nothing to check.
+pub fn folder_grantable(folder: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const READ_CONTROL: u32 = 0x0002_0000;
+        const WRITE_DAC: u32 = 0x0004_0000;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        match std::fs::OpenOptions::new()
+            .access_mode(READ_CONTROL | WRITE_DAC)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(folder)
+        {
+            Ok(_) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                let shown = folder.to_string_lossy();
+                let shown = shown.strip_prefix(r"\\?\").unwrap_or(&shown).to_string();
+                let user = std::env::var("USERNAME").unwrap_or_else(|_| "你的用户名".into());
+                Err(format!(
+                    "{shown} 的权限你的账户改不了（它的所有者不是你，常见于用管理员身份建的文件夹），文件夹模式没法把它交给隔离环境。\
+                     换一个你自己建的文件夹，或在管理员 PowerShell 里把它交给你：icacls \"{shown}\" /setowner \"{user}\" /T"
+                ))
+            }
+            Err(e) => Err(format!("{} 打不开，查不了它的权限：{e}", folder.display())),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = folder;
+        Ok(())
+    }
+}
+
 /// A program on PATH (and beside `near`, for npm next to node), with Windows extensions.
 pub fn find_program(name: &str, near: Option<&Path>) -> Option<PathBuf> {
     let exts: &[&str] = if cfg!(windows) {

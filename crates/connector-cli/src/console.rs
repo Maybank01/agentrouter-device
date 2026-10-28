@@ -734,6 +734,16 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
             }
             status = sandbox.status();
         }
+        // Every folder the sandbox gets must be one it can be given (#194: an Administrators-owned folder linked as
+        // 已连上, then every local tool crash-looped on the permission change).
+        if status.ready {
+            for f in &folders {
+                if let Err(e) = agentrouter_sandbox::folder_grantable(f) {
+                    eprintln!("没有链接上：{e}");
+                    return 2;
+                }
+            }
+        }
         if status.ready {
             line(&format!(
                 "  沙箱     {}（{}）",
