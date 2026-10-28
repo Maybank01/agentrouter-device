@@ -2351,6 +2351,8 @@ mod tests {
         }
         let secret = home_dir().join(".ssh");
         let folders = vec![folder.clone()];
+        // The pinned MCP packages, as the aggregator passes them (`servers.rs`).
+        let readable = vec![rt.packages_dir()];
         let launch = Launch {
             key: "host\u{1}work",
             program: Path::new("node"),
@@ -2359,7 +2361,7 @@ mod tests {
             cwd: &folder,
             folders: &folders,
             network: &[],
-            readable: &[],
+            readable: &readable,
             read_only: false,
             open_web: false,
             job: None,
