@@ -691,8 +691,17 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
                     pairing.expires_in / 60
                 ));
             });
-            match paired.ok().and_then(|_| keystore::load()) {
-                Some(identity) => {
+            // The pairing's own error, never a fixed sentence (#190: a network failure read "配对码过期或被取消").
+            let paired = paired.and_then(|_| {
+                keystore::load().ok_or_else(|| {
+                    format!(
+                        "网页上已经确认，但这台电脑存不下链接身份（{}）",
+                        data.display()
+                    )
+                })
+            });
+            match paired {
+                Ok(identity) => {
                     line(if opts.double_click {
                         "  确认        已确认"
                     } else {
@@ -700,14 +709,14 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
                     });
                     identity
                 }
-                None if opts.double_click => {
-                    line(
-                        "没有链接上（配对码过期或被取消）。关掉这个窗口，再双击 agentrouter.exe 试一次。",
-                    );
+                Err(e) if opts.double_click => {
+                    line(&format!(
+                        "没有链接上：{e}\n关掉这个窗口，再双击 agentrouter.exe 试一次。"
+                    ));
                     return 1;
                 }
-                None => {
-                    eprintln!("没有链接上（配对码过期或被取消）。再运行一次 agentrouter link。");
+                Err(e) => {
+                    eprintln!("没有链接上：{e}");
                     return 1;
                 }
             }
