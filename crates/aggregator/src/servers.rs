@@ -983,9 +983,23 @@ pub async fn supervise(agg: Arc<Inner>, server: Arc<Server>) {
         };
         let had_tools = !server.tools.lock().unwrap().is_empty();
         if !again {
-            server.set_state(State::Crashed(format!(
-                "2 分钟里退出了超过 {RESTARTS_MAX} 次"
-            )));
+            // The server's own last word (its stderr, not hostd's `[agentrouter]` lines) travels with the state, so the
+            // Agent sees the cause in the error itself (#194: only the count reached it, and it guessed a wrong cause).
+            let said = server
+                .logs
+                .lock()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|l| !l.starts_with("[agentrouter]") && !l.trim().is_empty())
+                .cloned();
+            server.set_state(State::Crashed(match said {
+                Some(said) => format!(
+                    "2 分钟里退出了超过 {RESTARTS_MAX} 次；它最后说：{}",
+                    agentrouter_device::util::clip(&said, 400)
+                ),
+                None => format!("2 分钟里退出了超过 {RESTARTS_MAX} 次"),
+            }));
             server.tools.lock().unwrap().clear();
             if had_tools {
                 agg.notify_tools_changed().await;
