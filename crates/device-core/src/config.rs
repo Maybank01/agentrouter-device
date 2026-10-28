@@ -8,8 +8,33 @@ use serde::{Deserialize, Serialize};
 
 use crate::util::data_dir;
 
-/// Where devices connect. MVP preview: the Dev gateway (production enables devices later).
+/// Where devices connect. MVP preview: the Dev gateway (production enables devices later). Every gateway name is
+/// served through the Gate (the mainland relay in front of the origin, Cloud #3423): the device needs nothing but the
+/// name, and `agent-gateway-dev.agentrouter.page` reaches the same gateway.
 pub const DEFAULT_GATEWAY: &str = "https://agent-gateway-dev.agentrouter.top";
+/// The gateway for one run, above config.json (a cloud host's start, a test, a person trying the other name).
+pub const ENV_GATEWAY: &str = "AGENTROUTER_GATEWAY";
+
+/// The gateway a run uses and where it came from, one rule for every command (Cloud #3423): `--gateway`, else
+/// [`ENV_GATEWAY`], else config.json's `gateway` (what `link --gateway` saved), else [`DEFAULT_GATEWAY`]. A blank value
+/// counts as unset.
+pub fn gateway_for(flag: Option<&str>, env: Option<&str>, saved: &str) -> (String, &'static str) {
+    let set = |v: Option<&str>| {
+        v.map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    };
+    if let Some(g) = set(flag) {
+        return (g, "--gateway");
+    }
+    if let Some(g) = set(env) {
+        return (g, ENV_GATEWAY);
+    }
+    match set(Some(saved)) {
+        Some(g) if g != DEFAULT_GATEWAY => (g, "config.json"),
+        _ => (DEFAULT_GATEWAY.to_string(), "默认"),
+    }
+}
 
 /// The access level of the old device chain. Console mode has none (the folder and `--read-only` are the boundary);
 /// only `agentrouter mcp-serve local` still reads it (deploy targets at `full`), pending its design (HOSTD-MCP §4).
@@ -233,5 +258,31 @@ mod tests {
         }
         assert_eq!(Access::parse("Read-Only"), Some(Access::Readonly));
         assert_eq!(Access::parse("root"), None);
+    }
+
+    #[test]
+    fn one_gateway_rule_for_every_command() {
+        let page = "https://agent-gateway-dev.agentrouter.page";
+        let other = "https://gw.example.com";
+        assert_eq!(
+            gateway_for(Some(other), Some(page), page),
+            (other.to_string(), "--gateway")
+        );
+        assert_eq!(
+            gateway_for(Some(" "), Some(page), DEFAULT_GATEWAY),
+            (page.to_string(), ENV_GATEWAY)
+        );
+        assert_eq!(
+            gateway_for(None, None, page),
+            (page.to_string(), "config.json")
+        );
+        assert_eq!(
+            gateway_for(None, Some(""), ""),
+            (DEFAULT_GATEWAY.to_string(), "默认")
+        );
+        assert_eq!(
+            gateway_for(None, None, DEFAULT_GATEWAY),
+            (DEFAULT_GATEWAY.to_string(), "默认")
+        );
     }
 }

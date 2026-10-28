@@ -592,15 +592,28 @@ pub fn link(opts: LinkOptions, interrupted: &'static AtomicBool) -> i32 {
     let first = folders[0].clone();
     let name = folder_name(&first);
     let mut cfg = Config::load();
-    if let Some(g) = &opts.gateway {
-        cfg.gateway = g.clone();
-    }
     if let Some(n) = &opts.name {
         cfg.name = n.clone();
     }
+    // `--gateway` is saved (the autostart and later runs use it); AGENTROUTER_GATEWAY is this run's only.
     if opts.gateway.is_some() || opts.name.is_some() {
+        if let Some(g) = &opts.gateway {
+            cfg.gateway = g.trim().to_string();
+        }
         let _ = cfg.save();
     }
+    let (gateway, from) = agentrouter_device::config::gateway_for(
+        opts.gateway.as_deref(),
+        std::env::var(agentrouter_device::config::ENV_GATEWAY)
+            .ok()
+            .as_deref(),
+        &cfg.gateway,
+    );
+    if let Err(e) = agentrouter_device::net::gateway_allowed(&gateway) {
+        eprintln!("{e}（网关来自 {from}）");
+        return 2;
+    }
+    cfg.gateway = gateway;
     let data = data_dir();
     // Folder mode: the writable named local data are inside the person's grants (Cloud DEVICES §3.4).
     let chosen = folders.clone();
@@ -1244,7 +1257,14 @@ pub fn status() -> i32 {
         )),
         None => line("账号：还没有链接（在项目文件夹里运行 agentrouter link）"),
     }
-    line(&format!("网关：{}", cfg.gateway));
+    let (gateway, from) = agentrouter_device::config::gateway_for(
+        None,
+        std::env::var(agentrouter_device::config::ENV_GATEWAY)
+            .ok()
+            .as_deref(),
+        &cfg.gateway,
+    );
+    line(&format!("网关：{gateway}（{from}）"));
     let st = agentrouter_sandbox::Runtime::new(&data_dir()).status();
     line(&format!(
         "沙箱：{}（{}）{}",

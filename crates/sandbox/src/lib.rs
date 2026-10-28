@@ -280,6 +280,47 @@ struct Ready {
     /// `srt-win profile status` → `env` ([`PROFILE_ENV`]).
     #[cfg(windows)]
     profile_env: Vec<(String, String)>,
+    /// What every session has already (Windows, device #198): no session is given it again.
+    #[cfg(windows)]
+    standing: Standing,
+}
+
+/// The access a Windows session has without asking for it (device #198), so its policy leaves it out. srt turns every
+/// `allowRead` and `denyRead` entry into a session ACE that inherits, which Windows copies onto every object below the
+/// path — and, for a deny, onto everything below the path's parent — when the session starts, and takes off again when
+/// it ends. The device's read list (its pinned MCP packages, srt, Node and uv: ~50 000 files) and its secret list (whose
+/// parent is the profile root: the whole profile) cost minutes per server start that way, more as the trees grow, and an
+/// end cut short (srt's 60 s limit on the restore, a stopped link) left the work to the next start's recovery as well.
+/// The same access is already in force for good:
+///
+/// - `excluded`: the profile read grant's exclusions (`srt-win profile status` → `exclusions`, a session needs a
+///   current grant): the built-in credential stores — every secret path of §6.1 but `.npmrc` — and the device data
+///   folder (`--exclude`, [`Runtime::setup`]), denied to the sandbox group on disk. Not the ones srt reports it could not
+///   deny (`unprotected`, `unverifiable`): those keep their session deny.
+/// - `readable`: the device's shared folder (`<data>-shared`), one inheriting read+execute ACE for the sandbox account
+///   that stays ([`Runtime::windows_shared_readable`]).
+///
+/// Elsewhere (and in tests) it is empty: macOS and Linux policies apply per process, at no cost per file.
+#[derive(Debug, Clone, Default)]
+struct Standing {
+    excluded: Vec<PathBuf>,
+    readable: Vec<PathBuf>,
+}
+
+impl Standing {
+    /// `path` is at or below one of `roots` (Windows paths compare without case).
+    fn covers(roots: &[PathBuf], path: &Path) -> bool {
+        let key = |p: &Path| {
+            let s = shown(p).replace('/', "\\");
+            let s = s.trim_end_matches('\\').to_string();
+            if cfg!(windows) { s.to_lowercase() } else { s }
+        };
+        let path = key(path);
+        roots.iter().any(|root| {
+            let root = key(root);
+            !root.is_empty() && (path == root || path.starts_with(&format!("{root}\\")))
+        })
+    }
 }
 
 /// A confined stdio server ([`Runtime::stdio_command`]): its command and, on Windows, the pipe its stdin and stdout
@@ -596,7 +637,7 @@ impl Runtime {
                 .sid
                 .filter(|_| !after.stale)
                 .ok_or_else(|| "隔离账户没建成（srt-win status 仍然没有它）".to_string())?;
-            self.windows_runtime_readable(&sid)?;
+            self.windows_shared_readable(&sid)?;
             // Also a refresh: what was created in the profile since the last run becomes readable.
             let first = windows_profile_state(&self.srt_win())?.0 != "current";
             self.windows_profile_grant()?;
@@ -824,19 +865,19 @@ impl Runtime {
                 }
                 Some(sid) => sid,
             };
-            self.windows_runtime_readable(&sid)
+            self.windows_shared_readable(&sid)
                 .map_err(|e| Unavailable::new(e, NEXT_SETUP))?;
-            let profile_env = match windows_profile_state(&self.srt_win()) {
-                Ok((state, env)) if state == "current" => env,
+            let (profile_env, excluded) = match windows_profile_state(&self.srt_win()) {
+                Ok((state, env, excluded)) if state == "current" => (env, excluded),
                 // A grant or forget is running right now (another `computer setup`, half a minute to minutes on a large
                 // profile; srt starts no session meanwhile). Transient: running setup again would not help.
-                Ok((state, _)) if state == "in_progress" => {
+                Ok((state, _, _)) if state == "in_progress" => {
                     return Err(Unavailable::new(
                         "隔离账户对你用户文件夹的读取权限正在写入（这台电脑上有一次 agentrouter computer setup 正在运行）",
                         NEXT_PROFILE_BUSY,
                     ));
                 }
-                Ok((state, _)) => {
+                Ok((state, _, _)) => {
                     return Err(Unavailable::new(
                         format!("隔离账户还不能读你的用户文件夹（{state}）"),
                         NEXT_SETUP,
@@ -845,10 +886,14 @@ impl Runtime {
                 Err(e) => return Err(Unavailable::new(e, NEXT_SETUP)),
             };
             let loopback = install.loopback.unwrap_or_else(|| self.loopback_marked());
-            (sid, loopback, ports, profile_env)
+            let standing = Standing {
+                excluded,
+                readable: vec![self.shared_root.clone()],
+            };
+            (sid, loopback, ports, profile_env, standing)
         };
         #[cfg(windows)]
-        let (sid, loopback, ports, profile_env) = sid;
+        let (sid, loopback, ports, profile_env, standing) = sid;
         Ok(Ready {
             node,
             cli: self.cli(),
@@ -860,22 +905,24 @@ impl Runtime {
             ports,
             #[cfg(windows)]
             profile_env,
+            #[cfg(windows)]
+            standing,
         })
     }
 
-    /// The sandbox account may read and run the installed runtime (`srt-win.exe` is started as that account; see the
-    /// module docs, #66). One inheriting read+execute ACE for the account's SID on the runtime folder, set with the
-    /// person's own rights (they own the data folder; no elevation); once per process and folder, as `icacls`
-    /// rewrites the whole tree. The data folder above it stays unreadable to the account.
+    /// The sandbox account may read and run everything in the device's shared folder (`<data>-shared`): srt
+    /// (`srt-win.exe` is started as that account, see the module docs, #66), the device's Node.js and uv (the sandbox
+    /// entry and `npx`/`uvx` servers run on them, #116) and the pinned MCP packages. One inheriting read+execute ACE for
+    /// the account's SID on the folder, set with the person's own rights (they own it; no elevation) and kept: sessions
+    /// are not given these paths again ([`Standing`], #198). Written only when the folder does not carry it yet (an
+    /// `icacls` grant passes over every file below, ~50 000 here). The data folder beside it stays unreadable.
     #[cfg(windows)]
-    fn windows_runtime_readable(&self, sid: &str) -> Result<(), String> {
-        // srt, and the device's Node.js and uv (the sandbox entry and `npx`/`uvx` servers run on them, #116).
-        for dir in [self.dir(), self.runtimes_dir()] {
-            if dir.exists() {
-                self.windows_read_grant(&dir, sid)?;
-            }
+    fn windows_shared_readable(&self, sid: &str) -> Result<(), String> {
+        let _ = std::fs::create_dir_all(&self.shared_root);
+        if windows_has_read_grant(&self.shared_root, sid) {
+            return Ok(());
         }
-        Ok(())
+        self.windows_read_grant(&self.shared_root, sid)
     }
 
     /// The sandbox account's SID (Windows): what a Job object or pipe made for a confined server grants (#112, #129).
@@ -1063,7 +1110,12 @@ impl Runtime {
             .unwrap_or(WINDOWS_PROXY_PORTS);
         #[cfg(not(windows))]
         let ports = WINDOWS_PROXY_PORTS;
-        self.policy_with(launch, self.local_binding(), ports)
+        // What a start applies ([`Runtime::stdio_command`]) when the sandbox is ready; else the whole list.
+        #[cfg(windows)]
+        let standing = self.ready().map(|r| r.standing).unwrap_or_default();
+        #[cfg(not(windows))]
+        let standing = Standing::default();
+        self.policy_with(launch, self.local_binding(), ports, &standing)
     }
 
     /// [`Runtime::policy`] with the loopback mode ([`Runtime::local_binding`]) and, on Windows, the fence's installed
@@ -1073,6 +1125,7 @@ impl Runtime {
         launch: &Launch,
         local_binding: bool,
         windows_ports: (u16, u16),
+        standing: &Standing,
     ) -> Result<Value, Unavailable> {
         let home = home_dir();
         let mut writable: Vec<PathBuf> = launch.folders.iter().map(|f| plain(f)).collect();
@@ -1110,42 +1163,38 @@ impl Runtime {
                 }
             }
         }
+        // A secret the profile grant already denies on disk is not denied again per session (device #198).
         let mut deny_read: Vec<String> = secret_paths(&home)
             .into_iter()
             .chain(std::iter::once(plain(&self.data_dir)))
-            .filter(|p| p.exists())
+            .filter(|p| p.exists() && !Standing::covers(&standing.excluded, p))
             .map(|p| shown(&p))
             .collect();
         deny_read.dedup();
         // The runtime's helpers that run inside the sandbox (Linux `apply-seccomp`) stay readable.
+        // What the device's shared folder holds is readable for good on Windows (device #198); elsewhere listed.
         let mut allow_read: Vec<String> = launch
             .readable
             .iter()
             .chain([&self.package_dir(), &self.runtimes_dir()])
-            .filter(|p| p.exists())
+            .filter(|p| p.exists() && !Standing::covers(&standing.readable, p))
             .map(|p| shown(&plain(p)))
             .collect();
         if cfg!(windows) {
-            // Per-user runtimes (nvm/fnm Node, npm's global folder, uv) created after the last profile read grant are
-            // not readable through it yet: read+execute grants for this session, removed again when the server ends.
-            let mut extra = vec![launch.program.parent().map(Path::to_path_buf)];
-            for var in ["APPDATA", "LOCALAPPDATA"] {
-                if let Some(base) = std::env::var_os(var).map(PathBuf::from) {
-                    extra.push(Some(base.join("npm")));
-                    extra.push(Some(base.join("uv")));
-                    extra.push(Some(base.join("fnm")));
-                    extra.push(Some(base.join("nvm")));
-                }
-            }
-            extra.push(Some(home.join(".local").join("bin")));
-            extra.push(Some(home.join(".cargo").join("bin")));
-            for p in extra.into_iter().flatten() {
-                let p = plain(&p);
-                if p.exists() && p.starts_with(&home) && !plain(&self.data_dir).starts_with(&p) {
-                    let s = shown(&p);
-                    if !allow_read.contains(&s) {
-                        allow_read.push(s);
-                    }
+            // The program's own folder, when it is the person's (a runtime under the profile made after the last
+            // profile read grant is not readable through it yet): a read+execute grant for this session. Only that
+            // folder: a session grant costs a pass over every file below it at the start and again at the end (#198),
+            // so whole runtime trees (npm's global folder, nvm, uv's cache) are not granted per session; the profile
+            // read grant covers them from its next refresh (`agentrouter computer setup`).
+            if let Some(p) = launch.program.parent().map(plain)
+                && p.exists()
+                && p.starts_with(&home)
+                && !plain(&self.data_dir).starts_with(&p)
+                && !Standing::covers(&standing.readable, &p)
+            {
+                let s = shown(&p);
+                if !allow_read.contains(&s) {
+                    allow_read.push(s);
                 }
             }
         }
@@ -1234,9 +1283,14 @@ impl Runtime {
     fn confined(&self, launch: &Launch, stdio_pipe: bool) -> Result<Confined, Unavailable> {
         let ready = self.ready()?;
         #[cfg(windows)]
-        let policy = self.policy_with(launch, ready.loopback, ready.ports)?;
+        let policy = self.policy_with(launch, ready.loopback, ready.ports, &ready.standing)?;
         #[cfg(not(windows))]
-        let policy = self.policy_with(launch, self.local_binding(), WINDOWS_PROXY_PORTS)?;
+        let policy = self.policy_with(
+            launch,
+            self.local_binding(),
+            WINDOWS_PROXY_PORTS,
+            &Standing::default(),
+        )?;
         let scratch = self.scratch(launch.key);
         let mut env: Vec<(String, String)> = launch.env.to_vec();
         for (k, v) in self.scratch_env(launch.key) {
@@ -1781,12 +1835,46 @@ fn windows_install(srt_win: &Path) -> Result<WindowsInstall, String> {
 
 /// `srt-win profile status`'s `state` (`current` is the only one a session can rely on) and, when current, the
 /// variables that point the person's tools at their own configuration files ([`PROFILE_ENV`]).
+/// `srt-win profile status`: its state, [`PROFILE_ENV`] and [`windows_profile_exclusions`].
 #[cfg(windows)]
-fn windows_profile_state(srt_win: &Path) -> Result<(String, Vec<(String, String)>), String> {
-    Ok(windows_profile_of(&srt_win_json(
-        srt_win,
-        &["profile", "status"],
-    )?))
+type ProfileState = (String, Vec<(String, String)>, Vec<PathBuf>);
+
+#[cfg(windows)]
+fn windows_profile_state(srt_win: &Path) -> Result<ProfileState, String> {
+    let v = srt_win_json(srt_win, &["profile", "status"])?;
+    let (state, env) = windows_profile_of(&v);
+    Ok((state, env, windows_profile_exclusions(&v)))
+}
+
+/// The paths a current profile read grant denies to the sandbox group on disk (`exclusions`, built-in and recorded),
+/// except those srt reports it could not deny (`unprotected`, `unverifiable`; srt README "Objects you may not
+/// change"). Empty unless the grant is current.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_profile_exclusions(v: &Value) -> Vec<PathBuf> {
+    if v["state"].as_str() != Some("current") {
+        return Vec::new();
+    }
+    let paths = |key: &str| -> Vec<PathBuf> {
+        v[key]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|e| e.as_str().or_else(|| e["path"].as_str()))
+                    .map(|p| plain(Path::new(p)))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let open: Vec<PathBuf> = [paths("unprotected"), paths("unverifiable")].concat();
+    paths("exclusions")
+        .into_iter()
+        .filter(|e| {
+            !Standing::covers(&open, e)
+                && !open
+                    .iter()
+                    .any(|o| Standing::covers(std::slice::from_ref(e), o))
+        })
+        .collect()
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -1822,6 +1910,81 @@ fn srt_win_json(srt_win: &Path, args: &[&str]) -> Result<Value, String> {
             String::from_utf8_lossy(&out.stderr).trim()
         )
     })
+}
+
+/// `dir` carries its own (not inherited) allow ACE for `sid` that grants read+execute and is inherited by files and
+/// folders below it: the one [`icacls_read_grant`] writes. Any failure to read the DACL answers false (grant again).
+#[cfg(windows)]
+fn windows_has_read_grant(dir: &Path, sid: &str) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{ERROR_SUCCESS, LocalFree};
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSidToSidW, GetNamedSecurityInfoW, SE_FILE_OBJECT,
+    };
+    use windows_sys::Win32::Security::{
+        ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION,
+        EqualSid, GetAce, INHERITED_ACE, OBJECT_INHERIT_ACE, PSECURITY_DESCRIPTOR, PSID,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{FILE_GENERIC_EXECUTE, FILE_GENERIC_READ};
+    const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
+    let wide: Vec<u16> = dir
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let wsid: Vec<u16> = sid.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut want: PSID = std::ptr::null_mut();
+    // SAFETY: NUL-terminated string; `want` is LocalAlloc'd on success and freed below.
+    if unsafe { ConvertStringSidToSidW(wsid.as_ptr(), &mut want) } == 0 {
+        return false;
+    }
+    let mut dacl: *mut ACL = std::ptr::null_mut();
+    let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    // SAFETY: NUL-terminated path; on success `sd` owns the descriptor `dacl` points into, freed below.
+    let got = unsafe {
+        GetNamedSecurityInfoW(
+            wide.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut dacl,
+            std::ptr::null_mut(),
+            &mut sd,
+        )
+    };
+    let mut found = false;
+    if got == ERROR_SUCCESS && !dacl.is_null() {
+        let rights = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE;
+        let inherit = (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE) as u8;
+        // SAFETY: `dacl` is a valid ACL inside `sd`; each ACE pointer comes from GetAce on it.
+        let count = unsafe { (*dacl).AceCount };
+        for i in 0..u32::from(count) {
+            let mut ace: *mut core::ffi::c_void = std::ptr::null_mut();
+            if unsafe { GetAce(dacl, i, &mut ace) } == 0 || ace.is_null() {
+                continue;
+            }
+            let header = unsafe { &*(ace as *const ACE_HEADER) };
+            if header.AceType != ACCESS_ALLOWED_ACE_TYPE
+                || header.AceFlags & inherit != inherit
+                || header.AceFlags & (INHERITED_ACE as u8) != 0
+            {
+                continue;
+            }
+            let allowed = unsafe { &*(ace as *const ACCESS_ALLOWED_ACE) };
+            let ace_sid = &allowed.SidStart as *const u32 as PSID;
+            if allowed.Mask & rights == rights && unsafe { EqualSid(ace_sid, want) } != 0 {
+                found = true;
+                break;
+            }
+        }
+    }
+    // SAFETY: both were LocalAlloc'd by the calls above (null is accepted).
+    unsafe {
+        LocalFree(sd as _);
+        LocalFree(want as _);
+    }
+    found
 }
 
 /// `icacls <dir> /grant:r *<sid>:(OI)(CI)RX /Q`: replace this SID's explicit grant on `dir` with read+execute,
@@ -1947,7 +2110,9 @@ mod tests {
             open_web: false,
             job: None,
         };
-        let p = rt.policy_with(&launch, true, (60080, 60143)).unwrap();
+        let p = rt
+            .policy_with(&launch, true, (60080, 60143), &Standing::default())
+            .unwrap();
         if cfg!(windows) {
             assert_eq!(p["windows"]["proxyPortRange"], json!([60080, 60143]));
         } else {
@@ -2028,7 +2193,9 @@ mod tests {
             job: None,
         };
         for open in [true, false] {
-            let p = rt.policy_with(&launch, open, WINDOWS_PROXY_PORTS).unwrap();
+            let p = rt
+                .policy_with(&launch, open, WINDOWS_PROXY_PORTS, &Standing::default())
+                .unwrap();
             let got = &p["network"]["allowLocalBinding"];
             if cfg!(target_os = "linux") {
                 assert!(got.is_null(), "Linux: the sandbox's own loopback");
@@ -2040,7 +2207,9 @@ mod tests {
             assert_eq!(rt.local_binding(), cfg!(target_os = "macos"));
         }
         // macOS: file watchers reach FSEvents (device #141) and commands open terminals; nothing extra elsewhere.
-        let p = rt.policy_with(&launch, false, WINDOWS_PROXY_PORTS).unwrap();
+        let p = rt
+            .policy_with(&launch, false, WINDOWS_PROXY_PORTS, &Standing::default())
+            .unwrap();
         let mach = &p["network"]["allowMachLookup"];
         if cfg!(target_os = "macos") {
             assert_eq!(mach, &json!(["com.apple.FSEvents"]));
@@ -2169,6 +2338,105 @@ mod tests {
             }
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_session_is_not_given_again_what_is_in_force_for_good() {
+        // Device #198 (owner's PC, 10-28): every server start spent 2–5 minutes in `srt-win acl grant`, putting session
+        // ACEs on the shared folder (~50 000 files) and, for the secret denies, on the whole profile (their parent).
+        let dir = temp("standing");
+        let (rt, folder) = launch_in(&dir);
+        for p in [rt.packages_dir(), rt.runtimes_dir(), rt.data_dir.clone()] {
+            std::fs::create_dir_all(&p).unwrap();
+        }
+        let secret = home_dir().join(".ssh");
+        let folders = vec![folder.clone()];
+        // The pinned MCP packages, as the aggregator passes them (`servers.rs`).
+        let readable = vec![rt.packages_dir()];
+        let launch = Launch {
+            key: "host\u{1}work",
+            program: Path::new("node"),
+            args: &[],
+            env: &[],
+            cwd: &folder,
+            folders: &folders,
+            network: &[],
+            readable: &readable,
+            read_only: false,
+            open_web: false,
+            job: None,
+        };
+        let list = |p: &Value, key: &str| -> Vec<String> {
+            p["filesystem"][key]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap().to_string())
+                .collect()
+        };
+        let none = rt
+            .policy_with(&launch, false, WINDOWS_PROXY_PORTS, &Standing::default())
+            .unwrap();
+        assert!(list(&none, "allowRead").contains(&shown(&rt.packages_dir())));
+        assert!(list(&none, "denyRead").contains(&shown(&rt.data_dir)));
+        let standing = Standing {
+            excluded: vec![home_dir().join(".ssh"), plain(&rt.data_dir)],
+            readable: vec![rt.shared_root.clone()],
+        };
+        let p = rt
+            .policy_with(&launch, false, WINDOWS_PROXY_PORTS, &standing)
+            .unwrap();
+        let read = list(&p, "allowRead");
+        assert!(
+            !read
+                .iter()
+                .any(|r| Path::new(r).starts_with(&rt.shared_root)),
+            "{read:?}"
+        );
+        let deny = list(&p, "denyRead");
+        assert!(!deny.contains(&shown(&secret)), "{deny:?}");
+        assert!(!deny.contains(&shown(&rt.data_dir)), "{deny:?}");
+        // Writes are untouched: the folder and the scratch folder (kept roots, one ACL read each).
+        assert_eq!(list(&p, "allowWrite"), list(&none, "allowWrite"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_profile_grant_s_exclusions_are_what_it_denies_on_disk() {
+        let status = json!({
+            "state": "current",
+            "exclusions": [r"\\?\C:\Users\zero\.ssh", r"\\?\C:\Users\zero\.aws", r"\\?\C:\Users\zero\AppData\Local\AgentRouter\Device"],
+            "unprotected": [{"path": r"\\?\C:\Users\zero\.aws", "reason": "x"}],
+            "unverifiable": [],
+        });
+        let got = windows_profile_exclusions(&status);
+        assert_eq!(
+            got,
+            vec![
+                plain(Path::new(r"C:\Users\zero\.ssh")),
+                plain(Path::new(r"C:\Users\zero\AppData\Local\AgentRouter\Device"))
+            ],
+            "srt could not deny .aws: its session deny stays"
+        );
+        let outdated = json!({"state": "outdated", "exclusions": [r"C:\Users\zero\.ssh"]});
+        assert!(windows_profile_exclusions(&outdated).is_empty());
+        let roots = vec![PathBuf::from("/data/AgentRouter/Device-shared")];
+        assert!(Standing::covers(
+            &roots,
+            Path::new("/data/AgentRouter/Device-shared/runtimes")
+        ));
+        assert!(Standing::covers(
+            &roots,
+            Path::new("/data/AgentRouter/Device-shared")
+        ));
+        assert!(!Standing::covers(
+            &roots,
+            Path::new("/data/AgentRouter/Device-shared2")
+        ));
+        assert!(!Standing::covers(
+            &roots,
+            Path::new("/data/AgentRouter/Device")
+        ));
     }
 
     #[test]
