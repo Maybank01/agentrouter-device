@@ -1772,6 +1772,7 @@ impl Inner {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
+        let received = std::time::Instant::now();
         let name = request.name.to_string();
         let arguments = request
             .arguments
@@ -1893,6 +1894,9 @@ impl Inner {
         };
         let mut params = CallToolRequestParams::new(tool.to_string());
         params.arguments = request.arguments.clone();
+        if let Some(args) = params.arguments.as_mut() {
+            spend_wait(args, received.elapsed());
+        }
         let mut handle = match peer
             .send_cancellable_request(
                 ClientRequest::CallToolRequest(CallToolRequest::new(params)),
@@ -2181,6 +2185,17 @@ fn text_result(value: &Value) -> CallToolResult {
     .expect("a plain text result")
 }
 
+/// A call's own wait (`wait_ms`: `job_start`, `job_read`) is the caller's budget for the whole call, so it counts from
+/// when this computer received the call (#196): time already spent here — waiting for a starting server (a confined
+/// start on Windows takes ~20 s), the turn's checkpoint — comes off it, and a wait that is used up answers at once.
+/// Before, a first call met a starting host server and answered after 52.9 s, past the kernel's 60 s with the link.
+fn spend_wait(args: &mut serde_json::Map<String, Value>, spent: Duration) {
+    if let Some(wait) = args.get("wait_ms").and_then(Value::as_u64) {
+        let spent = u64::try_from(spent.as_millis()).unwrap_or(u64::MAX);
+        args.insert("wait_ms".into(), json!(wait.saturating_sub(spent)));
+    }
+}
+
 /// The reserved management tools (§3.4).
 pub fn link_tools() -> Vec<Tool> {
     let tool = |name: &str, description: &str, schema: Value, read_only: bool| -> Tool {
@@ -2380,5 +2395,25 @@ impl Transport<RoleServer> for LinkTransport {
 
     async fn close(&mut self) -> Result<(), Self::Error> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod wait_tests {
+    use super::*;
+
+    #[test]
+    fn a_wait_counts_from_receipt() {
+        let mut args = serde_json::Map::new();
+        args.insert("command".into(), json!("sleep 90"));
+        args.insert("wait_ms".into(), json!(40_000));
+        spend_wait(&mut args, Duration::from_millis(22_500));
+        assert_eq!(args["wait_ms"], json!(17_500));
+        spend_wait(&mut args, Duration::from_secs(60));
+        assert_eq!(args["wait_ms"], json!(0));
+        let mut none = serde_json::Map::new();
+        none.insert("command".into(), json!("ls"));
+        spend_wait(&mut none, Duration::from_secs(5));
+        assert!(!none.contains_key("wait_ms"));
     }
 }
