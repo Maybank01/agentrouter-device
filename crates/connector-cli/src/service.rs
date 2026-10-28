@@ -90,6 +90,9 @@ fn install(dirs: &[String], read_only: bool, full: bool, yes_servers: bool) -> i
         return 2;
     }
     let data = data_dir();
+    // A failed install puts the previous configuration back (#192: `status` read a new file as 已打开 although the
+    // system had no task).
+    let previous = std::fs::read(config_path(&data)).ok();
     let folders: Vec<String> = folders.iter().map(|f| crate::console::shown(f)).collect();
     let config = json!({
         "folders": folders, "readOnly": read_only, "full": full, "yesServers": yes_servers,
@@ -120,6 +123,10 @@ fn install(dirs: &[String], read_only: bool, full: bool, yes_servers: bool) -> i
             0
         }
         Err(e) => {
+            let _ = match &previous {
+                Some(bytes) => std::fs::write(config_path(&data), bytes),
+                None => std::fs::remove_file(config_path(&data)),
+            };
             eprintln!("没装上：{e}");
             1
         }
@@ -368,6 +375,18 @@ pub mod def {
         )
     }
 
+    /// The SID in `whoami /user /fo csv /nh` (`"pc\\name","S-1-5-21-…"`; the same in every display language).
+    pub fn sid_of_whoami(out: &str) -> Option<String> {
+        out.split(',')
+            .map(|f| f.trim().trim_matches('"'))
+            .find(|f| {
+                f.starts_with("S-1-")
+                    && f.chars()
+                        .all(|c| c.is_ascii_digit() || c == '-' || c == 'S')
+            })
+            .map(str::to_string)
+    }
+
     /// Task Scheduler reads a task file as UTF-16 (little endian, with its byte-order mark).
     pub fn utf16le(text: &str) -> Vec<u8> {
         let mut out = vec![0xFF, 0xFE];
@@ -486,13 +505,12 @@ mod os {
 
     pub const LOG_HINT: &str = "它自己的窗口里最后几行（关掉窗口就停了）";
 
+    /// The account this process runs as, by its SID (#192): `USERDOMAIN\USERNAME` from the environment is not the
+    /// account's name everywhere (a Windows OpenSSH session on a workgroup PC has `USERDOMAIN=WORKGROUP`, and the task
+    /// then failed with "No mapping between account names and security IDs").
     fn user() -> Result<String, String> {
-        let name =
-            std::env::var("USERNAME").map_err(|_| "看不到当前用户名（USERNAME）".to_string())?;
-        Ok(match std::env::var("USERDOMAIN") {
-            Ok(domain) if !domain.is_empty() => format!("{domain}\\{name}"),
-            _ => name,
-        })
+        let out = tool("whoami", &["/user", "/fo", "csv", "/nh"])?;
+        def::sid_of_whoami(&out).ok_or_else(|| format!("whoami /user 没有给出账户的 SID：{out}"))
     }
 
     pub fn install(exe: &str, data: &Path) -> Result<&'static str, String> {
@@ -547,6 +565,19 @@ mod tests {
             "{unit}"
         );
         assert!(unit.contains("Restart=on-abnormal") && unit.contains("WantedBy=default.target"));
+    }
+
+    #[test]
+    fn the_task_user_is_the_sid_whoami_gives() {
+        assert_eq!(
+            sid_of_whoami(
+                "\"desktop-1l5f08a\\zero\",\"S-1-5-21-1004336348-1177238915-682003330-1001\""
+            )
+            .as_deref(),
+            Some("S-1-5-21-1004336348-1177238915-682003330-1001")
+        );
+        assert_eq!(sid_of_whoami("\"WORKGROUP\\zero\""), None);
+        assert_eq!(sid_of_whoami(""), None);
     }
 
     #[test]
