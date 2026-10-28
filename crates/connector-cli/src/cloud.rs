@@ -29,7 +29,7 @@ use serde_json::{Value, json};
 pub const ENV_TOKEN: &str = "AGENTROUTER_HOST_TOKEN";
 pub const ENV_TOKEN_FILE: &str = "AGENTROUTER_HOST_TOKEN_FILE";
 pub const ENV_CONTROL_KEY: &str = "AGENTROUTER_CONTROL_KEY";
-pub const ENV_GATEWAY: &str = "AGENTROUTER_GATEWAY";
+pub use agentrouter_device::config::ENV_GATEWAY;
 /// The sandbox id (part of the stable link id); the host name when unset.
 pub const ENV_HOST_ID: &str = "AGENTROUTER_HOST_ID";
 
@@ -201,12 +201,11 @@ pub fn link(opts: CloudOptions, interrupted: &'static AtomicBool) -> i32 {
         eprintln!("云端模式要主机令牌：{ENV_TOKEN_FILE} 或 {ENV_TOKEN}");
         return 2;
     }
-    let gateway = opts
-        .gateway
-        .clone()
-        .or_else(|| std::env::var(ENV_GATEWAY).ok())
-        .filter(|g| !g.trim().is_empty())
-        .unwrap_or_else(|| Config::load().gateway);
+    let (gateway, _) = agentrouter_device::config::gateway_for(
+        opts.gateway.as_deref(),
+        std::env::var(ENV_GATEWAY).ok().as_deref(),
+        &Config::load().gateway,
+    );
     if let Err(e) = agentrouter_device::net::gateway_allowed(&gateway) {
         eprintln!("{e}");
         return 2;

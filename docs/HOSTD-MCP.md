@@ -612,8 +612,23 @@ call answers `SANDBOX_UNAVAILABLE` with a `next` that tells the person what to r
     hives) and the device data folder (`--exclude`). This is the §6.1 read rule, as on macOS and Linux;
     the per-session deny list still applies. Without it the account cannot read anything under the
     profile, so Node cannot even resolve a script path there (`EPERM lstat …\AppData`).
-  - A read+execute ACE for the account on the installed runtime folder, because srt-win starts its
-    runner as the account from `srt-win.exe` before any session grant (otherwise "Access is denied").
+  - A read+execute ACE for the account on the whole shared folder `<data>-shared` (srt, the device's
+    Node.js and uv, the pinned MCP packages), because srt-win starts its runner as the account from
+    `srt-win.exe` before any session grant (otherwise "Access is denied"). Written once and kept: a start
+    reads the folder's access list and writes nothing when the entry is there.
+
+  **No session ACEs on big trees (device #198).** srt turns each `allowRead` / `denyRead` entry of a
+  session into an inheriting ACE that Windows copies onto every object below the path (for a deny, below
+  its parent too) at the start and takes off at the end. With the shared folder (~50 000 files) as
+  `allowRead` and the secret list (parent: the profile root, i.e. the whole profile) as `denyRead`, every
+  server start spent 2–5 minutes in `srt-win acl grant`, and every end ran into srt's 60 s limit on the
+  restore, so the next start first recovered the orphaned ACEs (owner's PC, 10-28: 216 s and 171 s for one
+  confined `echo`; `recovery pruned 1 dead broker(s)`). So a Windows session is never given what is in
+  force for good: no `allowRead` below the shared folder, no `denyRead` for a path the current profile
+  grant already denies (`srt-win profile status` → `exclusions`: every §6.1 secret but `.npmrc`, and the
+  data folder; not the ones srt reports `unprotected` / `unverifiable`). The only session read grant left
+  is the program's own folder when it is the person's. Writes are unchanged: the folder and the scratch
+  folder are srt's kept write roots (one access-list read per start).
 
   What sandboxes read and run lives **beside** the data folder, in `<data>-shared` (srt in `sandbox\`,
   the pinned MCP packages in `mcp-packages\`), like the scratch folders in `<data>-scratch`. srt
