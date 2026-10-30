@@ -95,7 +95,12 @@ mod tests {
     /// key and cause, and leaves in the next `events` batch.
     #[test]
     fn a_runtime_event_is_written_as_an_event_of_its_space() {
-        let dir = std::env::temp_dir().join(format!("ar-events-{}", std::process::id()));
+        // Under target/ (never the temp folder, docs/AV-HYGIENE.md).
+        let exe = std::env::current_exe().unwrap();
+        let target = exe.ancestors().nth(3).unwrap();
+        let dir = target
+            .join("tmp")
+            .join(format!("ar-events-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let link = "lnk_0123456789abcdef0123456789abcdef";
         let outbox = open_outbox(&dir, link, |_| {}).unwrap();
