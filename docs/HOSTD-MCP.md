@@ -263,6 +263,19 @@ outbox, refused ones are kept (last 500) for the status. A partial ack sends the
 5 s); a batch without an ack within 60 s, or cut by a dropped link, is sent again — the platform dedupes by event id.
 Past the disk cap (256 MiB) a producer's write is refused `OUTBOX_FULL` and it pauses; nothing accepted is dropped.
 
+**A space runtime's own events** (Cloud #3607, #3598 G4). The platform starts a space's runtime instance as a `host`
+job with `lease: {instance, epoch}` and `events: {space}`. Each output line of that job that starts with
+`::agentrouter-event::` followed by one JSON object `{"event": "<declared name>", "payload": {…}, "key"?: "<text>"}`
+(GitHub Actions' workflow-command pattern: any language prints it; no credential, no extra file the sandbox must allow)
+is sent by the `host` server to the aggregator as the notification `notifications/agentrouter/event`
+`{space, instance, event, payload, key?, cause: "runtime:<instance> <job>"}`; the aggregator takes it only from the
+built-in `host` server, writes it into the outbox (an audit line `kind: event`) and the link flushes it like any item.
+The platform accepts it only for the space whose runtime instance runs on this link, as a declared event with a fitting
+payload (Cloud PROJECT-SERVICE §9.8.2); `key` makes a line printed again one event. The line stays in the job's output;
+a line that is not a well-formed event (not JSON, a bad name, a payload that is not an object, longer than 64 KiB) gets
+one `[agentrouter] event not sent: <why>` line after it in the same output, and an outbox refusal goes to the `host`
+server's log. A job without `events` raises nothing, whatever it prints.
+
 That is the entire custom surface. Everything else is MCP: `initialize`,
 `notifications/initialized`, `tools/list`, `tools/call`, `notifications/tools/list_changed`,
 `notifications/cancelled`, `notifications/progress`, `ping`.

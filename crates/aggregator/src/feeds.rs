@@ -88,8 +88,33 @@ pub struct FeedRow {
     pub cause: String,
 }
 
+/// One declared event a space's runtime raised on this host (a `host` job started with `events`, Cloud #3607): the
+/// platform takes it only for the space whose runtime instance runs on this link.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RuntimeEvent {
+    pub space: String,
+    pub instance: String,
+    pub event: String,
+    pub payload: Value,
+    /// The runtime's own key (a repeated line is one event); none: the outbox entry's id.
+    pub key: Option<String>,
+    /// `runtime:<instance> <job>`.
+    pub cause: String,
+}
+
 /// The host's outbox as the runner sees it (implemented over `agentrouter_hostd_link::outbox::Outbox`).
 pub trait EventSink: Send + Sync {
+    /// Writes one event a space's runtime raised; its seq once it is on disk. A refusal names its catalog code
+    /// (`OUTBOX_FULL`, `EVENT_TOO_LARGE`, `EVENT_INVALID`). The default: this sink takes no runtime events.
+    fn append_event(&self, event: &RuntimeEvent) -> Result<u64, Failure> {
+        Err(Failure::new(
+            "OUTBOX_UNAVAILABLE",
+            format!(
+                "{} for {}: this host keeps no outbox for runtime events",
+                event.event, event.space
+            ),
+        ))
+    }
     /// Writes `row` unless `scope` saw its key before: `Ok(true)` written, `Ok(false)` seen before. A refusal names
     /// its catalog code (`OUTBOX_FULL` pauses the feed; `EVENT_TOO_LARGE` / `EVENT_INVALID` skip that row).
     fn append_new(&self, scope: &str, row: &FeedRow) -> Result<bool, Failure>;

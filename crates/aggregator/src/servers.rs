@@ -13,7 +13,8 @@ use std::time::{Duration, Instant};
 #[allow(deprecated)]
 use rmcp::model::LoggingMessageNotificationParam;
 use rmcp::model::{
-    ClientCapabilities, ClientConfig, Implementation, ProgressNotificationParam, Tool,
+    ClientCapabilities, ClientConfig, CustomNotification, Implementation,
+    ProgressNotificationParam, Tool,
 };
 use rmcp::service::{NotificationContext, Peer, RoleClient};
 use rmcp::{ClientHandler, ServiceExt};
@@ -833,6 +834,35 @@ impl ClientHandler for Downstream {
     ) {
         if let Some(agg) = self.agg.upgrade() {
             agg.forward_progress(&self.name, params).await;
+        }
+    }
+
+    /// A space runtime's event from a job of the built-in `host` server (Cloud #3607): into the host's outbox. Only the
+    /// `host` server's are taken — another local server cannot write into a space by sending this — and the platform
+    /// still accepts it only for the space whose runtime instance runs on this link.
+    async fn on_custom_notification(
+        &self,
+        notification: CustomNotification,
+        _context: NotificationContext<RoleClient>,
+    ) {
+        if notification.method != crate::RUNTIME_EVENT_METHOD {
+            return;
+        }
+        let (Some(agg), Some(server)) = (self.agg.upgrade(), self.server.upgrade()) else {
+            return;
+        };
+        if self.name != "host" {
+            server.log(&format!(
+                "[agentrouter] {} ignored: only the built-in host server's runtime jobs raise space events",
+                notification.method
+            ));
+            return;
+        }
+        if let Err(f) = agg.runtime_event(notification.params.unwrap_or(Value::Null)) {
+            server.log(&format!(
+                "[agentrouter] runtime event not kept ({}): {}",
+                f.code, f.message
+            ));
         }
     }
 

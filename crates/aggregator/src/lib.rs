@@ -273,6 +273,10 @@ pub struct Config {
     pub device_program: Option<PathBuf>,
 }
 
+/// The notification the built-in `host` server sends for each event line of a space runtime's job (Cloud #3607;
+/// `agentrouter mcp-serve host` `job_start` `events`).
+pub const RUNTIME_EVENT_METHOD: &str = "notifications/agentrouter/event";
+
 /// The audit log of one link.
 pub fn audit_path(data_dir: &std::path::Path, link: &str) -> PathBuf {
     data_dir.join("audit").join(format!("link-{link}.jsonl"))
@@ -1333,6 +1337,46 @@ impl Inner {
             }
         }
         tools
+    }
+
+    /// One runtime event from the `host` server (`{space, instance, event, payload, key?, cause}`) into the host's
+    /// outbox, with one audit line; the platform checks the space and the instance when it flushes.
+    pub(crate) fn runtime_event(&self, params: Value) -> Result<u64, Failure> {
+        let text = |k: &str| {
+            params
+                .get(k)
+                .and_then(Value::as_str)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+        };
+        let (Some(space), Some(instance), Some(event)) =
+            (text("space"), text("instance"), text("event"))
+        else {
+            return Err(Failure::new(
+                "EVENT_INVALID",
+                format!("a runtime event names space, instance and event; got {params}"),
+            ));
+        };
+        let Some(sink) = self.hooks.events() else {
+            return Err(Failure::new(
+                "OUTBOX_UNAVAILABLE",
+                format!("{event} for {space}: this host has no outbox (it could not be opened)"),
+            ));
+        };
+        let e = feeds::RuntimeEvent {
+            space,
+            instance,
+            event,
+            payload: params.get("payload").cloned().unwrap_or_else(|| json!({})),
+            key: text("key"),
+            cause: text("cause").unwrap_or_default(),
+        };
+        let written = sink.append_event(&e);
+        self.record(json!({
+            "kind": "event", "space": e.space, "instance": e.instance, "event": e.event, "key": e.key,
+            "seq": written.as_ref().ok(), "refused": written.as_ref().err().map(|f| f.code),
+        }));
+        written
     }
 
     pub(crate) async fn refresh_tools(&self, name: &str) {

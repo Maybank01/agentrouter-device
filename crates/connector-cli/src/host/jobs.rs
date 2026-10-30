@@ -11,6 +11,15 @@
 //! record and the client keeps what it lacks by the offsets; a job that ended inside the wait and whose output was all
 //! answered is forgotten (`forgotten: true`, nothing to stop). Cancelling the call while it waits ends the job, as
 //! cancelling `exec` does.
+//!
+//! **Events of a space's runtime** (Cloud #3607, #3598 G4; PROJECT-SERVICE §9.8.2): a job the platform starts for a
+//! space's runtime instance with `events: {space}` (and its `lease`) may raise that space's declared events by printing
+//! one line each on its output — [`EVENT_LINE`] followed by `{"event": "<name>", "payload": {…}, "key"?: "<text>"}`
+//! (GitHub Actions' workflow-command pattern: any language, no credential, no file the sandbox must allow). Each such
+//! line goes to the aggregator as the notification [`EVENT_METHOD`], which writes it into the host's outbox; the
+//! platform accepts it only for the space whose runtime instance runs on this link, as one of that space's declared
+//! events. The line stays in the job's output; a line that is not a well-formed event gets one
+//! `[agentrouter] event not sent: …` line after it, so the program's author reads why.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -43,6 +52,13 @@ const DRAIN: Duration = Duration::from_millis(200);
 const RUNNING_MAX: usize = 32;
 /// Jobs remembered (finished ones are forgotten oldest first).
 const KEPT_MAX: usize = 64;
+/// A job output line that raises an event of the space whose runtime the job runs (`events`, Cloud #3607).
+pub const EVENT_LINE: &str = "::agentrouter-event::";
+/// The notification the `host` server sends the aggregator for each event line (only the built-in `host` server's are
+/// taken).
+pub const EVENT_METHOD: &str = "notifications/agentrouter/event";
+/// An event line longer than this is not sent (the outbox takes payloads ≤ 32 KiB).
+const EVENT_LINE_MAX: usize = 64 << 10;
 
 pub(super) fn tools() -> Vec<Value> {
     vec![
@@ -58,6 +74,9 @@ pub(super) fn tools() -> Vec<Value> {
                 "lease": {"type": "object", "description": "The platform's control lease this job runs under (an instance and its epoch, Cloud PROJECT-SERVICE §4.8 \"Lease epochs\"): listed after the link reconnects, so a job whose instance ended meanwhile is stopped (lease_lost).", "properties": {
                     "instance": {"type": "string"}, "epoch": {"type": "integer", "minimum": 1},
                 }, "required": ["instance", "epoch"]},
+                "events": {"type": "object", "description": "The space whose runtime this job is (with lease; Cloud #3607): each output line `::agentrouter-event::{\"event\", \"payload\", \"key\"?}` is sent to the host's outbox as that space's event, through the lease's instance.", "properties": {
+                    "space": {"type": "string"},
+                }, "required": ["space"]},
                 "output": {"type": "object", "properties": {
                     "stdout": {"$ref": "#/$defs/stream"}, "stderr": {"$ref": "#/$defs/stream"},
                 }},
@@ -216,6 +235,8 @@ pub(super) struct Job {
     tag: Option<String>,
     /// `{instance, epoch}`: the platform's control lease this job runs under (Cloud §4.8 "Lease epochs").
     lease: Option<Value>,
+    /// Where its event lines go (`events`): the space and instance they are raised for, and the server's notifier.
+    events: Option<Arc<EventsTo>>,
     cwd: PathBuf,
     pid: u32,
     started: Instant,
@@ -277,7 +298,8 @@ impl Job {
         let state = self.state.lock().unwrap();
         json!({
             "job": self.id, "command": self.command, "tag": self.tag, "cwd": shown(&self.cwd), "pid": self.pid,
-            "lease": self.lease, "running": state.exit.is_none(),
+            "lease": self.lease, "events": self.events.as_ref().map(|e| json!({"space": e.space})),
+            "running": state.exit.is_none(),
             "exit_code": state.exit.and_then(|e| e.0), "signal": state.exit.and_then(|e| e.1),
             "ms": state.ended_ms.unwrap_or_else(|| self.started.elapsed().as_millis() as u64),
             "stdout_bytes": state.out[0].end(), "stderr_bytes": state.out[1].end(),
@@ -312,16 +334,159 @@ impl Jobs {
     }
 }
 
+/// Where a job's event lines go (`job_start` `events`).
+pub(super) struct EventsTo {
+    space: String,
+    instance: String,
+    notify: super::Notify,
+}
+
+/// One stream's unfinished line, for event lines: the bytes since the last newline, or "skipping" a line that grew
+/// past [`EVENT_LINE_MAX`] (`true` when that line was an event line, which then gets its note at its end).
+#[derive(Default)]
+struct Lines {
+    partial: Vec<u8>,
+    skipping: Option<bool>,
+}
+
+impl Lines {
+    /// The complete lines in `bytes` (after what came before), without their line ends; long ones are left out and
+    /// their event-ness kept for the note.
+    fn feed(&mut self, bytes: &[u8]) -> Vec<Result<Vec<u8>, &'static str>> {
+        let mut out = Vec::new();
+        for &b in bytes {
+            if b == b'\n' {
+                match self.skipping.take() {
+                    Some(true) => out.push(Err("the line is longer than 64 KiB")),
+                    Some(false) => {}
+                    None => {
+                        let mut line = std::mem::take(&mut self.partial);
+                        if line.last() == Some(&b'\r') {
+                            line.pop();
+                        }
+                        out.push(Ok(line));
+                    }
+                }
+                self.partial.clear();
+                continue;
+            }
+            if self.skipping.is_some() {
+                continue;
+            }
+            self.partial.push(b);
+            if self.partial.len() > EVENT_LINE_MAX {
+                self.skipping = Some(self.partial.starts_with(EVENT_LINE.as_bytes()));
+                self.partial = Vec::new();
+            }
+        }
+        out
+    }
+}
+
+/// An event name as the platform takes it: lower-case words joined by dots (project-service host-events `NAME`).
+fn event_name_ok(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 120
+        && name.split('.').all(|w| {
+            let mut c = w.chars();
+            c.next().is_some_and(|f| f.is_ascii_lowercase())
+                && c.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
+        })
+}
+
+/// The event an event line raises, as the notification's params, or why it is not sent.
+pub(super) fn event_of(line: &str, events: &EventsTo, job: &str) -> Option<Result<Value, String>> {
+    let body = line.strip_prefix(EVENT_LINE)?;
+    let parsed: Value = match serde_json::from_str(body.trim()) {
+        Ok(v) => v,
+        Err(e) => {
+            return Some(Err(format!(
+                "after {EVENT_LINE} comes one JSON object {{\"event\", \"payload\", \"key\"?}} ({e})"
+            )));
+        }
+    };
+    let Some(obj) = parsed.as_object() else {
+        return Some(Err(format!(
+            "after {EVENT_LINE} comes one JSON object, not {parsed}"
+        )));
+    };
+    let event = obj.get("event").and_then(Value::as_str).unwrap_or("");
+    if !event_name_ok(event) {
+        return Some(Err(format!(
+            "event {:?} is not an event name (lower-case words joined by dots, as the space declares it)",
+            obj.get("event").unwrap_or(&Value::Null)
+        )));
+    }
+    let payload = obj.get("payload").cloned().unwrap_or_else(|| json!({}));
+    if !payload.is_object() {
+        return Some(Err(format!(
+            "the payload of {event} is an object of its declared fields"
+        )));
+    }
+    let key = match obj.get("key") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(k))
+            if !k.is_empty() && k.len() <= 400 && !k.chars().any(char::is_control) =>
+        {
+            Some(k.clone())
+        }
+        Some(_) => {
+            return Some(Err(
+                "key is a text of 1 to 400 characters (it makes a repeated line one event)".into(),
+            ));
+        }
+    };
+    if let Some(extra) = obj
+        .keys()
+        .find(|k| !["event", "payload", "key"].contains(&k.as_str()))
+    {
+        return Some(Err(format!(
+            "an event line takes event, payload and key, not {extra}"
+        )));
+    }
+    Some(Ok(json!({
+        "space": events.space, "instance": events.instance, "event": event, "payload": payload, "key": key,
+        "cause": format!("runtime:{} {job}", events.instance),
+    })))
+}
+
 fn pump(job: &Arc<Job>, stream: impl std::io::Read + Send + 'static, i: usize) {
     let job = job.clone();
     std::thread::spawn(move || {
         let mut stream = stream;
         let mut buf = vec![0u8; 64 << 10];
+        let mut lines = Lines::default();
         loop {
             match stream.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
                     job.state.lock().unwrap().out[i].push(&buf[..n]);
+                    if let Some(events) = &job.events {
+                        for line in lines.feed(&buf[..n]) {
+                            let refused = match line {
+                                Err(why) => Some(why.to_string()),
+                                Ok(bytes) => match event_of(
+                                    &String::from_utf8_lossy(&bytes),
+                                    events,
+                                    &job.id,
+                                ) {
+                                    None => None,
+                                    Some(Ok(params)) => {
+                                        (events.notify)(
+                                            &json!({"jsonrpc": "2.0", "method": EVENT_METHOD, "params": params}),
+                                        );
+                                        None
+                                    }
+                                    Some(Err(why)) => Some(why),
+                                },
+                            };
+                            if let Some(why) = refused {
+                                job.state.lock().unwrap().out[i].push(
+                                    format!("[agentrouter] event not sent: {why}\n").as_bytes(),
+                                );
+                            }
+                        }
+                    }
                     job.changed.notify_all();
                 }
             }
@@ -361,6 +526,17 @@ impl Host {
             return Err("command 不能是空的".into());
         }
         let lease = lease_of(args)?;
+        let events = events_of(args, lease.as_ref())?.map(|space| {
+            Arc::new(EventsTo {
+                space,
+                instance: lease
+                    .as_ref()
+                    .and_then(|l| l["instance"].as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                notify: call.notify.clone(),
+            })
+        });
         let cwd = self.work_dir("job_start", args)?;
         {
             let mut all = self.jobs.all.lock().unwrap();
@@ -388,6 +564,7 @@ impl Host {
                 .filter(|t| !t.is_empty() && t.len() <= TAG_MAX)
                 .map(str::to_string),
             lease,
+            events,
             cwd: cwd.clone(),
             pid: spawned.child.id(),
             started: Instant::now(),
@@ -702,6 +879,31 @@ fn lease_of(args: &Value) -> Result<Option<Value>, String> {
     Ok(Some(json!({"instance": instance, "epoch": epoch})))
 }
 
+/// A job's `events` argument: the space (`wrk_…`) whose runtime it is; only with a `lease` (the instance the platform
+/// checks the space against).
+fn events_of(args: &Value, lease: Option<&Value>) -> Result<Option<String>, String> {
+    let Some(events) = args.get("events").filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    let space = events.get("space").and_then(Value::as_str).unwrap_or("");
+    let ok = space.strip_prefix("wrk_").is_some_and(|rest| {
+        !rest.is_empty()
+            && rest.len() <= 64
+            && rest
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    });
+    if !ok {
+        return Err(format!(
+            "events is {{space: wrk_…}}, the space whose runtime this job is; got {events}"
+        ));
+    }
+    if lease.is_none() {
+        return Err("events needs lease: a job raises a space's events only as that space's runtime instance".into());
+    }
+    Ok(Some(space.to_string()))
+}
+
 /// Jobs by id for tests.
 #[cfg(test)]
 pub(super) fn ids(host: &Host) -> std::collections::HashMap<String, bool> {
@@ -771,6 +973,130 @@ mod tests {
                 .is_err()
             );
         }
+    }
+
+    /// Cloud #3607: a runtime job's event lines become notifications for the aggregator's outbox; a malformed one gets
+    /// a note in the job's own output; other output and a job without `events` raise nothing.
+    #[test]
+    fn a_runtime_jobs_event_lines_are_sent_and_a_bad_one_is_explained_in_its_output() {
+        let dir = temp("jobs-events");
+        let host = host_in(&dir);
+        let sent: Arc<Mutex<Vec<Value>>> = Arc::default();
+        let call = Call {
+            token: None,
+            cancelled: Arc::default(),
+            seq: AtomicU64::new(0),
+            notify: {
+                let sent = sent.clone();
+                Arc::new(move |v: &Value| sent.lock().unwrap().push(v.clone()))
+            },
+        };
+        let instance = "ins_0123456789abcdef01234567";
+        let lines = [
+            "hello",
+            r#"::agentrouter-event::{"event":"round.result","payload":{"round":1,"winner":"a"},"key":"r1"}"#,
+            r#"::agentrouter-event::{"event":"Bad Name","payload":{}}"#,
+            "::agentrouter-event::not json",
+        ];
+        let command = if cfg!(windows) {
+            lines
+                .iter()
+                .map(|l| format!("Write-Output '{l}'"))
+                .collect::<Vec<_>>()
+                .join("; ")
+        } else {
+            lines
+                .iter()
+                .map(|l| format!("echo '{l}'"))
+                .collect::<Vec<_>>()
+                .join("; ")
+        };
+        let started = host
+            .job_start(
+                &json!({"command": command, "wait_ms": 20_000, "lease": {"instance": instance, "epoch": 1},
+                        "events": {"space": "wrk_709329401e7d8c5a5a44067197b06854"}}),
+                &call,
+            )
+            .unwrap();
+        let out = started["stdout"]["data"].as_str().unwrap_or("").to_string();
+        let events: Vec<Value> = sent
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|v| v["method"] == EVENT_METHOD)
+            .cloned()
+            .collect();
+        assert_eq!(events.len(), 1, "{events:?}");
+        let p = &events[0]["params"];
+        assert_eq!(p["space"], "wrk_709329401e7d8c5a5a44067197b06854");
+        assert_eq!(p["instance"], instance);
+        assert_eq!(p["event"], "round.result");
+        assert_eq!(p["payload"]["winner"], "a");
+        assert_eq!(p["key"], "r1");
+        assert!(
+            p["cause"]
+                .as_str()
+                .unwrap()
+                .starts_with(&format!("runtime:{instance} job-"))
+        );
+        assert_eq!(
+            out.matches("[agentrouter] event not sent:").count(),
+            2,
+            "{out}"
+        );
+        assert!(
+            out.contains("hello") && out.contains("not an event name"),
+            "{out}"
+        );
+        // Without events (or without a lease) nothing is raised.
+        sent.lock().unwrap().clear();
+        let plain = if cfg!(windows) {
+            format!("Write-Output '{}'", lines[1])
+        } else {
+            format!("echo '{}'", lines[1])
+        };
+        host.job_start(&json!({"command": plain, "wait_ms": 20_000}), &call)
+            .unwrap();
+        assert!(
+            sent.lock()
+                .unwrap()
+                .iter()
+                .all(|v| v["method"] != EVENT_METHOD)
+        );
+        let refused = host.job_start(
+            &json!({"command": plain, "events": {"space": "wrk_ab"}}),
+            &call,
+        );
+        assert!(refused.is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn event_lines_split_across_reads_and_overlong_ones_are_noted() {
+        let mut lines = Lines::default();
+        assert!(lines.feed(b"::agentrouter-event::{\"ev").is_empty());
+        let got = lines.feed(b"ent\":\"a.b\"}\r\nnext");
+        assert_eq!(
+            got,
+            vec![Ok(b"::agentrouter-event::{\"event\":\"a.b\"}".to_vec())]
+        );
+        let mut long = EVENT_LINE.as_bytes().to_vec();
+        long.extend(std::iter::repeat_n(b'x', EVENT_LINE_MAX + 10));
+        long.push(b'\n');
+        let mut lines = Lines::default();
+        assert_eq!(
+            lines.feed(&long),
+            vec![Err("the line is longer than 64 KiB")]
+        );
+        let mut plain = vec![b'y'; EVENT_LINE_MAX + 10];
+        plain.push(b'\n');
+        assert!(Lines::default().feed(&plain).is_empty());
+        assert!(
+            event_name_ok("round.result")
+                && event_name_ok("turn_ready")
+                && !event_name_ok("Round")
+                && !event_name_ok("a..b")
+        );
     }
 
     #[test]
