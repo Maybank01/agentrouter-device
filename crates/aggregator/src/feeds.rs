@@ -105,6 +105,20 @@ pub struct RuntimeEvent {
     pub cause: String,
 }
 
+/// A job's event or op line that was not sent because the job is not a space's runtime instance (Cloud #3691): told to
+/// the conversation that started the job (its tag), never written into a space.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LineRefusal {
+    /// `EVENT_LINE_NOT_RUNTIME`.
+    pub code: String,
+    /// The job's tag (the conversation that started it).
+    pub tag: String,
+    pub event: Option<String>,
+    pub op: Option<String>,
+    /// `{job, command, line}`.
+    pub payload: Value,
+}
+
 /// The host's outbox as the runner sees it (implemented over `agentrouter_hostd_link::outbox::Outbox`).
 pub trait EventSink: Send + Sync {
     /// Writes one event a space's runtime raised; its seq once it is on disk. A refusal names its catalog code
@@ -115,6 +129,16 @@ pub trait EventSink: Send + Sync {
             format!(
                 "{} for {}: this host keeps no outbox for runtime events",
                 event.event, event.space
+            ),
+        ))
+    }
+    /// Writes one line refusal (Cloud #3691) for the platform to tell the job's conversation. The default: not kept.
+    fn append_refusal(&self, refusal: &LineRefusal) -> Result<u64, Failure> {
+        Err(Failure::new(
+            "OUTBOX_UNAVAILABLE",
+            format!(
+                "{} for {}: this host keeps no outbox",
+                refusal.code, refusal.tag
             ),
         ))
     }

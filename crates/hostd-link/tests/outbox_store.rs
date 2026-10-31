@@ -202,3 +202,47 @@ fn a_feed_key_is_written_once_and_a_refusal_leaves_it_unseen() {
     outbox.forget("spc_1/f");
     assert_eq!(outbox.seen_count("spc_1/f"), 0);
 }
+
+/// Cloud #3691: a line refusal (a job that is not a space's runtime printed an event line) leaves in the batch as an
+/// item naming no space, for the platform to tell the job's conversation.
+#[test]
+fn a_line_refusal_is_an_item_without_a_space() {
+    use agentrouter_hostd_link::outbox::LineRefusal;
+    let outbox = Outbox::open(
+        &tmp("line-refusal"),
+        "lnk_0123456789abcdef0123456789abcdef",
+        DEFAULT_CAP_BYTES,
+    )
+    .unwrap();
+    let r = LineRefusal {
+        code: "EVENT_LINE_NOT_RUNTIME".into(),
+        tag: "ags_x1".into(),
+        event: Some("match.finished".into()),
+        op: None,
+        payload: json!({"job": "job-3", "command": "node server.js", "line": "::agentrouter-event::{}"}),
+    };
+    let seq = outbox.append_refusal(&r).unwrap();
+    let batch = outbox.batch(0).unwrap();
+    let item = &batch["items"][0];
+    assert_eq!(item["seq"], seq);
+    assert_eq!(item["refused"], "EVENT_LINE_NOT_RUNTIME");
+    assert_eq!(item["tag"], "ags_x1");
+    assert_eq!(item["event"], "match.finished");
+    assert!(item.get("space").is_none());
+    let bad = LineRefusal {
+        code: "lower".into(),
+        ..r.clone()
+    };
+    assert_eq!(
+        outbox.append_refusal(&bad).unwrap_err().code,
+        "EVENT_INVALID"
+    );
+    let bad = LineRefusal {
+        event: Some("Bad Name".into()),
+        ..r
+    };
+    assert_eq!(
+        outbox.append_refusal(&bad).unwrap_err().code,
+        "EVENT_INVALID"
+    );
+}

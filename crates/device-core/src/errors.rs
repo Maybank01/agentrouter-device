@@ -31,7 +31,12 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .filter_map(|e| e["code"].as_str().map(str::to_string))
+            // A code Cloud renamed keeps its old name as an alias (Cloud #2825): the device may still answer with it.
+            .flat_map(|e| {
+                let aliases = e["aliases"].as_array().cloned().unwrap_or_default();
+                std::iter::once(e["code"].clone()).chain(aliases)
+            })
+            .filter_map(|c| c.as_str().map(str::to_string))
             .collect()
     }
 
