@@ -43,6 +43,7 @@ impl agentrouter_aggregator::feeds::EventSink for OutboxSink {
             instance: Some(row.instance.clone()),
             event: None,
             table: Some(row.table.clone()),
+            op: None,
             payload: row.payload.clone(),
             key: Some(row.key.clone()),
             cause: Some(row.cause.clone()),
@@ -60,7 +61,8 @@ impl agentrouter_aggregator::feeds::EventSink for OutboxSink {
         let event = agentrouter_hostd_link::outbox::NewEvent {
             space: e.space.clone(),
             instance: Some(e.instance.clone()),
-            event: Some(e.event.clone()),
+            event: (!e.op).then(|| e.event.clone()),
+            op: e.op.then(|| e.event.clone()),
             table: None,
             payload: e.payload.clone(),
             key: e.key.clone(),
@@ -109,6 +111,7 @@ mod tests {
             space: "wrk_709329401e7d8c5a5a44067197b06854".into(),
             instance: "ins_0123456789abcdef01234567".into(),
             event: "round.result".into(),
+            op: false,
             payload: json!({"round": 1}),
             key: Some("r1".into()),
             cause: "runtime:ins_0123456789abcdef01234567 job-1".into(),
@@ -121,6 +124,25 @@ mod tests {
         assert_eq!(item["instance"], e.instance.as_str());
         assert_eq!(item["key"], "r1");
         assert!(item.get("table").is_none_or(|t| t.is_null()));
+        // An op line's call (Cloud #3675): an entry naming the op, its args the payload, no event.
+        let call = RuntimeEvent {
+            event: "record_match".into(),
+            op: true,
+            payload: json!({"id": "g1"}),
+            key: Some("g1".into()),
+            ..e.clone()
+        };
+        let seq = sink.append_event(&call).unwrap();
+        let batch = outbox.batch(0).unwrap();
+        let item = batch["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["seq"] == seq)
+            .unwrap();
+        assert_eq!(item["op"], "record_match");
+        assert_eq!(item["payload"]["id"], "g1");
+        assert!(item.get("event").is_none_or(|t| t.is_null()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

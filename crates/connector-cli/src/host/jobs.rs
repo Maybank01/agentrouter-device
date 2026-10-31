@@ -20,6 +20,13 @@
 //! platform accepts it only for the space whose runtime instance runs on this link, as one of that space's declared
 //! events. The line stays in the job's output; a line that is not a well-formed event gets one
 //! `[agentrouter] event not sent: …` line after it, so the program's author reads why.
+//!
+//! **Its space's ops** (Cloud #3675, RPS pilot #3641 finding 5): the same job calls one of its space's declared ops (a
+//! Helper such as `record_match`, which writes a table and raises the event the op declares) by printing
+//! [`OP_LINE`] followed by `{"op": "<name>", "args": {…}, "key"?: "<text>"}`. It travels the same way (the notification
+//! [`EVENT_METHOD`] with `op` instead of `event`, the host's outbox); the platform runs it through its one op path as
+//! the space's runtime, only for the space whose runtime instance runs on this link. An event an op raises is written
+//! only by that op, so a runtime that wants it calls the op.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -54,8 +61,12 @@ const RUNNING_MAX: usize = 32;
 const KEPT_MAX: usize = 64;
 /// A job output line that raises an event of the space whose runtime the job runs (`events`, Cloud #3607).
 pub const EVENT_LINE: &str = "::agentrouter-event::";
-/// The notification the `host` server sends the aggregator for each event line (only the built-in `host` server's are
-/// taken).
+/// A job output line that calls one of that space's declared ops (Cloud #3675).
+pub const OP_LINE: &str = "::agentrouter-op::";
+/// How the note after a refused op line starts (an event line's says `event not sent`).
+const OP_NOTE: &str = "op call: ";
+/// The notification the `host` server sends the aggregator for each event or op line (only the built-in `host` server's
+/// are taken).
 pub const EVENT_METHOD: &str = "notifications/agentrouter/event";
 /// An event line longer than this is not sent (the outbox takes payloads ≤ 32 KiB).
 const EVENT_LINE_MAX: usize = 64 << 10;
@@ -74,7 +85,7 @@ pub(super) fn tools() -> Vec<Value> {
                 "lease": {"type": "object", "description": "The platform's control lease this job runs under (an instance and its epoch, Cloud PROJECT-SERVICE §4.8 \"Lease epochs\"): listed after the link reconnects, so a job whose instance ended meanwhile is stopped (lease_lost).", "properties": {
                     "instance": {"type": "string"}, "epoch": {"type": "integer", "minimum": 1},
                 }, "required": ["instance", "epoch"]},
-                "events": {"type": "object", "description": "The space whose runtime this job is (with lease; Cloud #3607): each output line `::agentrouter-event::{\"event\", \"payload\", \"key\"?}` is sent to the host's outbox as that space's event, through the lease's instance.", "properties": {
+                "events": {"type": "object", "description": "The space whose runtime this job is (with lease; Cloud #3607): each output line `::agentrouter-event::{\"event\", \"payload\", \"key\"?}` is sent to the host's outbox as that space's event, and each `::agentrouter-op::{\"op\", \"args\", \"key\"?}` as a call of one of that space's declared ops (Cloud #3675), through the lease's instance.", "properties": {
                     "space": {"type": "string"},
                 }, "required": ["space"]},
                 "output": {"type": "object", "properties": {
@@ -375,7 +386,10 @@ impl Lines {
             }
             self.partial.push(b);
             if self.partial.len() > EVENT_LINE_MAX {
-                self.skipping = Some(self.partial.starts_with(EVENT_LINE.as_bytes()));
+                self.skipping = Some(
+                    self.partial.starts_with(EVENT_LINE.as_bytes())
+                        || self.partial.starts_with(OP_LINE.as_bytes()),
+                );
                 self.partial = Vec::new();
             }
         }
@@ -394,8 +408,72 @@ fn event_name_ok(name: &str) -> bool {
         })
 }
 
-/// The event an event line raises, as the notification's params, or why it is not sent.
+/// An op name as a space declares it (project-service registry `OP_NAME`: letters, digits, `_` and `-`, 1 to 64).
+fn op_name_ok(name: &str) -> bool {
+    (1..=64).contains(&name.chars().count())
+        && name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+}
+
+/// The key of an event or op line: none, or a text of 1 to 400 characters without control characters.
+fn line_key(obj: &serde_json::Map<String, Value>) -> Result<Option<String>, String> {
+    match obj.get("key") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(k))
+            if !k.is_empty() && k.len() <= 400 && !k.chars().any(char::is_control) =>
+        {
+            Ok(Some(k.clone()))
+        }
+        Some(_) => {
+            Err("key is a text of 1 to 400 characters (it makes a repeated line one call)".into())
+        }
+    }
+}
+
+/// The op call an op line makes, as the notification's params (`op` and its `args` as the payload), or why it is not
+/// sent (Cloud #3675).
+fn op_of(body: &str, events: &EventsTo, job: &str) -> Result<Value, String> {
+    let parsed: Value = serde_json::from_str(body.trim()).map_err(|e| {
+        format!("after {OP_LINE} comes one JSON object {{\"op\", \"args\", \"key\"?}} ({e})")
+    })?;
+    let Some(obj) = parsed.as_object() else {
+        return Err(format!(
+            "after {OP_LINE} comes one JSON object, not {parsed}"
+        ));
+    };
+    let op = obj.get("op").and_then(Value::as_str).unwrap_or("");
+    if !op_name_ok(op) {
+        return Err(format!(
+            "op {:?} is not an op name (letters, digits, _ and -, as the space declares it under ops:)",
+            obj.get("op").unwrap_or(&Value::Null)
+        ));
+    }
+    let args = obj.get("args").cloned().unwrap_or_else(|| json!({}));
+    if !args.is_object() {
+        return Err(format!(
+            "the args of {op} are an object of its declared params"
+        ));
+    }
+    let key = line_key(obj)?;
+    if let Some(extra) = obj
+        .keys()
+        .find(|k| !["op", "args", "key"].contains(&k.as_str()))
+    {
+        return Err(format!("an op line takes op, args and key, not {extra}"));
+    }
+    Ok(json!({
+        "space": events.space, "instance": events.instance, "op": op, "payload": args, "key": key,
+        "cause": format!("runtime:{} {job}", events.instance),
+    }))
+}
+
+/// The event an event line raises (or the op call an op line makes), as the notification's params, or why it is not
+/// sent; None for any other line.
 pub(super) fn event_of(line: &str, events: &EventsTo, job: &str) -> Option<Result<Value, String>> {
+    if let Some(body) = line.strip_prefix(OP_LINE) {
+        return Some(op_of(body, events, job).map_err(|why| format!("{OP_NOTE}{why}")));
+    }
     let body = line.strip_prefix(EVENT_LINE)?;
     let parsed: Value = match serde_json::from_str(body.trim()) {
         Ok(v) => v,
@@ -423,18 +501,9 @@ pub(super) fn event_of(line: &str, events: &EventsTo, job: &str) -> Option<Resul
             "the payload of {event} is an object of its declared fields"
         )));
     }
-    let key = match obj.get("key") {
-        None | Some(Value::Null) => None,
-        Some(Value::String(k))
-            if !k.is_empty() && k.len() <= 400 && !k.chars().any(char::is_control) =>
-        {
-            Some(k.clone())
-        }
-        Some(_) => {
-            return Some(Err(
-                "key is a text of 1 to 400 characters (it makes a repeated line one event)".into(),
-            ));
-        }
+    let key = match line_key(obj) {
+        Ok(k) => k,
+        Err(why) => return Some(Err(why)),
     };
     if let Some(extra) = obj
         .keys()
@@ -481,9 +550,11 @@ fn pump(job: &Arc<Job>, stream: impl std::io::Read + Send + 'static, i: usize) {
                                 },
                             };
                             if let Some(why) = refused {
-                                job.state.lock().unwrap().out[i].push(
-                                    format!("[agentrouter] event not sent: {why}\n").as_bytes(),
-                                );
+                                let note = match why.strip_prefix(OP_NOTE) {
+                                    Some(why) => format!("[agentrouter] op call not sent: {why}\n"),
+                                    None => format!("[agentrouter] event not sent: {why}\n"),
+                                };
+                                job.state.lock().unwrap().out[i].push(note.as_bytes());
                             }
                         }
                     }
@@ -997,6 +1068,9 @@ mod tests {
             r#"::agentrouter-event::{"event":"round.result","payload":{"round":1,"winner":"a"},"key":"r1"}"#,
             r#"::agentrouter-event::{"event":"Bad Name","payload":{}}"#,
             "::agentrouter-event::not json",
+            // Cloud #3675: a call of one of the space's ops, and one with args that are not an object.
+            r#"::agentrouter-op::{"op":"record_match","args":{"id":"g1","winner":"a"},"key":"g1"}"#,
+            r#"::agentrouter-op::{"op":"record_match","args":[1]}"#,
         ];
         let command = if cfg!(windows) {
             lines
@@ -1026,7 +1100,18 @@ mod tests {
             .filter(|v| v["method"] == EVENT_METHOD)
             .cloned()
             .collect();
-        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events.len(), 2, "{events:?}");
+        let op = &events[1]["params"];
+        assert_eq!(op["op"], "record_match");
+        assert_eq!(op["payload"]["winner"], "a");
+        assert_eq!(op["key"], "g1");
+        assert!(op.get("event").is_none());
+        assert_eq!(
+            out.matches("[agentrouter] op call not sent: the args of record_match are an object")
+                .count(),
+            1,
+            "{out}"
+        );
         let p = &events[0]["params"];
         assert_eq!(p["space"], "wrk_709329401e7d8c5a5a44067197b06854");
         assert_eq!(p["instance"], instance);

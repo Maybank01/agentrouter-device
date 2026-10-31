@@ -94,7 +94,10 @@ pub struct FeedRow {
 pub struct RuntimeEvent {
     pub space: String,
     pub instance: String,
+    /// The declared event it raises, or — with `op` — the declared op of the space it calls (Cloud #3675).
     pub event: String,
+    /// `event` names an op of the space, called with `payload` as its args (an `::agentrouter-op::` line).
+    pub op: bool,
     pub payload: Value,
     /// The runtime's own key (a repeated line is one event); none: the outbox entry's id.
     pub key: Option<String>,
