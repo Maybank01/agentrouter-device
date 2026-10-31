@@ -49,6 +49,9 @@ pub struct NewEvent {
     /// A declared table of that space the entry is a row of (a feed's `into`): the platform upserts it by the table's key
     /// and the space raises `<table>.inserted|updated` itself when the row lands (Cloud #2739, tables engine #2762).
     pub table: Option<String>,
+    /// A declared op of that space the entry calls, `payload` its args (a runtime's `::agentrouter-op::` line, Cloud
+    /// #3675): the platform runs it through its one op path as the space's runtime.
+    pub op: Option<String>,
     /// The declared payload, or the row (an object).
     pub payload: Value,
     /// The item's own key at its source (a feed row's key), recorded in the event's provenance.
@@ -130,10 +133,11 @@ fn sql(e: rusqlite::Error, path: &Path) -> String {
 
 /// What an entry is, for messages: `event job.done` or `row of table feed`.
 fn what(e: &NewEvent) -> String {
-    match (&e.event, &e.table) {
-        (Some(ev), _) => ev.clone(),
-        (None, Some(t)) => format!("a row of table {t}"),
-        (None, None) => "an entry".into(),
+    match (&e.event, &e.table, &e.op) {
+        (Some(ev), _, _) => ev.clone(),
+        (None, Some(t), _) => format!("a row of table {t}"),
+        (None, None, Some(op)) => format!("a call of op {op}"),
+        (None, None, None) => "an entry".into(),
     }
 }
 
@@ -144,6 +148,14 @@ fn valid_table(table: &str) -> bool {
         && table
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+fn valid_op(op: &str) -> bool {
+    // A space's op names (project-service registry OP_NAME): letters, digits, _ and -, 1 to 64 characters.
+    (1..=64).contains(&op.chars().count())
+        && op
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
 }
 
 fn valid_name(event: &str) -> bool {
@@ -360,10 +372,19 @@ impl Outbox {
                 message: "space is a space id (1 to 200 characters)".into(),
             });
         }
-        match (&e.event, &e.table) {
-            (Some(event), None) if valid_name(event) => {}
-            (None, Some(table)) if valid_table(table) => {}
-            (Some(event), None) => {
+        match (&e.event, &e.table, &e.op) {
+            (Some(event), None, None) if valid_name(event) => {}
+            (None, Some(table), None) if valid_table(table) => {}
+            (None, None, Some(op)) if valid_op(op) => {}
+            (None, None, Some(op)) => {
+                return Err(Refusal {
+                    code: "EVENT_INVALID",
+                    message: format!(
+                        "op {op:?} is not an op name (letters, digits, _ and -, 1 to 64 characters)"
+                    ),
+                });
+            }
+            (Some(event), None, None) => {
                 return Err(Refusal {
                     code: "EVENT_INVALID",
                     message: format!(
@@ -371,7 +392,7 @@ impl Outbox {
                     ),
                 });
             }
-            (None, Some(table)) => {
+            (None, Some(table), None) => {
                 return Err(Refusal {
                     code: "EVENT_INVALID",
                     message: format!(
@@ -382,7 +403,7 @@ impl Outbox {
             _ => {
                 return Err(Refusal {
                     code: "EVENT_INVALID",
-                    message: "an entry is either an event (event) or a row of a table (table), exactly one".into(),
+                    message: "an entry is an event (event), a row of a table (table) or a call of an op (op), exactly one".into(),
                 });
             }
         }
@@ -424,6 +445,7 @@ impl Outbox {
         for (field, v) in [
             ("event", &e.event),
             ("table", &e.table),
+            ("op", &e.op),
             ("instance", &e.instance),
             ("key", &e.key),
             ("cause", &e.cause),
@@ -552,7 +574,7 @@ impl Outbox {
                         .and_then(|t| serde_json::from_str(&t).ok())
                         .unwrap_or(Value::Null);
                     Ok(json!({"seq": r.get::<_, i64>(0)?, "code": r.get::<_, String>(1)?, "message": r.get::<_, String>(2)?,
-                              "space": item.get("space"), "event": item.get("event"), "table": item.get("table")}))
+                              "space": item.get("space"), "event": item.get("event"), "table": item.get("table"), "op": item.get("op")}))
                 },
             )
             .optional()

@@ -1349,12 +1349,16 @@ impl Inner {
                 .filter(|v| !v.is_empty())
                 .map(str::to_string)
         };
-        let (Some(space), Some(instance), Some(event)) =
-            (text("space"), text("instance"), text("event"))
-        else {
+        // An op line (Cloud #3675) names the op it calls instead of an event.
+        let op = text("op");
+        let (Some(space), Some(instance), Some(event)) = (
+            text("space"),
+            text("instance"),
+            op.clone().or_else(|| text("event")),
+        ) else {
             return Err(Failure::new(
                 "EVENT_INVALID",
-                format!("a runtime event names space, instance and event; got {params}"),
+                format!("a runtime event names space, instance and event (or op); got {params}"),
             ));
         };
         let Some(sink) = self.hooks.events() else {
@@ -1367,13 +1371,14 @@ impl Inner {
             space,
             instance,
             event,
+            op: op.is_some(),
             payload: params.get("payload").cloned().unwrap_or_else(|| json!({})),
             key: text("key"),
             cause: text("cause").unwrap_or_default(),
         };
         let written = sink.append_event(&e);
         self.record(json!({
-            "kind": "event", "space": e.space, "instance": e.instance, "event": e.event, "key": e.key,
+            "kind": if e.op { "op" } else { "event" }, "space": e.space, "instance": e.instance, "event": e.event, "key": e.key,
             "seq": written.as_ref().ok(), "refused": written.as_ref().err().map(|f| f.code),
         }));
         written

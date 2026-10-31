@@ -45,6 +45,7 @@ fn row(n: u64) -> NewEvent {
         instance: Some("ins_feed".into()),
         event: None,
         table: Some("feed".into()),
+        op: None,
         payload: json!({"id": n.to_string()}),
         key: Some(n.to_string()),
         cause: None,

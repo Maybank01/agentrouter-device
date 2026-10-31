@@ -276,6 +276,16 @@ a line that is not a well-formed event (not JSON, a bad name, a payload that is 
 one `[agentrouter] event not sent: <why>` line after it in the same output, and an outbox refusal goes to the `host`
 server's log. A job without `events` raises nothing, whatever it prints.
 
+**A space runtime's calls of its space's ops** (Cloud #3675, RPS pilot #3641 finding 5). The same job calls one of its
+space's declared ops (a Helper such as `record_match`: writes a table and raises the event the op declares, which a
+plain event line may not raise) by printing `::agentrouter-op::` followed by `{"op": "<declared op>", "args": {…},
+"key"?: "<text>"}`. It goes the same way as an event line: the notification carries `op` (and the args as `payload`)
+instead of `event`, the outbox entry is a call of that op (an audit line `kind: op`), and the platform runs it through
+its one op execution path as the space's runtime, only for the space whose runtime instance runs on this link; `key`
+makes a line printed again one call. A malformed op line gets `[agentrouter] op call not sent: <why>`. What the op did
+(its row, its events, a refusal) is in the space: its `op_log` table and log, and a refusal reaches the conversation
+running the instance.
+
 That is the entire custom surface. Everything else is MCP: `initialize`,
 `notifications/initialized`, `tools/list`, `tools/call`, `notifications/tools/list_changed`,
 `notifications/cancelled`, `notifications/progress`, `ping`.
