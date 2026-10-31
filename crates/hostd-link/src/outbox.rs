@@ -60,6 +60,23 @@ pub struct NewEvent {
     pub cause: Option<String>,
 }
 
+/// A line this host refused to send for a space, told to the platform so the conversation that started its job hears why
+/// (Cloud #3691): an `::agentrouter-event::` / `::agentrouter-op::` line printed by a job that is not a space's runtime
+/// instance. It names no space and writes nothing into one; the platform only tells the conversation `tag` names.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LineRefusal {
+    /// Why it was not sent (a catalog code, `EVENT_LINE_NOT_RUNTIME`).
+    pub code: String,
+    /// The job's tag: the conversation that started it (`ags_…`).
+    pub tag: String,
+    /// The event the line names, when it names one.
+    pub event: Option<String>,
+    /// The op the line names, when it names one.
+    pub op: Option<String>,
+    /// `{job, command, line}`: which job, the head of its command and of the line.
+    pub payload: Value,
+}
+
 /// Why an event was not accepted; `code` is a catalog code.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal {
@@ -258,6 +275,56 @@ impl Outbox {
     /// The event id of an entry.
     pub fn event_id(&self, seq: u64) -> String {
         format!("{}:{seq}", self.producer)
+    }
+
+    /// Writes one line refusal (Cloud #3691) to be told to the conversation that started the job; its seq once it is on
+    /// disk. No space is named and nothing is written into one: the platform acknowledges it and tells `tag`.
+    pub fn append_refusal(&self, r: &LineRefusal) -> Result<u64, Refusal> {
+        let invalid = |message: String| Refusal {
+            code: "EVENT_INVALID",
+            message,
+        };
+        let code_ok = (3..=64).contains(&r.code.len())
+            && r.code.starts_with(|c: char| c.is_ascii_uppercase())
+            && r.code
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+        if !code_ok {
+            return Err(invalid(format!(
+                "a line refusal's code is a catalog code (A-Z, 0-9, _), not {:?}",
+                r.code
+            )));
+        }
+        if !text_ok(&r.tag, 200) {
+            return Err(invalid(
+                "a line refusal names the job's tag (1 to 200 characters)".into(),
+            ));
+        }
+        if r.event.as_deref().is_some_and(|e| !valid_name(e))
+            || r.op.as_deref().is_some_and(|o| !valid_op(o))
+        {
+            return Err(invalid(
+                "a line refusal's event or op is a valid name, or absent".into(),
+            ));
+        }
+        if !r.payload.is_object() || r.payload.to_string().len() > PAYLOAD_MAX {
+            return Err(invalid(format!(
+                "a line refusal's payload is an object of at most {PAYLOAD_MAX} bytes"
+            )));
+        }
+        let mut item =
+            json!({"refused": r.code, "tag": r.tag, "payload": r.payload, "at": now_ms()});
+        if let Some(e) = &r.event {
+            item["event"] = json!(e);
+        }
+        if let Some(o) = &r.op {
+            item["op"] = json!(o);
+        }
+        let mut db = self.db.lock().unwrap();
+        let seq = self.insert(&mut db, &item.to_string())?;
+        drop(db);
+        self.wake.notify_one();
+        Ok(seq)
     }
 
     /// Writes one event; returns its seq once it is on disk. Refuses an event the platform could never take

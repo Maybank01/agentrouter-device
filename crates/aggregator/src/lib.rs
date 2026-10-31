@@ -1349,6 +1349,29 @@ impl Inner {
                 .filter(|v| !v.is_empty())
                 .map(str::to_string)
         };
+        // A line the host did not send (Cloud #3691: a job that is not a space's runtime printed it): told to the
+        // conversation that started the job, never written into a space.
+        if let Some(code) = text("refused") {
+            let Some(sink) = self.hooks.events() else {
+                return Err(Failure::new(
+                    "OUTBOX_UNAVAILABLE",
+                    format!("{code}: this host has no outbox (it could not be opened)"),
+                ));
+            };
+            let r = feeds::LineRefusal {
+                code,
+                tag: text("tag").unwrap_or_default(),
+                event: text("event"),
+                op: text("op"),
+                payload: params.get("payload").cloned().unwrap_or_else(|| json!({})),
+            };
+            let written = sink.append_refusal(&r);
+            self.record(json!({
+                "kind": "line_refused", "code": r.code, "tag": r.tag, "event": r.event, "op": r.op,
+                "seq": written.as_ref().ok(), "refused": written.as_ref().err().map(|f| f.code),
+            }));
+            return written;
+        }
         // An op line (Cloud #3675) names the op it calls instead of an event.
         let op = text("op");
         let (Some(space), Some(instance), Some(event)) = (

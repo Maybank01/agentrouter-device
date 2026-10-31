@@ -274,7 +274,7 @@ The platform accepts it only for the space whose runtime instance runs on this l
 payload (Cloud PROJECT-SERVICE §9.8.2); `key` makes a line printed again one event. The line stays in the job's output;
 a line that is not a well-formed event (not JSON, a bad name, a payload that is not an object, longer than 64 KiB) gets
 one `[agentrouter] event not sent: <why>` line after it in the same output, and an outbox refusal goes to the `host`
-server's log. A job without `events` raises nothing, whatever it prints.
+server's log. A job without `events` raises nothing, whatever it prints (see "Only a runtime's lines are read" below).
 
 **A space runtime's calls of its space's ops** (Cloud #3675, RPS pilot #3641 finding 5). The same job calls one of its
 space's declared ops (a Helper such as `record_match`: writes a table and raises the event the op declares, which a
@@ -285,6 +285,18 @@ its one op execution path as the space's runtime, only for the space whose runti
 makes a line printed again one call. A malformed op line gets `[agentrouter] op call not sent: <why>`. What the op did
 (its row, its events, a refusal) is in the space: its `op_log` table and log, and a refusal reaches the conversation
 running the instance.
+
+**Only a runtime's lines are read** (Cloud #3691, RPS pilot #3641). A space's events and op calls come only from its
+writers: its ops, its connections and its runtime instance, which the platform records, leases and follows (and whose
+`runtime.started` precedes its events). A job started without `events` (a command a conversation ran, a server it
+started by hand) is none of these, so its `::agentrouter-event::` / `::agentrouter-op::` lines raise nothing — but
+never silently: each stays in the output followed by one `[agentrouter] event not sent: <job> is not a space's runtime
+instance (it was not started by env_run), …` (or `op call not sent: …`) line naming what it printed and how to start the
+program as the space's runtime (`env_run { space }`; for an op also `space_op`). Once per job and kind of line, when the
+job has a `tag` (the platform tags each job with the conversation that started it), the `host` server also sends the
+notification with `{refused: "EVENT_LINE_NOT_RUNTIME", tag, event | op, payload: {job, command, line}}` (no space, no
+instance); the aggregator writes it into the outbox as a line refusal (an audit line `kind: line_refused`), and the
+platform tells that conversation (`instance.event_refused`) and writes it into no space.
 
 That is the entire custom surface. Everything else is MCP: `initialize`,
 `notifications/initialized`, `tools/list`, `tools/call`, `notifications/tools/list_changed`,

@@ -27,6 +27,15 @@
 //! [`EVENT_METHOD`] with `op` instead of `event`, the host's outbox); the platform runs it through its one op path as
 //! the space's runtime, only for the space whose runtime instance runs on this link. An event an op raises is written
 //! only by that op, so a runtime that wants it calls the op.
+//!
+//! **Only a runtime's lines are read** (Cloud #3691, RPS pilot #3641): a job started without `events` (a command a
+//! conversation ran by hand, a server it started itself) is not a space's runtime instance, so its event and op lines
+//! raise nothing — the space's writers are its ops, its connections and its runtime instance, which the platform
+//! records, leases and follows. Such a line is never silent: it stays in the output followed by one
+//! `[agentrouter] event not sent: …` / `op call not sent: …` line saying so and how to start the program as the
+//! space's runtime (`env_run { space }`), and — once per job and kind of line, when the job has a tag (Cloud: the
+//! conversation that started it) — a refusal goes through the host's outbox ([`EVENT_METHOD`] with `refused`), which
+//! the platform tells that conversation and writes into no space.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -68,6 +77,8 @@ const OP_NOTE: &str = "op call: ";
 /// The notification the `host` server sends the aggregator for each event or op line (only the built-in `host` server's
 /// are taken).
 pub const EVENT_METHOD: &str = "notifications/agentrouter/event";
+/// Why a line of a job that is not a space's runtime is not sent (Cloud #3691), as the platform is told it.
+pub const NOT_RUNTIME: &str = "EVENT_LINE_NOT_RUNTIME";
 /// An event line longer than this is not sent (the outbox takes payloads ≤ 32 KiB).
 const EVENT_LINE_MAX: usize = 64 << 10;
 
@@ -248,6 +259,8 @@ pub(super) struct Job {
     lease: Option<Value>,
     /// Where its event lines go (`events`): the space and instance they are raised for, and the server's notifier.
     events: Option<Arc<EventsTo>>,
+    /// A job without `events` (Cloud #3691): where the refusal of its event / op lines is told, and which kinds were.
+    not_runtime: Option<Arc<NotRuntime>>,
     cwd: PathBuf,
     pid: u32,
     started: Instant,
@@ -350,6 +363,80 @@ pub(super) struct EventsTo {
     space: String,
     instance: String,
     notify: super::Notify,
+}
+
+/// A job that is not a space's runtime (no `events`, Cloud #3691): its notifier, and whether its first event line and
+/// its first op line were already told (each once per job, so a program that prints one every tick is told once).
+pub(super) struct NotRuntime {
+    notify: super::Notify,
+    told: Mutex<[bool; 2]>,
+}
+
+/// The note after an event or op line of a job that is not a space's runtime (Cloud #3691), and the refusal's params
+/// for the platform the first time (`None` after that, or when the job has no tag).
+pub(super) fn not_runtime(
+    line: &str,
+    job: &str,
+    tag: Option<&str>,
+    command: &str,
+    told: &mut [bool; 2],
+) -> Option<(String, Option<Value>)> {
+    let (op, body) = match (line.strip_prefix(OP_LINE), line.strip_prefix(EVENT_LINE)) {
+        (Some(body), _) => (true, body),
+        (None, Some(body)) => (false, body),
+        _ => return None,
+    };
+    let field = if op { "op" } else { "event" };
+    let parsed: Option<Value> = serde_json::from_str(body.trim()).ok();
+    let name = parsed
+        .as_ref()
+        .and_then(|v| v.get(field))
+        .and_then(Value::as_str)
+        .filter(|n| if op { op_name_ok(n) } else { event_name_ok(n) })
+        .map(str::to_string);
+    let what = match (&name, op) {
+        (Some(n), true) => format!("its call of op {n}"),
+        (Some(n), false) => format!("its event {n}"),
+        (None, true) => "its op line".into(),
+        (None, false) => "its event line".into(),
+    };
+    let note = format!(
+        "[agentrouter] {} not sent: {job} is not a space's runtime instance (it was not started by env_run), so {what} \
+         reaches no space: only the space's runtime instance's {} lines are read. Start the program as the space's \
+         runtime with env_run {{ space: \"<wrk_…>\" }} (it runs the runtime the space declares, whose lines are \
+         recorded){}\n",
+        if op { "op call" } else { "event" },
+        if op { OP_LINE } else { EVENT_LINE },
+        if op {
+            ", or call the op yourself with space_op"
+        } else {
+            ""
+        },
+    );
+    let i = usize::from(op);
+    let tell = match tag {
+        Some(tag) if !told[i] => {
+            told[i] = true;
+            Some(json!({
+                "refused": NOT_RUNTIME, "tag": tag, field: name,
+                "payload": {"job": job, "command": utf8_cut(command, 400), "line": utf8_cut(line, 400)},
+            }))
+        }
+        _ => None,
+    };
+    Some((note, tell))
+}
+
+/// At most `max` bytes of `text`, cut at a character boundary.
+fn utf8_cut(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
 }
 
 /// One stream's unfinished line, for event lines: the bytes since the last newline, or "skipping" a line that grew
@@ -557,6 +644,28 @@ fn pump(job: &Arc<Job>, stream: impl std::io::Read + Send + 'static, i: usize) {
                                 job.state.lock().unwrap().out[i].push(note.as_bytes());
                             }
                         }
+                    } else if let Some(nr) = &job.not_runtime {
+                        // Not a runtime (Cloud #3691): its event / op lines are said to be refused, never silent.
+                        for line in lines.feed(&buf[..n]).into_iter().flatten() {
+                            let text = String::from_utf8_lossy(&line);
+                            let found = {
+                                let mut told = nr.told.lock().unwrap();
+                                not_runtime(
+                                    &text,
+                                    &job.id,
+                                    job.tag.as_deref(),
+                                    &job.command,
+                                    &mut told,
+                                )
+                            };
+                            let Some((note, tell)) = found else { continue };
+                            job.state.lock().unwrap().out[i].push(note.as_bytes());
+                            if let Some(params) = tell {
+                                (nr.notify)(
+                                    &json!({"jsonrpc": "2.0", "method": EVENT_METHOD, "params": params}),
+                                );
+                            }
+                        }
                     }
                     job.changed.notify_all();
                 }
@@ -635,6 +744,12 @@ impl Host {
                 .filter(|t| !t.is_empty() && t.len() <= TAG_MAX)
                 .map(str::to_string),
             lease,
+            not_runtime: events.is_none().then(|| {
+                Arc::new(NotRuntime {
+                    notify: call.notify.clone(),
+                    told: Mutex::new([false; 2]),
+                })
+            }),
             events,
             cwd: cwd.clone(),
             pid: spawned.child.id(),
@@ -1140,7 +1255,8 @@ mod tests {
         } else {
             format!("echo '{}'", lines[1])
         };
-        host.job_start(&json!({"command": plain, "wait_ms": 20_000}), &call)
+        let untagged = host
+            .job_start(&json!({"command": plain, "wait_ms": 20_000}), &call)
             .unwrap();
         assert!(
             sent.lock()
@@ -1148,6 +1264,73 @@ mod tests {
                 .iter()
                 .all(|v| v["method"] != EVENT_METHOD)
         );
+        // Cloud #3691: never silent — the line is followed by why it reached no space and how to run it as the runtime.
+        let said = untagged["stdout"]["data"].as_str().unwrap_or("");
+        assert!(
+            said.contains("[agentrouter] event not sent: job-")
+                && said.contains("is not a space's runtime instance")
+                && said.contains("its event round.result")
+                && said.contains("env_run"),
+            "{said}"
+        );
+        // With a tag (the conversation that started it), the platform is told once per job and kind of line.
+        let again = [lines[1], lines[1], lines[4], lines[4]];
+        let tagged_cmd = if cfg!(windows) {
+            again
+                .iter()
+                .map(|l| format!("Write-Output '{l}'"))
+                .collect::<Vec<_>>()
+                .join("; ")
+        } else {
+            again
+                .iter()
+                .map(|l| format!("echo '{l}'"))
+                .collect::<Vec<_>>()
+                .join("; ")
+        };
+        let tagged = host
+            .job_start(
+                &json!({"command": tagged_cmd, "wait_ms": 20_000, "tag": "ags_x1"}),
+                &call,
+            )
+            .unwrap();
+        let out = tagged["stdout"]["data"].as_str().unwrap_or("");
+        assert_eq!(
+            out.matches("[agentrouter] event not sent:").count(),
+            2,
+            "{out}"
+        );
+        assert_eq!(
+            out.matches("[agentrouter] op call not sent:").count(),
+            2,
+            "{out}"
+        );
+        assert!(out.contains("space_op"), "{out}");
+        let told: Vec<Value> = sent
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|v| v["method"] == EVENT_METHOD)
+            .map(|v| v["params"].clone())
+            .collect();
+        assert_eq!(told.len(), 2, "{told:?}");
+        assert_eq!(told[0]["refused"], NOT_RUNTIME);
+        assert_eq!(told[0]["tag"], "ags_x1");
+        assert_eq!(told[0]["event"], "round.result");
+        assert!(told[0].get("space").is_none() && told[0].get("instance").is_none());
+        assert!(
+            told[0]["payload"]["job"]
+                .as_str()
+                .unwrap()
+                .starts_with("job-")
+        );
+        assert!(
+            told[0]["payload"]["line"]
+                .as_str()
+                .unwrap()
+                .starts_with(EVENT_LINE)
+        );
+        assert_eq!(told[1]["op"], "record_match");
         let refused = host.job_start(
             &json!({"command": plain, "events": {"space": "wrk_ab"}}),
             &call,

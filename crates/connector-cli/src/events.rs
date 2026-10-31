@@ -73,6 +73,22 @@ impl agentrouter_aggregator::feeds::EventSink for OutboxSink {
             .map_err(|r| agentrouter_aggregator::Failure::new(r.code, r.message))
     }
 
+    fn append_refusal(
+        &self,
+        r: &agentrouter_aggregator::feeds::LineRefusal,
+    ) -> Result<u64, agentrouter_aggregator::Failure> {
+        let refusal = agentrouter_hostd_link::outbox::LineRefusal {
+            code: r.code.clone(),
+            tag: r.tag.clone(),
+            event: r.event.clone(),
+            op: r.op.clone(),
+            payload: r.payload.clone(),
+        };
+        self.0
+            .append_refusal(&refusal)
+            .map_err(|f| agentrouter_aggregator::Failure::new(f.code, f.message))
+    }
+
     fn nearly_full(&self) -> bool {
         self.0.nearly_full()
     }
