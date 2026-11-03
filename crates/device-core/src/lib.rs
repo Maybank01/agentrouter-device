@@ -1,26 +1,17 @@
 //! AgentRouter device core: what the console mode keeps from the device side — pairing and the token
 //! (`net`, `link`, `keystore`), the protocol primitives, the argument-level audit, pinned MCP packages
 //! (`mcp_pkg`), config and helpers. The link is `agentrouter-hostd-link`, the MCP endpoint `agentrouter-aggregator`
-//! (docs/HOSTD-MCP.md). `exec`, `shell`, `confine`/`confined`, `consent`, `deploy`, `workspace`, `worktree`,
-//! `gate`, `lockfile` and `local_agent` stay only for `agentrouter mcp-serve local` (local Agents, pending the
-//! communication design, HOSTD-MCP §4).
+//! (docs/HOSTD-MCP.md). `exec` and `shell` run the host server's commands and terminals.
 
 pub mod audit;
 pub mod capacity;
 pub mod command_text;
 pub mod config;
-pub mod confine;
-#[cfg(windows)]
-pub mod confined;
-pub mod consent;
-pub mod deploy;
 pub mod errors;
 pub mod exec;
-pub mod gate;
 pub mod keystore;
 pub mod limits;
 pub mod link;
-pub mod local_agent;
 pub mod local_data;
 pub mod local_secrets;
 pub mod lockfile;
@@ -32,5 +23,3 @@ pub mod shell;
 pub mod shell_env;
 pub mod software;
 pub mod util;
-pub mod workspace;
-pub mod worktree;

@@ -1,7 +1,6 @@
-//! What the person chose on this device (access level, folders, gateway, pause). Not secret:
+//! What the person chose on this device (gateway, name, start folder, labels, limits, software, local data). Not secret:
 //! the device key and the pinned control key live in the key store (DPAPI on Windows).
 
-use std::fmt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -36,101 +35,11 @@ pub fn gateway_for(flag: Option<&str>, env: Option<&str>, saved: &str) -> (Strin
     }
 }
 
-/// The access level of the old device chain. Console mode has none (the folder and `--read-only` are the boundary);
-/// only `agentrouter mcp-serve local` still reads it (deploy targets at `full`), pending its design (HOSTD-MCP §4).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum Access {
-    /// Read files in the chosen folders; no commands, no writes.
-    #[default]
-    Readonly,
-    /// Read, write and run commands in the chosen folders without asking (the coding default, owner
-    /// decision 2026-10-10); commands that clearly act outside them are refused, checkpoints allow undo.
-    Folders,
-    /// Like `folders`, and every file write is confirmed too.
-    Confirm,
-    /// Like giving the AI an ssh account: nothing is blocked, everything is recorded.
-    Full,
-}
-
-impl Access {
-    pub const ALL: [Access; 4] = [
-        Access::Readonly,
-        Access::Folders,
-        Access::Confirm,
-        Access::Full,
-    ];
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Access::Readonly => "readonly",
-            Access::Folders => "folders",
-            Access::Confirm => "confirm",
-            Access::Full => "full",
-        }
-    }
-
-    pub fn parse(text: &str) -> Option<Access> {
-        match text.trim().to_ascii_lowercase().as_str() {
-            "readonly" | "read-only" | "read" => Some(Access::Readonly),
-            "folders" | "folder" | "workspace" => Some(Access::Folders),
-            "confirm" => Some(Access::Confirm),
-            "full" => Some(Access::Full),
-            _ => None,
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Access::Readonly => "只读",
-            Access::Folders => "只限这些文件夹",
-            Access::Confirm => "每条都确认",
-            Access::Full => "完全访问",
-        }
-    }
-
-    /// What the level lets a cloud conversation do, for the consent dialogs and the README.
-    pub fn explain(self) -> &'static str {
-        match self {
-            Access::Readonly => {
-                "AI 可以：读取你选的文件夹里的文件。\nAI 不能：运行命令、修改或删除文件、碰这些文件夹以外的任何东西。"
-            }
-            Access::Folders => {
-                "AI 可以：在你链接的文件夹里读写文件、运行命令，不用每次问你；每轮改动之前自动打检查点，可以用 agentrouter undo 撤销。\nAI 不能：读写这些文件夹以外的文件；明显越界的命令（改系统、碰密码和密钥、提权、全局安装）会被直接拦下，确实需要时单独问你一次。"
-            }
-            Access::Confirm => {
-                "AI 可以：读取你选的文件夹里的文件；每条命令、每次写文件都先在这台电脑上弹窗问你。\nAI 不能：不经你同意做任何改动、碰这些文件夹以外的文件。"
-            }
-            Access::Full => {
-                "AI 可以：像有了这台电脑的 ssh 账号一样，运行任何命令、读写任何你能读写的文件。所有操作都记在本机审计日志和网页控制台里。\n请只在信任这个对话时使用。"
-            }
-        }
-    }
-
-    pub fn needs_folders(self) -> bool {
-        self != Access::Full
-    }
-}
-
-impl fmt::Display for Access {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub gateway: String,
     pub name: String,
-    pub access: Access,
-    pub folders: Vec<String>,
-    /// Unattended (servers, CI): the machine's operator approved commands up front, at link time, on
-    /// this machine. Nothing is asked at run time; everything is still audited.
-    pub unattended: bool,
-    /// Nobody sits at this machine (CI, headless test runs): a local question answers "no" at once
-    /// instead of opening a dialog. Only this local file sets it; it can never approve anything.
-    pub headless: bool,
     /// The folder the double-click start links (chosen once in the folder picker, then reused; `start.rs`).
     pub start_folder: Option<String>,
     /// The owner's labels for this host (`gpu`, `rack-2`, 「我的渲染机」), reported with its capacity (`capacity.rs`).
@@ -159,10 +68,6 @@ impl Default for Config {
         Self {
             gateway: DEFAULT_GATEWAY.to_string(),
             name: crate::util::host_name(),
-            access: Access::default(),
-            folders: Vec::new(),
-            unattended: false,
-            headless: false,
             start_folder: None,
             labels: Vec::new(),
             max_environments: None,
@@ -247,17 +152,6 @@ mod tests {
         assert_eq!(with(&"x".repeat(41)).pool_name(), None);
         let parsed: Config = serde_json::from_str(r#"{"pool": "rack-2"}"#).unwrap();
         assert_eq!(parsed.pool_name().as_deref(), Some("rack-2"));
-    }
-
-    #[test]
-    fn access_round_trip() {
-        for a in Access::ALL {
-            assert_eq!(Access::parse(a.as_str()), Some(a));
-            let json = serde_json::to_string(&a).unwrap();
-            assert_eq!(json, format!("\"{}\"", a.as_str()));
-        }
-        assert_eq!(Access::parse("Read-Only"), Some(Access::Readonly));
-        assert_eq!(Access::parse("root"), None);
     }
 
     #[test]

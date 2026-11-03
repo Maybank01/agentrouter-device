@@ -22,7 +22,7 @@ a hundred times).
 | Path | Type | Module | What | Last verified |
 | --- | --- | --- | --- | --- |
 | [README.md](../README.md) | entry | all | the device connector for people (zh) and for developers: crates, CI, local checks | 2026-11-03 |
-| [SECURITY.md](../SECURITY.md) | entry | all | security policy and reporting | 2026-10-11 |
+| [SECURITY.md](../SECURITY.md) | entry | all | security policy and reporting; design points of the current chain | 2026-11-03 |
 | [docs/README.md](README.md) | index | all | this map | 2026-11-03 |
 | [docs/ARCHIVE.md](ARCHIVE.md) | index | all | docs removed or moved and how to recover them | 2026-11-03 |
 | [docs/HOSTD-MCP.md](HOSTD-MCP.md) | protocol | hostd-link, aggregator, sandbox, connector-cli | `hostd` + MCP aggregation: link protocol, host tools, sandbox, placements | 2026-11-03 |

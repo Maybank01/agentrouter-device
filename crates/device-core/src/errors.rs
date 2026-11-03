@@ -6,23 +6,21 @@
 
 /// The arguments of a call are not what the tool takes; the message names the argument and what it must be.
 pub const HOSTD_ARGS_INVALID: &str = "HOSTD_ARGS_INVALID";
-/// The write boundary (Windows integrity label) could not be set, so the command did not run.
-pub const HOSTD_BOUNDARY_FAILED: &str = "HOSTD_BOUNDARY_FAILED";
 /// A fault on this computer (a file could not be written, …); retrying will not help.
 pub const HOSTD_FAULT: &str = "HOSTD_FAULT";
-
-/// The source the pinned catalog copy was taken from (`agentrouter-cloud@<commit>`).
-pub fn catalog_source() -> String {
-    let catalog: serde_json::Value =
-        serde_json::from_str(include_str!("error-catalog.json")).unwrap_or_default();
-    catalog["source"].as_str().unwrap_or("").to_string()
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
     use std::path::{Path, PathBuf};
+
+    /// The source the pinned catalog copy was taken from (`agentrouter-cloud@<commit>`).
+    fn catalog_source() -> String {
+        let catalog: serde_json::Value =
+            serde_json::from_str(include_str!("error-catalog.json")).unwrap_or_default();
+        catalog["source"].as_str().unwrap_or("").to_string()
+    }
 
     fn catalog_codes() -> BTreeSet<String> {
         let catalog: serde_json::Value =
@@ -43,44 +41,34 @@ mod tests {
     #[test]
     fn every_code_is_in_the_pinned_catalog() {
         let codes = catalog_codes();
-        for code in [HOSTD_ARGS_INVALID, HOSTD_BOUNDARY_FAILED, HOSTD_FAULT] {
+        for code in [HOSTD_ARGS_INVALID, HOSTD_FAULT] {
             assert!(codes.contains(code), "{code} is not in the pinned catalog");
         }
         assert!(catalog_source().starts_with("agentrouter-cloud@"));
     }
 
     /// Upper-case literals in the crates that are not error codes: environment variable names, git refs, Windows
-    /// names, Node's module error codes and npm's integrity code we read, and the audit label of an MCP error that carried no code.
+    /// names, npm's integrity code we read, and the audit label of an MCP error that carried no code.
     const NOT_CODES: &[&str] = &[
-        "APPDATA",
-        "BUN_INSTALL_CACHE_DIR",
         "CI",
         "CLAUDE_CODE_TMPDIR",
         "COMMIT", // SQL (hostd-link outbox transaction)
         "COMPUTERNAME",
-        "COREPACK_HOME",
         "CSV",
-        "DENO_DIR",
         "DISPLAY", // env var (capacity.rs display probe)
         "EINTEGRITY",
         "ERROR",
-        "ERR_MODULE_NOT_FOUND",
-        "GOCACHE",
-        "GOMODCACHE",
         "HEAD",
         "HOME",
         "HOSTNAME",
         "LC_ALL",
         "LOCALAPPDATA",
         "MAVEN_ARGS",
-        "MODULE_NOT_FOUND",
         "NPM_CONFIG_USERCONFIG",
-        "NUGET_PACKAGES",
         "NUL",
         "OLDPWD",
         "OUT_DIR",
         "PATH",
-        "POETRY_CACHE_DIR",
         "PWD",
         "PYTHONIOENCODING",
         "PYTHONUTF8",
@@ -93,22 +81,13 @@ mod tests {
         "TERM",
         "TMP",
         "TMPDIR",
-        "USERDOMAIN",
         "USERNAME",
         "USERPROFILE",
         "WAYLAND_DISPLAY",
         "ZDOTDIR",
     ];
     /// Families of environment variable names.
-    const NOT_CODE_PREFIXES: &[&str] = &[
-        "AGENTROUTER_",
-        "CARGO_",
-        "GIT_",
-        "PIP_",
-        "UV_",
-        "XDG_",
-        "YARN_",
-    ];
+    const NOT_CODE_PREFIXES: &[&str] = &["AGENTROUTER_", "CARGO_", "GIT_", "PIP_", "UV_", "XDG_"];
 
     fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
         for entry in std::fs::read_dir(dir).unwrap().flatten() {

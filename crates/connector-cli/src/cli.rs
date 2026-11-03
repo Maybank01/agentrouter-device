@@ -1,6 +1,5 @@
-//! `agentrouter` (also installed as `agentrouter-device`): console mode. Run `agentrouter link` in any folder and
+//! `agentrouter`: console mode. Run `agentrouter link` in any folder and
 //! the cloud Agent works in that folder for as long as the command runs (docs/HOSTD-MCP.md §8; `console.rs`).
-//! `agentrouter mcp-serve local` (main.rs) is the local-Agent entry, kept pending its own design (HOSTD-MCP §4).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 

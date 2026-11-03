@@ -1,5 +1,5 @@
-//! A small cross-process advisory lock (a lock file), used to serialize work on one project between
-//! local Agent sessions and to let the audit log be appended by more than one device process.
+//! A small cross-process advisory lock (a lock file), so the audit log can be appended by more than one device
+//! process (`audit.rs`).
 //!
 //! Windows: the lock file is opened without sharing, so a second opener gets
 //! `ERROR_SHARING_VIOLATION`; closing the handle releases it. Unix: `flock(LOCK_EX | LOCK_NB)`.
@@ -7,8 +7,6 @@
 
 use std::path::Path;
 use std::time::{Duration, Instant};
-
-use crate::protocol::DeviceError;
 
 #[derive(Debug)]
 pub struct FileLock {
@@ -20,11 +18,11 @@ pub struct FileLock {
     file: std::fs::File,
 }
 
-/// Wait up to `timeout` for the exclusive lock on `path`; `LOCAL_SESSION_BUSY` on timeout.
-pub fn acquire(path: &Path, timeout: Duration) -> Result<FileLock, DeviceError> {
+/// Wait up to `timeout` for the exclusive lock on `path`; the error says why it was not taken.
+pub fn acquire(path: &Path, timeout: Duration) -> Result<FileLock, String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)
-            .map_err(|e| DeviceError::new("LOCAL_SESSION_BUSY", format!("建不了锁目录：{e}")))?;
+            .map_err(|e| format!("lock folder {} could not be created: {e}", dir.display()))?;
     }
     let deadline = Instant::now() + timeout;
     loop {
@@ -32,21 +30,16 @@ pub fn acquire(path: &Path, timeout: Duration) -> Result<FileLock, DeviceError> 
             Ok(Some(lock)) => return Ok(lock),
             Ok(None) => {
                 if Instant::now() >= deadline {
-                    return Err(DeviceError::new(
-                        "LOCAL_SESSION_BUSY",
-                        "另一个本地会话正在这个项目里执行命令",
-                    )
-                    .next(
-                        "等了一会儿仍被占用：稍后再试，或让两个本地会话错开执行；不会打断已经开始的命令。",
+                    return Err(format!(
+                        "lock {} still held by another process after {} ms",
+                        path.display(),
+                        timeout.as_millis()
                     ));
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
             Err(e) => {
-                return Err(DeviceError::new(
-                    "LOCAL_SESSION_BUSY",
-                    format!("拿不到项目锁：{e}"),
-                ));
+                return Err(format!("lock {} could not be taken: {e}", path.display()));
             }
         }
     }
@@ -130,7 +123,7 @@ mod tests {
         let path = tmp("held");
         let held = acquire(&path, Duration::from_millis(50)).unwrap();
         let busy = acquire(&path, Duration::from_millis(100)).unwrap_err();
-        assert_eq!(busy.code, "LOCAL_SESSION_BUSY", "{busy:?}");
+        assert!(busy.contains("still held"), "{busy}");
         drop(held);
         acquire(&path, Duration::from_millis(500)).unwrap();
     }

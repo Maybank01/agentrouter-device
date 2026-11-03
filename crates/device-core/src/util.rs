@@ -73,8 +73,9 @@ pub fn random_bytes<const N: usize>() -> [u8; N] {
     out
 }
 
-/// A short random id with a prefix (`job_k3x9q2m1`).
-pub fn short_id(prefix: &str) -> String {
+/// A short random id with a prefix (`job_k3x9q2m1`), for test scratch names.
+#[cfg(test)]
+pub(crate) fn short_id(prefix: &str) -> String {
     const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
     let bytes = random_bytes::<10>();
     let tail: String = bytes
@@ -203,15 +204,16 @@ pub fn clip(text: &str, max: usize) -> String {
     format!("{head}…（共 {count} 字）")
 }
 
-static APP_KIND: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
-
-/// Which client this is ("desktop" or "cli"), reported in `hello` beside the version. Set once at start.
-pub fn set_app_kind(kind: &'static str) {
-    let _ = APP_KIND.set(kind);
-}
-
-pub fn app_kind() -> &'static str {
-    APP_KIND.get().copied().unwrap_or("cli")
+/// A path as people write it (`C:\Users\me`, not `\\?\C:\Users\me`).
+pub fn display(path: &std::path::Path) -> String {
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\") {
+        let b = rest.as_bytes();
+        if b.len() >= 2 && b[1] == b':' && b[0].is_ascii_alphabetic() {
+            return rest.to_string();
+        }
+    }
+    text.into_owned()
 }
 
 /// `PSModulePath` for a child process that may start Windows PowerShell 5.1: PowerShell 7's

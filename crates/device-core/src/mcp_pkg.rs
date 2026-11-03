@@ -1,5 +1,5 @@
 //! Packages of local MCP servers (DEVICE-PROTOCOL.md §18.1–§18.3): pinned catalog packages are checked here before
-//! they run, a broken npx cache entry is cleared, and a server's own data folder is kept out of the person's git.
+//! they run, and a server's own data folder is kept out of the person's git.
 //!
 //! - Pinned packages: the cloud's catalog records each package's registry digest (npm `integrity`, PyPI wheel
 //!   sha256). The device never downloads a package itself (it talks only to its gateway, docs/development/AV-HYGIENE.md; the one
@@ -8,8 +8,6 @@
 //!   and `mcp_start` runs exactly that file (`{{package}}` in the arguments). A file that does not match is refused.
 //!   A preset that comes with its lock (Cloud #2740) is installed from the lock instead, every package checksummed
 //!   (`agentrouter_sandbox::locks`).
-//! - npx cache: an install killed midway (a crash, a stop during the first download) leaves `_npx/<hash>` half
-//!   written, and every later start fails on a missing module. The host clears only that entry and starts once more.
 //! - Keep-out folders: a server that keeps its data in the project (serena's `.serena`) gets the folder created with
 //!   a `.gitignore` of `*` first, so git never sees it; an existing folder is left as it is.
 
@@ -192,7 +190,7 @@ impl Packages {
         std::fs::create_dir_all(&self.dir).map_err(|e| {
             error(
                 crate::errors::HOSTD_FAULT,
-                format!("没能建好包目录 {}：{e}", crate::gate::display(&self.dir)),
+                format!("没能建好包目录 {}：{e}", crate::util::display(&self.dir)),
             )
         })?;
         let path = self.dir.join(&pin.file);
@@ -203,7 +201,7 @@ impl Packages {
                 let _ = std::fs::remove_file(&part);
                 error(
                     crate::errors::HOSTD_FAULT,
-                    format!("没能保存 {}：{e}", crate::gate::display(&path)),
+                    format!("没能保存 {}：{e}", crate::util::display(&path)),
                 )
             })?;
         Ok(serde_json::json!({"file": pin.file, "bytes": bytes.len(), "digest": pin.digest}))
@@ -228,129 +226,12 @@ impl Packages {
                 "pin 要配一个 {{package}} 参数",
             ));
         }
-        let file = crate::gate::display(&self.file(pin)?);
+        let file = crate::util::display(&self.file(pin)?);
         for a in args.iter_mut().filter(|a| *a == PACKAGE_ARG) {
             *a = file.clone();
         }
         Ok(())
     }
-}
-
-// ---- npx cache ----
-
-/// Lines that say a package's files are missing: a half-written install, not a bug of the server.
-const BROKEN_SIGNS: &[&str] = &[
-    "Cannot find module",
-    "MODULE_NOT_FOUND",
-    "ERR_MODULE_NOT_FOUND",
-    "could not determine executable to run",
-    "is not recognized as an internal or external command",
-];
-
-/// npm's cache folder: `npm_config_cache` (the server's environment, then ours), else npm's default.
-pub fn npm_cache(env: &[(String, String)]) -> Option<PathBuf> {
-    let from =
-        |k: &str, v: &str| k.eq_ignore_ascii_case("npm_config_cache") && !v.trim().is_empty();
-    if let Some((_, v)) = env.iter().find(|(k, v)| from(k, v)) {
-        return Some(PathBuf::from(v.trim()));
-    }
-    for (k, v) in std::env::vars() {
-        if from(&k, &v) {
-            return Some(PathBuf::from(v.trim()));
-        }
-    }
-    if cfg!(windows) {
-        std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("npm-cache"))
-    } else {
-        Some(crate::util::home_dir().join(".npm"))
-    }
-}
-
-/// The `_npx/<hash>` entry a log line names (`…\_npx\8c4e7a05d0d4c8f3\node_modules\…`).
-fn entry_in(line: &str) -> Option<(String, String)> {
-    let at = line.find("_npx")?;
-    let rest = &line[at + 4..];
-    let sep = rest.chars().next().filter(|c| *c == '\\' || *c == '/')?;
-    let hash: String = rest[1..]
-        .chars()
-        .take_while(|c| c.is_ascii_hexdigit())
-        .collect();
-    if !(8..=64).contains(&hash.len()) {
-        return None;
-    }
-    // The cache folder is what comes before `_npx` on that line (after the last space or quote).
-    let before = &line[..at];
-    let start = before
-        .rfind([' ', '\'', '"', '(', '\t'])
-        .map(|i| i + 1)
-        .unwrap_or(0);
-    let cache = before[start..].trim_end_matches(sep).to_string();
-    Some((cache, hash))
-}
-
-/// Whether an `_npx` entry is the one for this server: its manifest lists one of our package specs, or (an install
-/// cut before the manifest was written) its node_modules holds our package.
-fn entry_is_ours(entry: &Path, specs: &[String], package: &str) -> bool {
-    if let Ok(text) = std::fs::read_to_string(entry.join("package.json"))
-        && let Ok(manifest) = serde_json::from_str::<Value>(&text)
-    {
-        let listed = manifest
-            .pointer("/_npx/packages")
-            .and_then(Value::as_array)
-            .is_some_and(|l| {
-                l.iter()
-                    .filter_map(Value::as_str)
-                    .any(|p| specs.iter().any(|s| s == p))
-            });
-        let depends = !package.is_empty()
-            && manifest
-                .get("dependencies")
-                .and_then(Value::as_object)
-                .is_some_and(|d| d.contains_key(package));
-        return listed || depends;
-    }
-    !package.is_empty() && entry.join("node_modules").join(package).is_dir()
-}
-
-/// After an npx server failed to start: the broken `_npx/<hash>` entry of its package, if the log says files are
-/// missing. `log` is this start's output; `specs` the package arguments it was run with.
-pub fn broken_npx_entry(
-    log: &[String],
-    env: &[(String, String)],
-    specs: &[String],
-    package: &str,
-) -> Option<PathBuf> {
-    if !log
-        .iter()
-        .any(|l| BROKEN_SIGNS.iter().any(|sign| l.contains(sign)))
-    {
-        return None;
-    }
-    let cache = npm_cache(env);
-    // The entry the error names, when it is ours.
-    for line in log {
-        if let Some((dir, hash)) = entry_in(line) {
-            let base = if dir.is_empty() {
-                cache.clone()?
-            } else {
-                PathBuf::from(dir)
-            };
-            let entry = base.join("_npx").join(&hash);
-            if entry.is_dir() && entry_is_ours(&entry, specs, package) {
-                return Some(entry);
-            }
-        }
-    }
-    // Otherwise ours in the cache (a missing program names no path).
-    let root = cache?.join("_npx");
-    let mut found = std::fs::read_dir(&root)
-        .ok()?
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.is_dir() && entry_is_ours(p, specs, package));
-    let first = found.next()?;
-    // Two entries for one package: not sure which, leave both.
-    found.next().is_none().then_some(first)
 }
 
 // ---- keep-out folders ----
@@ -464,64 +345,6 @@ mod tests {
         );
         assert!(packages.apply(Some(&p), &mut ["x".to_string()]).is_err());
         assert!(packages.apply(None, &mut ["x".to_string()]).is_ok());
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn a_half_written_npx_entry_is_found_from_the_error_or_the_cache() {
-        let root = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join("test-mcp-npx");
-        let _ = std::fs::remove_dir_all(&root);
-        let cache = root.join("npm-cache");
-        let ours = cache.join("_npx").join("8c4e7a05d0d4c8f3");
-        let other = cache.join("_npx").join("0123456789abcdef");
-        std::fs::create_dir_all(ours.join("node_modules").join("@scope").join("srv")).unwrap();
-        std::fs::create_dir_all(other.join("node_modules").join("left-pad")).unwrap();
-        std::fs::write(
-            other.join("package.json"),
-            r#"{"dependencies":{"left-pad":"1"},"_npx":{"packages":["left-pad@1"]}}"#,
-        )
-        .unwrap();
-        let env = vec![("npm_config_cache".to_string(), cache.display().to_string())];
-        let specs = vec!["@scope/srv@1.0.0".to_string()];
-        // A crash without the signs of missing files: not a cache problem.
-        assert!(
-            broken_npx_entry(
-                &["TypeError: x is not a function".into()],
-                &env,
-                &specs,
-                "@scope/srv"
-            )
-            .is_none()
-        );
-        // Named in the error.
-        let line = format!(
-            "Error: Cannot find module '../helpers/x'\nRequire stack:\n- {}",
-            ours.join("node_modules").join("a.js").display()
-        );
-        assert_eq!(
-            broken_npx_entry(&[line], &env, &specs, "@scope/srv"),
-            Some(ours.clone())
-        );
-        // A missing program names no path: found by its package.
-        let missing =
-            vec!["'srv' is not recognized as an internal or external command,".to_string()];
-        assert_eq!(
-            broken_npx_entry(&missing, &env, &specs, "@scope/srv"),
-            Some(ours.clone())
-        );
-        // Never another package's entry.
-        let theirs = format!(
-            "Cannot find module 'x' {}",
-            other.join("node_modules").display()
-        );
-        assert_eq!(
-            broken_npx_entry(&[theirs], &env, &specs, "@scope/srv"),
-            Some(ours.clone())
-        );
-        assert!(broken_npx_entry(&missing, &env, &["nothing@1".into()], "nothing").is_none());
         let _ = std::fs::remove_dir_all(&root);
     }
 

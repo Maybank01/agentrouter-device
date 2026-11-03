@@ -12,11 +12,6 @@ build = "build.rs"
 name = "agentrouter"
 path = "src/main.rs"
 
-# The earlier name, same program.
-[[bin]]
-name = "agentrouter-device"
-path = "src/alias.rs"
-
 [dependencies]
 agentrouter-aggregator.workspace = true
 agentrouter-checkpoint.workspace = true
