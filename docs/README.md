@@ -11,7 +11,7 @@ its `Last verified: YYYY-MM-DD against <commit>` line or the map shows another d
 link in a mapped doc does not resolve (lychee, offline: repository files and `#fragments`). `node
 scripts/check-docs.mjs --stale` lists reference docs not verified for 30 days.
 
-Types: **entry** (root `README.md`, `SECURITY.md`), **index** (this map, ARCHIVE), **development**
+Types: **entry** (root `README.md`, `AGENTS.md`, `SECURITY.md`), **index** (this map, ARCHIVE), **development**
 (`docs/development/`, how to work here), **adr** (`docs/adr/NNNN-name.md`, dated decisions), **module** (a short README
 of a directory, at most 40 lines), **protocol** (this repository only: `docs/HOSTD-MCP.md`, the link protocol and
 `hostd` design; it keeps its path because Cloud code, docs and the vendored runner cite it and its section numbers over
@@ -22,6 +22,7 @@ a hundred times).
 | Path | Type | Module | What | Last verified |
 | --- | --- | --- | --- | --- |
 | [README.md](../README.md) | entry | all | the device connector for people (zh) and for developers: crates, CI, local checks | 2026-11-03 |
+| [AGENTS.md](../AGENTS.md) | entry | all | agent instructions: scope, checks, landing, release, open-source base | 2026-11-03 |
 | [SECURITY.md](../SECURITY.md) | entry | all | security policy and reporting; design points of the current chain | 2026-11-03 |
 | [docs/README.md](README.md) | index | all | this map | 2026-11-03 |
 | [docs/ARCHIVE.md](ARCHIVE.md) | index | all | docs removed or moved and how to recover them | 2026-11-03 |
