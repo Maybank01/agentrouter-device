@@ -1,0 +1,101 @@
+# Merge when green: a vendored copy of the shared workflow agentrouter-top/resident-ci
+# .github/workflows/merge-on-green.yml@workflows/v1.0.0 (agentrouter-cloud #3868). A public repository cannot call that
+# private reusable workflow, so the same steps live here (repository baseline G6, AgentDevice #216); keep them in step
+# with the shared file when it changes.
+#
+# Land a change: open the PR into main with the label `merge-on-green` and stop. It is merged once every required check
+# of the branch protection succeeded on the PR's current head commit. `Sandbox (Windows)` gates after the merge
+# (main-red.yml), as before.
+# - Never checks out PR code: it runs from main on workflow_run / pull_request_target / schedule; PRs from forks are
+#   never merged (isCrossRepository). Only people who can label a PR can start a merge.
+# - The label is the stop button: it is re-read live right before each merge. Off switch: remove the label, or
+#   `gh workflow disable merge-on-green`.
+# - `--match-head-commit`: a push after the checks ran is never merged on the older green.
+# - Merge token: the merge bot App (repository secrets MERGE_BOT_APP_ID, MERGE_BOT_APP_PRIVATE_KEY, App
+#   agentrouter-cloud-agent-dev), so the merge's push starts CI, hostd and the main-red guard on main. Without it the job
+#   fails instead of merging with GITHUB_TOKEN (whose push starts no workflow: main would go untested).
+# - A PR that changes .github/workflows cannot be merged by the App (no `workflows` permission): merge it by hand once
+#   the same checks are green. Gate red or a conflict: one comment per head commit; the label stays.
+name: merge-on-green
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+  pull_request_target:
+    types: [labeled]
+  # Backstop for a missed event.
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+  pull-requests: write
+  checks: read
+concurrency:
+  group: merge-on-green
+  cancel-in-progress: false
+jobs:
+  merge:
+    name: merge when green
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Merge bot App present?
+        env:
+          APP_ID: ${{ secrets.MERGE_BOT_APP_ID }}
+        run: |
+          if [ -z "$APP_ID" ]; then
+            echo "::error::merge-on-green: repository secret MERGE_BOT_APP_ID is missing, so nothing is merged (a GITHUB_TOKEN merge would start no CI on main). Set MERGE_BOT_APP_ID and MERGE_BOT_APP_PRIVATE_KEY (App agentrouter-cloud-agent-dev) with gh secret set -R agentrouter-top/AgentDevice."
+            exit 1
+          fi
+      - name: Merge bot App token (contents and pull requests)
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.MERGE_BOT_APP_ID }}
+          private-key: ${{ secrets.MERGE_BOT_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Merge labelled PRs whose required checks are green on their head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MERGE_TOKEN: ${{ steps.app.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+          BASE: main
+          # The branch protection's required checks (README.md "Development").
+          REQUIRED: "Linux (core + command line), Windows (command line + unsigned build), Sandbox (Linux), Sandbox (macOS)"
+          METHOD: squash
+        run: |
+          set -euo pipefail
+          prs=$(gh pr list --base "$BASE" --label merge-on-green --state open --json number,headRefOid,isDraft,isCrossRepository \
+            --jq '.[] | select((.isDraft | not) and (.isCrossRepository | not)) | "\(.number) \(.headRefOid)"')
+          while read -r n sha; do
+            [ -n "${n:-}" ] || continue
+            runs=$(gh api "repos/$GH_REPO/commits/$sha/check-runs?per_page=100" --jq '[.check_runs[] | {name, status, conclusion, started_at}]')
+            waits="" failed=""
+            while IFS= read -r job; do
+              [ -n "$job" ] || continue
+              state=$(jq -r --arg j "$job" '[.[] | select(.name == $j or (.name | endswith(" / " + $j)))] | sort_by(.started_at) | last
+                | if . == null then "absent" elif .status != "completed" then .status else .conclusion end' <<<"$runs")
+              case "$state" in success) ;; failure|timed_out|action_required) failed="$failed $job=$state";; *) waits="$waits $job=$state";; esac
+            done < <(printf '%s\n' "$REQUIRED" | tr ',' '\n' | sed 's/^ *//; s/ *$//')
+            if [ -n "$failed" ]; then
+              marker="merge-on-green: red at $sha"
+              if ! gh api "repos/$GH_REPO/issues/$n/comments?per_page=100" --jq '.[].body' | grep -qF "$marker"; then
+                printf '%s\n\nNot merged:%s. The label stays; push a fix and it merges when green.\n' "$marker" "$failed" | gh pr comment "$n" --body-file -
+              fi
+              echo "#$n ($sha) red:$failed"; continue
+            fi
+            if [ -n "$waits" ]; then echo "#$n ($sha) waits:$waits"; continue; fi
+            # The owner's stop button: the label is read again right before the merge.
+            if ! gh pr view "$n" --json labels --jq '.labels[].name' | grep -qx merge-on-green; then echo "#$n label removed: not merged"; continue; fi
+            if GH_TOKEN="$MERGE_TOKEN" gh pr merge "$n" "--$METHOD" --delete-branch --match-head-commit "$sha"; then
+              echo "#$n merged at $sha"
+            else
+              marker="merge-on-green: refused at $sha"
+              if ! gh api "repos/$GH_REPO/issues/$n/comments?per_page=100" --jq '.[].body' | grep -qF "$marker"; then
+                printf '%s\n\nGreen, but the merge was refused (conflict with %s, the head moved, a branch protection rule, or a workflow file change: merge that one by hand). The label stays.\n' "$marker" "$BASE" | gh pr comment "$n" --body-file -
+              fi
+              echo "#$n ($sha) green but the merge was refused"
+            fi
+          done <<<"$prs"
