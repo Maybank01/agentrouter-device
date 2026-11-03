@@ -1,0 +1,13 @@
+# Search ignore list (ripgrep / fd, gitignore syntax): generated, vendored and lock files that agents' searches skip,
+# so a search lands on the source of truth. Self-written source never goes here. Search them anyway with rg --no-ignore-dot.
+# Workspace baseline (agentteam-deployments docs/reference/REPO-BASELINE.md).
+
+# Lock files
+Cargo.lock
+package-lock.json
+
+# Copy of Cloud's error catalog (source of truth: agentrouter-cloud; its "source" field names the commit)
+crates/device-core/src/error-catalog.json
+
+# Lock fixtures of the aggregator tests
+crates/aggregator/tests/fixtures/locks/

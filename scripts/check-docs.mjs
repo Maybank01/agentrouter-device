@@ -26,7 +26,7 @@ import { lycheeBinary } from "./lychee.mjs";
 
 // ---- Repository settings ------------------------------------------------------------------------------------------
 /** Root files of type `entry`. */
-const ENTRY_FILES = ["README.md", "SECURITY.md"];
+const ENTRY_FILES = ["README.md", "AGENTS.md", "SECURITY.md"];
 /** Types this repository adds to the shared ones: { name: { where, ok(path) } }. */
 const EXTRA_TYPES = {
   // The link protocol and hostd design. It stays at its old path: Cloud code, docs and the vendored runner
