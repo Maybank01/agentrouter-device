@@ -74,7 +74,7 @@ jobs:
         if: github.event_name != 'pull_request'
         shell: pwsh
         run: |
-          foreach ($exe in 'target/release/agentrouter.exe', 'target/release/agentrouter-device.exe') {
+          foreach ($exe in @('target/release/agentrouter.exe')) {
             $v = (Get-Item $exe).VersionInfo
             "$exe | $($v.CompanyName) | $($v.ProductName) | $($v.FileVersion) | $($v.FileDescription)"
             if (-not $v.CompanyName -or -not $v.ProductName -or -not $v.FileVersion -or -not $v.FileDescription) { throw "$exe has no complete version resource" }
@@ -107,9 +107,9 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item target/release/agentrouter.exe, target/release/agentrouter-device.exe dist/
+          Copy-Item target/release/agentrouter.exe dist/
           @"
-          The command-line helper (agentrouter.exe; agentrouter-device.exe is the same program under its old name). Run `agentrouter link` in a folder.
+          The command-line helper (agentrouter.exe). Run `agentrouter link` in a folder.
           Built by GitHub Actions from commit $env:GITHUB_SHA.
           NOT code-signed: Windows SmartScreen and some antivirus tools may warn. See docs/adr/0001-code-signing.md.
           "@ | Set-Content -Encoding utf8 dist/README.txt

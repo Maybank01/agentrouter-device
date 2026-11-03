@@ -1,13 +1,6 @@
-//! One-shot command execution for the workspace MCP service (S1): the person's shell, a cwd, a
-//! timeout, capped output, and a Windows Job Object so a timeout kills the whole process tree.
-//!
-//! This is the "ssh-like" exec half of the workspace MCP service: the command runs with the shell of
-//! the device (PowerShell on Windows, `/bin/sh` elsewhere) and the caller has already validated the
-//! cwd against the workspace (project/worktree only).
-//!
-//! S1 does not bring back the low-integrity token of the retired built-in command tool; the write
-//! boundary today is the workspace cwd + the gate + the denial/consent policy. The low-integrity
-//! boundary (confine.rs + the retired jobs.rs token code) is a recorded follow-up.
+//! Command execution for the host server (`host/run.rs`, `host/jobs.rs`, `host/pty.rs`): the device's shell (PowerShell
+//! on Windows, `/bin/sh` elsewhere), a cwd, a timeout, capped output, and a Windows Job Object / process group so a
+//! timeout or a cancel ends the whole process tree. The boundary is the sandbox the host server runs in.
 
 use std::io::Read;
 use std::path::Path;
@@ -17,7 +10,6 @@ use std::time::{Duration, Instant};
 /// Output kept from each stream; the rest is dropped with a marker (an Agent does not need a 500 MB
 /// log through the link).
 const STREAM_CAP: usize = 256 << 10;
-pub const TIMEOUT_DEFAULT_MS: u64 = 60_000;
 pub const TIMEOUT_MAX_MS: u64 = 10 * 60_000;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -32,73 +24,6 @@ pub struct Outcome {
     pub cancelled: bool,
     /// The signal that ended it (Unix), when it was not ours.
     pub signal: Option<i32>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Danger {
-    Safe,
-    /// Not permitted at all (catastrophic: formatting a disk, disabling the antivirus…).
-    Deny(&'static str),
-    /// Runs only after the person confirms it on this computer (or at the `full` level).
-    Ask(&'static str),
-}
-
-/// The deny list is deliberately short and hard: things no Agent workflow needs and that can destroy
-/// the machine or its protection. Everything else destructive is an Ask, never a silent run.
-pub fn classify(command: &str) -> Danger {
-    let text = command.to_ascii_lowercase();
-    let has = |needle: &str| text.contains(needle);
-    const DENY: &[(&str, &str)] = &[
-        ("format ", "格式化磁盘"),
-        ("format c:", "格式化磁盘"),
-        ("diskpart", "磁盘分区工具"),
-        ("bcdedit", "修改启动配置"),
-        ("vssadmin delete", "删除卷影副本"),
-        ("cipher /w", "擦除磁盘空闲空间"),
-        ("initialize-disk", "初始化磁盘"),
-        ("clear-disk", "清空磁盘"),
-        ("disablerealtimemonitoring", "关闭杀毒实时保护"),
-        ("set-mppreference -disable", "关闭 Defender"),
-        ("remove-item -recurse -force c:\\", "递归删除系统盘"),
-        ("rm -rf /", "递归删除根目录"),
-        ("del /f /s /q c:\\", "递归删除系统盘"),
-    ];
-    for (needle, why) in DENY {
-        if has(needle) {
-            return Danger::Deny(why);
-        }
-    }
-    const ASK: &[(&str, &str)] = &[
-        ("remove-item", "删除文件"),
-        ("rm -rf", "递归删除"),
-        ("rm -fr", "递归删除"),
-        ("del /s", "递归删除"),
-        ("rd /s", "递归删除"),
-        ("rmdir /s", "递归删除"),
-        ("git push --force", "强推远端分支"),
-        ("git reset --hard", "丢弃未提交改动"),
-        ("git clean -", "删除未跟踪文件"),
-        ("reg add", "修改注册表"),
-        ("reg delete", "修改注册表"),
-        ("sc create", "创建系统服务"),
-        ("sc delete", "删除系统服务"),
-        ("sc config", "修改系统服务"),
-        ("net user", "修改本机账号"),
-        ("new-localuser", "新建本机账号"),
-        ("set-executionpolicy", "修改 PowerShell 策略"),
-        ("winget install", "安装软件"),
-        ("choco install", "安装软件"),
-        ("npm install -g", "全局安装 npm 包"),
-        ("shutdown", "关机/重启"),
-        ("stop-computer", "关机/重启"),
-        ("restart-computer", "关机/重启"),
-    ];
-    for (needle, why) in ASK {
-        if has(needle) {
-            return Danger::Ask(why);
-        }
-    }
-    Danger::Safe
 }
 
 /// The kept head of a stream (`total` bytes were written), with a marker when some was dropped.
@@ -398,40 +323,6 @@ fn pump(
     });
 }
 
-/// Unconfined run (access level `full`: the person explicitly asked for unrestricted commands).
-pub fn run(command: &str, cwd: &Path, timeout: Duration) -> Result<Outcome, String> {
-    run_streaming(command, cwd, timeout, &|| false, &mut |_| {})
-}
-
-/// Confined run for the workspace MCP service (access level `folders`, S2b): the exec cwd is labelled
-/// Low by confine.rs and, on Windows, the command runs in a low-integrity restricted token with a Low
-/// TEMP/caches. On Unix there is no portable OS write boundary yet (documented in README): the gate,
-/// deny/consent, audit and process group are what apply.
-pub fn run_confined(
-    command: &str,
-    cwd: &Path,
-    timeout: Duration,
-    data_dir: &Path,
-) -> Result<Outcome, String> {
-    let confinement = crate::confine::Confinement::new(data_dir);
-    let sandbox = confinement
-        .prepare_command(cwd)
-        .map_err(|e| format!("{}: {}", e.code, e.message))?;
-    #[cfg(windows)]
-    if let Some(sandbox) = sandbox.as_ref() {
-        return crate::confined::run(
-            command,
-            cwd,
-            timeout,
-            sandbox,
-            &crate::shell::default_shell(),
-        );
-    }
-    #[cfg(not(windows))]
-    let _ = sandbox;
-    run(command, cwd, timeout)
-}
-
 /// Run `command` with the device's shell in `cwd`, handing every chunk of output to `on_event` as it arrives (and a
 /// tick at least every 20 ms). `timeout` and `cancel` end the whole process tree; whatever the command left running
 /// when the shell exits is ended too. The output kept in the [`Outcome`] is capped per stream.
@@ -538,15 +429,8 @@ pub fn run_streaming(
 mod tests {
     use super::*;
 
-    #[test]
-    fn classify_is_short_and_hard() {
-        assert_eq!(classify("git status"), Danger::Safe);
-        assert!(matches!(classify("format C:"), Danger::Deny(_)));
-        assert!(matches!(classify("Remove-Item -Recurse x"), Danger::Ask(_)));
-        assert!(matches!(
-            classify("git push --force origin main"),
-            Danger::Ask(_)
-        ));
+    fn run(command: &str, cwd: &Path, timeout: Duration) -> Result<Outcome, String> {
+        run_streaming(command, cwd, timeout, &|| false, &mut |_| {})
     }
 
     #[test]

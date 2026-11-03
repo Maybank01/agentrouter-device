@@ -1,6 +1,6 @@
 [package]
 name = "agentrouter-device-core"
-description = "AgentRouter device core: pairing and token, keys, protocol primitives, the argument-level audit, pinned MCP packages, config (and what `mcp-serve local` still needs)."
+description = "AgentRouter device core: pairing and token, keys, protocol primitives, the argument-level audit, pinned MCP packages, config."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -39,8 +39,6 @@ winreg = "0.56"
 windows = { version = "0.62", features = ["ApplicationModel", "Management_Deployment", "Foundation_Collections"] }
 windows-sys = { workspace = true, features = [
   "Win32_Foundation",
-  "Win32_Graphics_Dwm",
-  "Win32_Graphics_Gdi",
   "Win32_Media_Audio",
   "Win32_Security",
   "Win32_Security_Authorization",
@@ -48,15 +46,7 @@ windows-sys = { workspace = true, features = [
   "Win32_Storage_FileSystem",
   "Win32_System_IO",
   "Win32_System_JobObjects",
-  "Win32_System_LibraryLoader",
-  "Win32_System_StationsAndDesktops",
-  "Win32_System_SystemInformation",
-  "Win32_System_Pipes",
-  "Win32_System_Registry",
   "Win32_System_Threading",
-  "Win32_UI_HiDpi",
-  "Win32_UI_Input_KeyboardAndMouse",
-  "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
 ] }
 

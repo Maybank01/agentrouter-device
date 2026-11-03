@@ -47,8 +47,7 @@ impl Audit {
     }
 
     /// Append one entry (an object); `at`, `prev` and `hash` are added here. The chain is read and
-    /// written under a cross-process lock, so the connector and a local Agent's MCP service can both
-    /// append without breaking it.
+    /// written under a cross-process lock, so more than one device process can append without breaking it.
     pub fn record(&mut self, entry: Value) {
         let chain_lock = match crate::lockfile::acquire(
             &self.path.with_extension("lock"),
@@ -56,10 +55,7 @@ impl Audit {
         ) {
             Ok(lock) => Some(lock),
             Err(e) => {
-                crate::util::log(&format!(
-                    "audit lock unavailable, appending anyway: {} {}",
-                    e.code, e.message
-                ));
+                crate::util::log(&format!("audit lock unavailable, appending anyway: {e}"));
                 None
             }
         };
@@ -96,11 +92,6 @@ impl Audit {
         }
         drop(chain_lock);
     }
-}
-
-/// Append one entry with a fresh handle (a local Agent MCP service keeps no long-lived chain).
-pub fn append(path: &Path, entry: Value) {
-    Audit::open(path).record(entry);
 }
 
 /// The chain head of a log file on disk: `{seq, hash}` (`seq` 0 and the genesis hash when empty).
@@ -365,7 +356,7 @@ mod tests {
             .join(format!("ar-audit-concurrent-{}", crate::util::short_id("")));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("audit.log");
-        // Two independent handles (like the connector and a local Agent MCP service) appending at once.
+        // Two independent handles (two device processes) appending at once.
         let mut handles = Vec::new();
         for worker in 0..2 {
             let path = path.clone();

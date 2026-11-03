@@ -48,8 +48,8 @@ Owner answers to the open questions, 2026-10-19 (details in §12):
 
 - Screen tools are **off** (now on today's chain too, not only in console mode).
 - Share codes are **removed**: a link connects a folder to the person's **own** cloud account only.
-- Local Agents and cloud↔local Agent messaging are **pending a separate communication design**; nothing
-  in this document builds on them.
+- Local Agents and cloud↔local Agent messaging are **not built**; nothing in this document builds on them. The old
+  local-Agent entry `mcp-serve local` was deleted on 2026-11-03 (§4).
 
 ### 0.1 Owner decisions 2026-10-20: several folders, real paths, 完全访问, SSH feel
 
@@ -579,12 +579,11 @@ with `readOnlyHint: true`. Servers keep running across a reconnect.
 A link belongs to exactly one person's own cloud account (the paired device's owner). There are no
 share codes and no links into another person's account (Q3).
 
-**Pending the communication design (Q2):** the local-Agent entry (`mcp-serve local`, `lag_`/`lses_`,
-#37/#38) and any cloud↔local Agent messaging. The owner asked for a proper design (or a mature open
-source project) before anything is built here, because the current architecture is not trusted. Until
-that design is decided: no task builds on `dispatch/v1` `external_agent` or `ext_…` sessions, no task
-extends `mcp-serve local`, and the deletion task (#49) leaves `mcp-serve local` and the modules only it
-needs in place rather than deciding its fate.
+**Local Agents (Q2):** no local-Agent entry and no cloud↔local Agent messaging. The owner asked for a proper design (or
+a mature open source project) before anything is built here, because the earlier architecture is not trusted; no task
+builds on `dispatch/v1` `external_agent` or `ext_…` sessions. The earlier entry (`mcp-serve local`, `lag_`/`lses_`,
+#37/#38), which #49 had left in place, was deleted on 2026-11-03 with the modules only it used (§9; owner 「不用考虑兼容，先做干净开发」:
+nothing was installed outside the test PC). A local-Agent entry, when it comes, is a new design.
 
 ## 5. Consent — decided on the device only
 
@@ -920,7 +919,8 @@ AgentRouter · 链接这个文件夹
 Commands after the change: `link [<dir>…] [--read-only | --full] [--yes-servers]`, `undo [--list] [--journal]`,
 `audit [verify]`, `computer setup|status|remove`, `status`, `logout` (unpair this computer).
 Removed: `workspace …`, `deploy …`, `access …`, `mcp on|off`, `screen on|off`, `run --background`,
-`agent list`, `mcp-serve workspace`. (`mcp-serve local` is pending the communication design, §4.)
+`agent list`, `mcp-serve workspace`, and on 2026-11-03 `mcp-serve local` (§4) and the second binary name
+`agentrouter-device` (the same program under its earlier name).
 
 Default bundle (owner 2026-10-20 「可以带着默认安装的MCP」, decided in §13.2): `host` (§3.7), started with every link,
 plus `serena`, installed by default and started on its first call. `files`, `git` and `shell` (DesktopCommander) are
@@ -937,15 +937,15 @@ those count as custom and need the local `y`.
 - The signed device action set and its dispatcher: `protocol.rs` request v1/v2 strings and actions,
   `device.rs` action routing, `info`/`mcp_*`/`workspace_*`/`worktree_*` actions (→ MCP + `_meta`).
 - Home-grown MCP client `mcp.rs` (≈1.5k lines) → `rmcp` client; `mcp_pkg.rs` folds into `link__package_put`.
-- Built-in servers: `mcp-serve workspace` in `connector-cli/src/mcp_serve.rs` and `exec.rs`, `shell.rs`,
-  `deploy.rs` (S2a deploy targets, owner Q5 「可以」), `workspace.rs`, `worktree.rs`, `lockfile.rs`.
-  `mcp-serve local` and `local_agent.rs` (plus whatever only they need) stay until the communication
-  design decides (§4, Q2).
-- Confinement S2b: `confine.rs`, `confined.rs` (with a one-time cleanup that removes the Low labels it
-  recorded in `confined.json`).
-- `AGENTROUTER_CONSENT`, access levels `confirm`/`full` (only folder and read-only remain), native
-  consent dialogs in `consent.rs` (terminal `y/N` replaces them), `screen.rs` + `screen/` (Q1, turned
-  off earlier by #51).
+- Built-in servers: `mcp-serve workspace` (#49), then on 2026-11-03 `mcp-serve local` with what only it used:
+  `connector-cli/src/mcp_serve.rs`, `local_agent.rs`, `deploy.rs` (S2a deploy targets, owner Q5 「可以」),
+  `workspace.rs`, `worktree.rs`, the path gate `gate.rs`, the command deny/ask list in `exec.rs`, the consent
+  dialogs in `consent.rs` (terminal `y/N` replaces them) and the old access levels in `config.rs`. `exec.rs`,
+  `shell.rs` and `lockfile.rs` stay: they run the `host` server's commands and terminals (§3.7) and lock the audit
+  chain (§7.1).
+- Confinement S2b: `confine.rs`, `confined.rs` (deleted 2026-11-03 without a cleanup release for the Low labels it
+  recorded in `confined.json`: no folder outside the test PC ever carried one).
+- `AGENTROUTER_CONSENT`, `screen.rs` + `screen/` (Q1, turned off earlier by #51).
 - In-repo checkpoint refs (`refs/agentrouter/cp/*` in the person's repo) → shadow repo.
 - `e2e/device-m1-driver.mjs` → the new E2E (Phase 4). `app/` frozen (out of CI/release), not deleted.
 
@@ -983,7 +983,8 @@ those count as custom and need the local `y`.
   `DEVICE_OUTDATED` (`next`: update with `npx @agentrouter-top/cli@next link`) and the deletion PRs land.
 - Data: `device_mcp_servers` rows (per-device installs) are dropped — the server set is per link and
   decided on the device; `linked_devices`, pairing and tokens are kept (same device keys, no re-pairing).
-- The S2b Low labels on folders linked before are removed by the first new release (`confined.json`).
+- The S2b Low labels on folders linked before are not removed by any release (`confine.rs` was deleted 2026-11-03;
+  only the test PC ever had them).
 - Security (#39) lands first and on the old host too: Phase 1 puts every MCP server spawned by today's
   `mcp.rs` through the sandbox launcher and removes `AGENTROUTER_CONSENT`, so the boundary does not wait
   for the protocol switch.
@@ -1014,15 +1015,14 @@ off), Cloud #2005 (screen off: Windows-MCP catalog entry + `screen.ts`), Cloud #
 (remove device share codes).
 
 Order: 1–3 first (they close #39 on today's chain), then 4–7 and 8–9 in parallel against the shared test
-vectors, then 10–14. Not filed, pending the communication design (Q2): local Agents on the link and
-cloud↔local Agent messaging.
+vectors, then 10–14. Not filed (Q2): local Agents on the link and cloud↔local Agent messaging.
 
 ## 12. Owner answers (2026-10-19)
 
 | # | Question | Owner | Result |
 | --- | --- | --- | --- |
 | Q1 | Screen: Windows-MCP cannot be confined to a folder; off in console mode? | 「屏幕操作可以先关掉」 | **Off**, now (device #51, Cloud #2005). A screen mode is not planned |
-| Q2 | Local Agents (`mcp-serve local`, #37/#38) and cloud↔local Agent communication | 「需要设计一下或者找一下合理的开源项目。主要是我怕DS设计的架构有问题」 | **Not decided.** A separate communication design is running. Local-Agent entry and cross-Agent messaging are marked pending (§4); nothing builds on `dispatch/v1` `external_agent` |
+| Q2 | Local Agents (`mcp-serve local`, #37/#38) and cloud↔local Agent communication | 「需要设计一下或者找一下合理的开源项目。主要是我怕DS设计的架构有问题」 | **Not decided.** Nothing builds on `dispatch/v1` `external_agent`; the old local-Agent entry `mcp-serve local` was deleted 2026-11-03 (§4) |
 | Q3 | Shares (分享码): keep or delete? | 「分享码功能也先移除，只做本地和云端个人账户的链接」 | **Removed.** Only links between the PC and the person's own cloud account (§4, §9; Cloud #2006) |
 | Q4 | One UAC prompt on the first Windows `link` to create the sandbox account | 「可以」 | Accepted (§6.3) |
 | Q5 | Deploy outside the folder goes away; run `link` in the target folder instead | 「可以」 | Accepted (§9: `deploy.rs` deleted) |
