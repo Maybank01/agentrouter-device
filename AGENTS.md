@@ -27,8 +27,9 @@ Charter (what belongs here, the contract it provides, how Cloud pins it): [docs/
 
 ## Landing
 - From the Cloud checkout: `npm run task -- start <n> --repo AgentDevice --agent <name>`, then `npm run task -- pr <n>
-  --repo AgentDevice`. No merge bot (a public repository cannot call the private shared merge-on-green workflow): the
-  PR is merged once the required checks are green.
+  --repo AgentDevice` (label `merge-on-green`, then stop): `.github/workflows/merge-on-green.yml` (a vendored copy of the
+  private shared workflow, #216) merges it once the required checks are green. A PR that changes `.github/workflows` is
+  merged by hand once green.
 - The PR body names the root cause / structure, not only the symptom.
 
 ## Release
