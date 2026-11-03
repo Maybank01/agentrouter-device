@@ -5,7 +5,7 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Maybank01/agentrouter-device.git",
+    "url": "git+https://github.com/agentrouter-top/AgentDevice.git",
     "directory": "npm/agentrouter"
   },
   "homepage": "https://agentrouter.top",

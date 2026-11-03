@@ -9,7 +9,7 @@
 # - Publish (job `publish`, on main or by hand): once the repository secret `NPM_TOKEN` exists, CI publishes the
 #   tarball it just packed (`npm publish --access public --provenance`). The secret is an npm *granular access token*
 #   with read and write on the `@agentrouter-top` scope (npmjs.com → Access Tokens → Generate New Token → Granular),
-#   added as `gh secret set NPM_TOKEN -R Maybank01/agentrouter-device` (paste it at the prompt, never on the command
+#   added as `gh secret set NPM_TOKEN -R agentrouter-top/AgentDevice` (paste it at the prompt, never on the command
 #   line). Without the secret the job says so and succeeds; a maintainer can still run `npm publish <tgz> --access
 #   public` with the artifact. A published version is never overwritten: the job skips a version npm already has with
 #   the same integrity and fails on a different one (a new socat or bubblewrap pin bumps `CARRIER`'s version). After the

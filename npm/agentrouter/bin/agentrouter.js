@@ -42,7 +42,7 @@ if (!binary && version) {
 if (!binary) {
   console.error(
     version
-      ? `没能装上 ${pkg}@${version}。请检查网络和 npm 源后重试；仍然不行请到 https://github.com/Maybank01/agentrouter-device/issues 反馈。`
+      ? `没能装上 ${pkg}@${version}。请检查网络和 npm 源后重试；仍然不行请到 https://github.com/agentrouter-top/AgentDevice/issues 反馈。`
       : `AgentRouter 小助手还不支持这个系统（${process.platform}-${process.arch}）。`,
   );
   process.exit(1);

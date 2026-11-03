@@ -8,7 +8,7 @@ exclude = ["app/src-tauri"]
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
-repository = "https://github.com/Maybank01/agentrouter-device"
+repository = "https://github.com/agentrouter-top/AgentDevice"
 publish = false
 
 [workspace.dependencies]

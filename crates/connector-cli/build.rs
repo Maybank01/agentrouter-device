@@ -44,7 +44,7 @@ BEGIN
       VALUE "OriginalFilename", "agentrouter.exe"
       VALUE "ProductName", "AgentRouter 小助手"
       VALUE "ProductVersion", "{version}"
-      VALUE "Comments", "Open source: https://github.com/Maybank01/agentrouter-device"
+      VALUE "Comments", "Open source: https://github.com/agentrouter-top/AgentDevice"
     END
   END
   BLOCK "VarFileInfo"

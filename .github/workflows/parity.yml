@@ -51,7 +51,7 @@ concurrency:
 jobs:
   bench:
     name: Parity bench (${{ inputs.os }}, folder mode)
-    if: github.repository == 'Maybank01/agentrouter-device'
+    if: github.repository == 'agentrouter-top/AgentDevice'
     runs-on: ${{ inputs.os == 'macos' && 'macos-latest' || inputs.os == 'linux' && 'ubuntu-latest' || 'windows-latest' }}
     environment: dev-bench
     timeout-minutes: 150
