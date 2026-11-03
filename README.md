@@ -35,7 +35,7 @@ Windows 上也可以**直接双击 `agentrouter.exe`**（测试版）：第一�
 
 ## Development
 
-Design: [`docs/HOSTD-MCP.md`](docs/HOSTD-MCP.md); every doc: [`docs/README.md`](docs/README.md). One chain, MCP end to end:
+Charter (what belongs here, contract, dependencies): [`docs/CHARTER.md`](docs/CHARTER.md). Design: [`docs/HOSTD-MCP.md`](docs/HOSTD-MCP.md); every doc: [`docs/README.md`](docs/README.md). One chain, MCP end to end:
 
 | Crate | Role |
 | --- | --- |

@@ -5,6 +5,7 @@ Layer: behind NewAPI (Agent\*), the executor on a person's own computer. Workspa
 Specific errors, Root causes). Model: Cloud `docs/development/AGENT-FRAMEWORK.md` (never restated here). Docs: the map
 is [docs/README.md](docs/README.md) (framework: Cloud `docs/development/DOCS.md`); `node scripts/check-docs.mjs`
 checks it.
+Charter (what belongs here, the contract it provides, how Cloud pins it): [docs/CHARTER.md](docs/CHARTER.md).
 
 ## What this repo is / is not
 - `hostd` (`agentrouter link`, npm `@agentrouter-top/cli`): a pure remote MCP client that links the user's computer to

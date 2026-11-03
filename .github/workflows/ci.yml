@@ -45,6 +45,8 @@ jobs:
           key: lychee-0.24.2-${{ runner.os }}
       - name: Docs placed, mapped and linked (docs/README.md)
         run: node scripts/check-docs.mjs
+      - name: No path into another repository (agentteam-deployments docs/development/CONTRACTS.md C6)
+        run: node scripts/check-repo-imports.mjs
       - name: main-red guard decisions (scripts/main-red.mjs, #125)
         run: node --test scripts/*.test.mjs
       # The desktop shell (app/) is frozen: outside the workspace, not built (docs/HOSTD-MCP.md §0).
