@@ -48,7 +48,7 @@ fn agent() -> ureq::Agent {
 }
 
 /// Gateways the device talks to: a domain name over TLS (no raw IP addresses), or this computer for
-/// local testing (docs/AV-HYGIENE.md).
+/// local testing (docs/development/AV-HYGIENE.md).
 pub fn gateway_allowed(gateway: &str) -> Result<(), String> {
     let lower = gateway.trim().to_ascii_lowercase();
     for local in ["http://127.0.0.1", "http://localhost"] {

@@ -1,5 +1,5 @@
 //! `agentrouter service install|uninstall|status|run` (#94): the person turns on, with this explicit command only, that
-//! this computer links itself at login and stays linked (docs/AV-HYGIENE.md「开机自启只由本人打开」). The operating
+//! this computer links itself at login and stays linked (docs/development/AV-HYGIENE.md「开机自启只由本人打开」). The operating
 //! system's own mechanism starts it — a systemd user unit (Linux), a launchd LaunchAgent (macOS), a Task Scheduler
 //! logon task (Windows); no Run key, no startup folder, no supervisor of our own. The definition holds only
 //! `<agentrouter> service run`; the folders and the access level are in `service.json` in the data folder. The link

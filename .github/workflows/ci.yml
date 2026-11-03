@@ -36,8 +36,13 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
-      - name: AV hygiene (docs/AV-HYGIENE.md)
+      - name: AV hygiene (docs/development/AV-HYGIENE.md)
         run: bash scripts/av-hygiene.sh
+      # The pinned lychee (scripts/lychee.mjs) is downloaded once and kept here, so the doc check stays seconds.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/agentrouter-ci
+          key: lychee-0.24.2-${{ runner.os }}
       - name: Docs placed, mapped and linked (docs/README.md)
         run: node scripts/check-docs.mjs
       - name: main-red guard decisions (scripts/main-red.mjs, #125)
@@ -65,7 +70,7 @@ jobs:
       - name: Release build
         if: github.event_name != 'pull_request'
         run: cargo build --release --locked -p agentrouter-device-cli
-      - name: Version resource present (docs/AV-HYGIENE.md)
+      - name: Version resource present (docs/development/AV-HYGIENE.md)
         if: github.event_name != 'pull_request'
         shell: pwsh
         run: |
@@ -106,7 +111,7 @@ jobs:
           @"
           The command-line helper (agentrouter.exe; agentrouter-device.exe is the same program under its old name). Run `agentrouter link` in a folder.
           Built by GitHub Actions from commit $env:GITHUB_SHA.
-          NOT code-signed: Windows SmartScreen and some antivirus tools may warn. See docs/SIGNING.md.
+          NOT code-signed: Windows SmartScreen and some antivirus tools may warn. See docs/adr/0001-code-signing.md.
           "@ | Set-Content -Encoding utf8 dist/README.txt
           Get-ChildItem dist | Format-Table Name, Length
           Get-FileHash dist/*.exe -Algorithm SHA256 | Format-Table Hash, Path

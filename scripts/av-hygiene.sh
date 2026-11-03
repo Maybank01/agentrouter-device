@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fails the build when the source drifts from docs/AV-HYGIENE.md. Run from the repository root.
+# Fails the build when the source drifts from docs/development/AV-HYGIENE.md. Run from the repository root.
 set -u
 fail=0
 src=(crates app/src-tauri .github Cargo.toml)

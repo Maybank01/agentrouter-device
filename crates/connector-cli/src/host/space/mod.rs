@@ -1,5 +1,5 @@
 //! Checkouts: a space version as an ordinary folder on this host, fetched on first read, copy-on-write (Cloud
-//! PROJECT-SERVICE.md §5.5, #2767). The OS adapter of read path (b) — commands, tasks, runtimes and editors see normal
+//! `docs/reference/ENVIRONMENTS.md` §11, #2767). The OS adapter of read path (b) — commands, tasks, runtimes and editors see normal
 //! files; the Agent's own file tools keep reading through the cache API on the platform side.
 //!
 //! hostd's own tools (`_…`: the aggregator never lists them, so Agents never see them; Control calls them as

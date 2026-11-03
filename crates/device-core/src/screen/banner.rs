@@ -85,7 +85,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             let active = now_ms() - LAST.load(Ordering::SeqCst) < SHOW_MS;
             if active != SHOWN.load(Ordering::SeqCst) {
                 SHOWN.store(active, Ordering::SeqCst);
-                // Faded out rather than hidden: it stays a plain visible window (docs/AV-HYGIENE.md).
+                // Faded out rather than hidden: it stays a plain visible window (docs/development/AV-HYGIENE.md).
                 unsafe {
                     SetLayeredWindowAttributes(hwnd, 0, if active { 235 } else { 0 }, LWA_ALPHA);
                 }

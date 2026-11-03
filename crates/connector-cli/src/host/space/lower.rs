@@ -1,5 +1,5 @@
 //! The lower layer of a checkout: one space version (a snapshot root), read-only, fetched on first read (Cloud
-//! PROJECT-SERVICE.md §5.5.2). Listings and file bytes come from the node daemon's content routes (the node-level
+//! `docs/reference/ENVIRONMENTS.md` §11.1). Listings and file bytes come from the node daemon's content routes (the node-level
 //! cache, T1) with a checkout ticket; this process keeps what it fetched by digest — objects are immutable, so nothing
 //! here is ever invalidated: a new version is a new root whose unchanged directories and files hit the same entries.
 

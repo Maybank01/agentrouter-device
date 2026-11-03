@@ -113,7 +113,7 @@ mod tests {
     /// key and cause, and leaves in the next `events` batch.
     #[test]
     fn a_runtime_event_is_written_as_an_event_of_its_space() {
-        // Under target/ (never the temp folder, docs/AV-HYGIENE.md).
+        // Under target/ (never the temp folder, docs/development/AV-HYGIENE.md).
         let exe = std::env::current_exe().unwrap();
         let target = exe.ancestors().nth(3).unwrap();
         let dir = target

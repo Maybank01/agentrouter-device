@@ -39,7 +39,7 @@ portable-pty = "0.9.0"
 # File-change notifications (inotify, FSEvents, ReadDirectoryChangesW): notify-rs/notify, CC0-1.0.
 notify = "8.2.0"
 # Opens the pairing page in the default browser on a double-click start: Byron/open-rs, MIT. On Windows through
-# ShellExecuteExW (`shellexecute-on-windows`), never its default hidden PowerShell launcher (docs/AV-HYGIENE.md).
+# ShellExecuteExW (`shellexecute-on-windows`), never its default hidden PowerShell launcher (docs/development/AV-HYGIENE.md).
 open = { version = "5.4.4", features = ["shellexecute-on-windows"] }
 # A local server's login address as a QR in the terminal (`link__login`): kennytm/qrcode-rust, MIT / Apache-2.0.
 qrcode = { version = "0.14.1", default-features = false }
