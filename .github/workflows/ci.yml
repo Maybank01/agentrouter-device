@@ -38,6 +38,8 @@ jobs:
       - run: cargo fmt --all --check
       - name: AV hygiene (docs/AV-HYGIENE.md)
         run: bash scripts/av-hygiene.sh
+      - name: Docs placed, mapped and linked (docs/README.md)
+        run: node scripts/check-docs.mjs
       - name: main-red guard decisions (scripts/main-red.mjs, #125)
         run: node --test scripts/*.test.mjs
       # The desktop shell (app/) is frozen: outside the workspace, not built (docs/HOSTD-MCP.md §0).

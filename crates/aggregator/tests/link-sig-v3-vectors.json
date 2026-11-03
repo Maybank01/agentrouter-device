@@ -1,5 +1,5 @@
 {
-  "about": "Link request signature v3 vectors (docs/LINKER-MCP.md §3.3). Checked in order with one replay cache; now = nowMs.",
+  "about": "Link request signature v3 vectors (docs/HOSTD-MCP.md §3.3). Checked in order with one replay cache; now = nowMs.",
   "publicKey": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
   "kid": "fe812c12f3ab4ce6",
   "link": "lnk_0123456789abcdef0123456789abcdef",
