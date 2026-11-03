@@ -6,10 +6,17 @@
 > "Link" names only the connection (and the `lnk_` id). The crate is `crates/hostd-link` (`agentrouter-hostd-link`), the
 > CLI also answers to `agentrouter hostd`, and this file was `docs/LINKER-MCP.md` (#80).
 
-Status: **design, owner-reviewed** (2026-10-19, issue #40; 2026-10-20 additions §0.1, issue #64; 2026-10-20 host positioning §0.2, §0.3 + §13, issue #78; owner answers in §12). Nothing here is implemented yet; the
-phased tasks at the end are filed as `agent-ready` issues. This document supersedes the device-action
-parts of Cloud `docs/product/workspace-v1/DEVICE-PROTOCOL.md` (§5, §13, §18) and `LINKED-DEVICES.md`
-(§23) once Phase 3 lands; until then live behaviour follows those documents.
+Status: **design, owner-reviewed** (2026-10-19, issue #40; 2026-10-20 additions §0.1, issue #64; 2026-10-20 host positioning §0.2, §0.3 + §13, issue #78; owner answers in §12), **largely built**: the
+crates in the README (`hostd-link`, `aggregator`, `sandbox`, `checkpoint`, `connector-cli`) implement §3–§9 and §13.1.1,
+and later behaviour lands with its issue (e.g. space runtime event/op lines, Cloud #3607, #3675, #3691). What is still
+open is tracked in `agent-ready` issues, not here. It replaced the device-action parts of the former Cloud
+`DEVICE-PROTOCOL.md` and `LINKED-DEVICES.md` (both deleted); the Cloud side of the link is Cloud
+`docs/development/ENVIRONMENTS.md` §13–§15.
+
+Model since 2026-10-30/31 (Cloud `docs/development/AGENT-FRAMEWORK.md` §7, never restated here): devices are one model;
+a device describes its own facts and advertises which environment types it can host (a linked PC: folder, machine; the
+person's 云端 device: sandbox), and an environment belongs to the device it runs on. The placements of §13.1 are such
+devices; the `placement` word in `hello.link` is today's wire form of that fact (Cloud ENVIRONMENTS §7.1).
 
 ## 0. Owner decision
 
@@ -69,7 +76,7 @@ Owner answers to the open questions, 2026-10-19 (details in §12):
 > 「是的，linker改成宿主机更合理。然后可以带着默认安装的MCP。然后也可以安装第三方MCP。我们可以维护一个列表，告诉Agent一些推荐的MCP」
 
 Earlier the same day: three independent layers — Agent runtime (DSH on shared cloud Agent hosts) / views / execution
-host (Cloud `PROJECT-SERVICE.md`); DSH's native tools reach the session's bound host through our replacement plugin;
+host (Cloud `SPACE-SERVER.md`); DSH's native tools reach the session's bound host through our replacement plugin;
 「B站这个，其实最好还是第三方MCP提供」 (platform connectors are third-party MCP, not our code; generic MCP integration is
 Cloud #2201).
 
@@ -243,7 +250,7 @@ host. `load1` is null on Windows. `free_slots` = `environments` capacity minus r
          device → gateway  {"op": "info", "link": {…same fields as hello.link, same id…}}  (the folders changed)
 ```
 
-**Events (Cloud PROJECT-SERVICE §9.8.2, #2739).** Every event the host produces for a space (a feed row, a runtime's
+**Events (Cloud SPACE-SERVER §9.8, #2739).** Every event the host produces for a space (a feed row, a runtime's
 event, later a device space's file change) is written first into the host's **outbox**: SQLite in hostd's data
 directory (`outbox/<link>.sqlite`, WAL, `synchronous=FULL`; `agentrouter_hostd_link::outbox`), with the host's own
 monotonic seq and the event id `<producer>:<seq>` (`<producer>` = the link id + a random id of that database, so a
@@ -271,7 +278,7 @@ is sent by the `host` server to the aggregator as the notification `notification
 `{space, instance, event, payload, key?, cause: "runtime:<instance> <job>"}`; the aggregator takes it only from the
 built-in `host` server, writes it into the outbox (an audit line `kind: event`) and the link flushes it like any item.
 The platform accepts it only for the space whose runtime instance runs on this link, as a declared event with a fitting
-payload (Cloud PROJECT-SERVICE §9.8.2); `key` makes a line printed again one event. The line stays in the job's output;
+payload (Cloud SPACE-SERVER §9.8); `key` makes a line printed again one event. The line stays in the job's output;
 a line that is not a well-formed event (not JSON, a bad name, a payload that is not an object, longer than 64 KiB) gets
 one `[agentrouter] event not sent: <why>` line after it in the same output, and an outbox refusal goes to the `host`
 server's log. A job without `events` raises nothing, whatever it prints (see "Only a runtime's lines are read" below).
@@ -352,7 +359,7 @@ accepted and not read — both until the minimum device version moves past them.
   diagnosed after the link ended (Cloud #2703).
 - `link__limits {memoryMb?, processes?, cpuPercent?}`: the environment's resource limits, applied live (§6.6).
 - `link__feeds {instance, space, server, feeds}` (platform only, Cloud #2739 step 2): the feeds of a space's runtime
-  instance on this host (Cloud PROJECT-SERVICE §9.8.5), as the Space Server describes them plus the columns of the
+  instance on this host (Cloud ENVIRONMENTS §9.6), as the Space Server describes them plus the columns of the
   feed's table (`{name, tool, args?, everyMs, key, items?, extract?: {json}, into: <table>, columns: {column: type},
   map?: {column: item field}, backoff?: {on, waitMs}}`); `feeds: []` stops them, an unchanged set keeps its timers. The generic feed runner
   (`agentrouter_aggregator::feeds`) calls the tool of the local server `server` on its timer (±20 % jitter); takes the
@@ -462,7 +469,7 @@ When the folder passes `AGENTROUTER_OUT_WARN` (default `1G`) or the disk's free 
   plane from link to link (or the conversation's cloud sandbox), never through the model; each chunk is one audited
   call on each computer, the copy ends with `sha256` compared on both sides.
 
-#### Bound session: the `host` server as the Agent's local machine (Cloud PROJECT-SERVICE §10.6)
+#### Bound session: the `host` server as the Agent's local machine (Cloud ENVIRONMENTS §14)
 
 A cloud session may be **bound** to a link (owner 2026-10-20 「实际上更改Agent的视图，就能让Agent有种在用户电脑运行的感觉了」):
 the kernel's own file, search and command tools then act on this computer, through a runner plugin that is a client of
@@ -496,7 +503,7 @@ from `remote_*` tools.
 ### 3.9 Lease epochs: a platform instance's job after a reconnect (Cloud #2677, #2246)
 
 The platform starts an instance's process (a 作品's runtime) as a job with `lease: {instance, epoch}` (Cloud
-PROJECT-SERVICE §4.8 "Lease epochs": the epoch moves on whenever control of the instance changes hands or it ends). The
+Cloud ENVIRONMENTS §8.2: the epoch moves on whenever control of the instance changes hands or it ends). The
 job keeps running while the link is down, and the platform may end the instance meanwhile (its lease ran out, its holder
 stopped it). After every `welcome` hostd sends the running leased jobs; the platform fences each against the instance
 record (valid while the instance runs that very job on this host, whoever holds it now) and answers the others:
@@ -1035,10 +1042,10 @@ tools and their answers (§3.7), `link__*` management tools, errors, audit forma
 
 | | Person's PC | Machine we rent (Mac mini; later GPU boxes) | Cloud Daytona sandbox |
 | --- | --- | --- | --- |
-| Started by | the person (`agentrouter link …`) | a service on the machine, under a dedicated OS account per tenant lease | the sandbox's entrypoint (`hostd` is baked into the empty snapshot, Cloud PROJECT-SERVICE §7.8) |
+| Started by | the person (`agentrouter link …`) | a service on the machine, under a dedicated OS account per tenant lease | the sandbox's entrypoint (`hostd` is baked into the empty snapshot, Cloud ENVIRONMENTS §10.1) |
 | Identity | device key paired by the person (§4) | device key paired by us (ops), leased to one person's session tree at a time | **no pairing, no device key:** the control plane issues a host token bound to (sandbox id, session tree) at create and revokes it at destroy; it is the `hello` token (no challenge/token exchange). The control plane's signing key is passed in at start (§13.1.1) |
 | Boundary | folder mode: `srt` OS sandbox (§6); 完全访问: the person's own rights (§6.4) | 完全访问 inside the lease account (the account and the machine are the boundary); wiped between leases | **the sandbox is the boundary:** servers run without `srt`, like 完全访问 inside the container |
-| Folders | named by the person; more only with a local `y` (§5) | the lease's working folders | the session's mounted views (workspace manifest, Cloud PROJECT-SERVICE); `link__folder_add` answers `DENIED_BY_USER` |
+| Folders | named by the person; more only with a local `y` (§5) | the lease's working folders | the session's mounted views (workspace manifest, Cloud ENVIRONMENTS §11); `link__folder_add` answers `DENIED_BY_USER` |
 | Who decides server installs | the person: catalog presets run, custom ones need `y` (§5) | platform policy (as cloud) | platform policy: catalog presets named by the session's definition or the person's list; the person's own custom entries only in that person's sandboxes (§13.3) |
 | Network | catalog allow-list per server (§6.1) | catalog allow-list per server | the sandbox's egress policy + the catalog allow-list per server at the node's egress proxy |
 | Undo | checkpoints + journal (§7.2) | checkpoints | off: the project service's per-turn changesets are the undo |
@@ -1049,7 +1056,7 @@ tools and their answers (§3.7), `link__*` management tools, errors, audit forma
 - **What Daytona keeps:** lifecycle (create / start / stop / snapshot / destroy), starting `hostd` at boot, and the
   port proxy for previews until the gateway gives each sandbox its own addresses. Agent execution and files stop using
   Daytona's toolbox (`/toolbox/process/execute`, `/toolbox/files/*` in Cloud `daytona-provider.ts`); they go to `hostd`
-  like on a PC. Cloud PROJECT-SERVICE §10.8 is the Cloud side of this split.
+  like on a PC. Cloud ENVIRONMENTS §13.1 is the Cloud side of this split.
 - A cloud host dials out to the same gateway endpoint as a PC (`/device/v2/link`), so the relay, the MCP client and
   the DSH plugin have one path; the sandbox needs no inbound port either.
 
@@ -1098,7 +1105,7 @@ image pins one tag and checks the sha256. Locally: `cargo build --release -p age
 | `shell` (DesktopCommander) | yes, fully | **Out**; catalog entry kept, not recommended | `host__exec` + jobs + PTY cover commands, background processes and interactive programs; it also ships its own file tools |
 | `git` (`mcp-server-git`) | mostly | **Out**; catalog entry kept | Agents use the `git` CLI through `host__exec` (and know it far better than a tool schema); `host__info.programs.git` says whether it exists |
 | `serena` | no | **Kept: installed by default, started on its first call** | LSP-backed symbol search, references, rename and symbol-level edits; `host__search` is text only. Language servers cost seconds and memory, so the aggregator lists its tools from the names the catalog recorded when vetting (no start for `tools/list`) and starts it on the first call. GPL-3.0-or-later: a separate process installed by pin from PyPI, never linked into or redistributed with our binary (as today) |
-| `browser` (Playwright MCP) | no | **Default on cloud compute, on demand on PCs** | Checking previews and E2E is routine in the cloud (the browser base layer, Cloud PROJECT-SERVICE §7.8); on a PC it downloads a browser and needs the open web (Q7), so it is installed when an Agent asks |
+| `browser` (Playwright MCP) | no | **Default on cloud compute, on demand on PCs** | Checking previews and E2E is routine in the cloud (the browser base layer, Cloud ENVIRONMENTS §10.1); on a PC it downloads a browser and needs the open web (Q7), so it is installed when an Agent asks |
 
 How they run (unchanged): each server is a child of the aggregator inside the placement's boundary (§13.1), started from
 the exact pinned version after the registry digest check, with the catalog's network allow-list. Bundle versions are
@@ -1151,7 +1158,7 @@ pinned in the catalog; a bump is a catalog change with re-vetting (licence, arch
 | device | Lazy start of bundle/catalog servers from recorded tool names (`serena`) |
 | device | Credentials in a signed server start: env for that process only, redacted everywhere |
 | cloud | Catalog as data + `mcp_catalog` tool; definitions' `mcp` field compiled into installs (AGENT-DEFINITION §3.7) |
-| cloud | Execution-host interface split: lifecycle (Daytona) vs host protocol (PROJECT-SERVICE §10.8) |
+| cloud | Execution-host interface split: lifecycle (Daytona) vs host protocol (Cloud ENVIRONMENTS §13.1) |
 | cloud | Vault entries for MCP credentials, ask-first in the MCP client, `ASK_UNAVAILABLE` (#2201) |
 
 ### 13.6 Names
@@ -1163,9 +1170,9 @@ Renamed in #80: the link crate is `crates/hostd-link` (`agentrouter-hostd-link`)
 `AGENTROUTER_*` env vars, config/state paths, audit format, `app: "hostd"`), the npm package `@agentrouter-top/cli`
 and release artifact names.
 
-### 13.7 Generic MCP integration: what `hostd` adds (Cloud MCP-INTEGRATION, 2026-10-20)
+### 13.7 Generic MCP integration: what `hostd` adds (Cloud CONNECTIONS §8, 2026-10-20)
 
-Cloud `docs/development/MCP-INTEGRATION.md` (#2201, docs PR Maybank01/agentrouter-cloud#2238) owns the catalog, actions
+Cloud `docs/development/CONNECTIONS.md` §8 (#2201; formerly MCP-INTEGRATION.md) owns the catalog, actions
 and views. The `hostd` side it needs, beyond §13.1–§13.5:
 
 - **Account home.** A credentialed catalog entry (`placement: account_home`, e.g. `bilibili`) runs on exactly one `hostd`
@@ -1213,7 +1220,7 @@ server that reads its account from a file; nothing here names a service.
   `check` in the background → `login_ok` or `login_failed` (its words in `lastError`). Errors: `LOGIN_UNSUPPORTED`,
   `SERVER_NOT_RUNNING`, `LOGIN_IN_PROGRESS`, `LOGIN_FAILED`.
 - **`link__logout {name, credential?}`:** forgets the value here and restarts the server without it.
-- **A space's runtime secret (Cloud PROJECT-SERVICE §9.8.5, #2739):** `credentials[]` may also carry `secret:
+- **A space's runtime secret (Cloud CONNECTIONS §7, ENVIRONMENTS §9.7, #2739):** `credentials[]` may also carry `secret:
   "space:<id>/<name>"` (the value is kept under that name, shared by every server of that space that reads it, instead
   of `<server>/<name>`), `fields: {<file field>: <account field>}` (this computer keeps the account as those fields and
   writes each server its own file shape, so a cookie one server's login wrote is read by another that names the fields

@@ -45,4 +45,4 @@ add("lives too long", "tools/call", signed("tools/call", { name: "files__read_fi
 add("replayed nonce (same as case 2)", "tools/call", signed("tools/call", { name: "files__read_file", arguments: {} }, { nonce: "0".repeat(31) + "2" }), "REPLAYED");
 add("missing signature", "tools/call", { params: { name: "files__read_file", arguments: {} }, string: "", canonical: "" }, "SIGNATURE_INVALID");
 
-process.stdout.write(`${JSON.stringify({ about: "Link request signature v3 vectors (docs/LINKER-MCP.md §3.3). Checked in order with one replay cache; now = nowMs.", publicKey, kid, link: LINK, nowMs: NOW, cases }, null, 2)}\n`);
+process.stdout.write(`${JSON.stringify({ about: "Link request signature v3 vectors (docs/HOSTD-MCP.md §3.3). Checked in order with one replay cache; now = nowMs.", publicKey, kid, link: LINK, nowMs: NOW, cases }, null, 2)}\n`);
