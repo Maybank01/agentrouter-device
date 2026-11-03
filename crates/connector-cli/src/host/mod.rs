@@ -5,7 +5,7 @@
 //! boundary is the sandbox's, audit and checkpoints are the aggregator's (driven by each tool's `readOnlyHint`).
 //!
 //! It is also what a cloud session bound to this computer uses as its "local machine" (Cloud
-//! `docs/development/PROJECT-SERVICE.md` §10.6): DSH's native file, search and command tools reach the computer
+//! `docs/reference/ENVIRONMENTS.md` §14): DSH's native file, search and command tools reach the computer
 //! through these tools, so they answer in the shapes those tools need (batched metadata, ripgrep semantics, …).
 //!
 //! One module per concern: [`files`] (read, write, stat, list), [`search`] (ripgrep), [`run`] (commands, streamed),

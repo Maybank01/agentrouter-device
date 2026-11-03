@@ -153,7 +153,7 @@ mod tests {
     use super::*;
 
     fn temp(tag: &str) -> PathBuf {
-        // Under the build's own target folder (never the system temp one, docs/AV-HYGIENE.md): the unit-test
+        // Under the build's own target folder (never the system temp one, docs/development/AV-HYGIENE.md): the unit-test
         // binary is `<target>/debug/deps/<name>`.
         let exe = std::env::current_exe().unwrap();
         let target = exe

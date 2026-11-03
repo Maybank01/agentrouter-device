@@ -362,7 +362,7 @@ mod tests {
 
     #[cfg(unix)]
     fn home_with_profile(tag: &str, profile: &str) -> PathBuf {
-        // Under the build's target folder (never the system temp one, docs/AV-HYGIENE.md): `<target>/debug/deps/<exe>`.
+        // Under the build's target folder (never the system temp one, docs/development/AV-HYGIENE.md): `<target>/debug/deps/<exe>`.
         let exe = std::env::current_exe().unwrap();
         let target = exe.ancestors().nth(3).expect("target folder");
         let dir = target

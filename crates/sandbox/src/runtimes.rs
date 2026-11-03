@@ -25,7 +25,7 @@
 //!   Huawei PyPI mirrors ([`Source::Wheel`]). ripgrep: npmmirror's copy of the npm tarball. socat and bubblewrap: our
 //!   npm package [`CARRIER`] (the same archives inside; npmmirror syncs it from npm), until it is published only GitHub
 //!   serves them (~350 KB). The download is in-process (no curl, PowerShell or installer program) and lands in
-//!   `<data>-shared/runtimes/` beside the data folder, never in the temp folder (docs/AV-HYGIENE.md).
+//!   `<data>-shared/runtimes/` beside the data folder, never in the temp folder (docs/development/AV-HYGIENE.md).
 //! - **One path:** srt, the Windows sandbox entry, `npm ci`, and `npx`/`uvx` servers use these runtimes, never the
 //!   person's own Node or uv (whatever version that is, if any). [`TOOLS`] go first on a server's PATH; srt gets the
 //!   absolute paths of [`SANDBOX_LINUX`] in its settings (`ripgrep.command`, `socatPath`, `bwrapPath`), never the
@@ -1066,7 +1066,7 @@ mod tests {
             .collect()
     }
 
-    /// Only the projects' own hosts, their registries and the well-known mirrors of those (docs/AV-HYGIENE.md); the
+    /// Only the projects' own hosts, their registries and the well-known mirrors of those (docs/development/AV-HYGIENE.md); the
     /// official host first, unless mirrors go first on this computer (#154).
     #[test]
     fn downloads_come_from_official_hosts_and_their_mirrors_only() {
@@ -1190,7 +1190,7 @@ mod tests {
     }
 
     fn temp(name: &str) -> PathBuf {
-        // Under the build's own target folder (never the system temp one, docs/AV-HYGIENE.md).
+        // Under the build's own target folder (never the system temp one, docs/development/AV-HYGIENE.md).
         let exe = std::env::current_exe().unwrap();
         let target = exe
             .parent()

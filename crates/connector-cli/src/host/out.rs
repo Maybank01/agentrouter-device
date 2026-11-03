@@ -133,7 +133,7 @@ pub(super) struct Out {
 impl Default for Out {
     fn default() -> Out {
         // The temp folder as the link's commands see it (folder mode points it at the link's scratch folder). Only data
-        // is written there; nothing runs from it (docs/AV-HYGIENE.md).
+        // is written there; nothing runs from it (docs/development/AV-HYGIENE.md).
         let temp = ["TMPDIR", "TEMP", "TMP"]
             .iter()
             .find_map(|k| std::env::var_os(k).filter(|v| !v.is_empty()))

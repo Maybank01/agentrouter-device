@@ -11,7 +11,7 @@
 //!
 //! PowerShell runs the text as one script in the session's scope and exits as `-Command <text>` would: `exit N`
 //! exits N, otherwise 0 when the last statement succeeded and 1 when it did not. No encoded command, no
-//! execution-policy change, no script file run with `-File` (docs/AV-HYGIENE.md): the runner is plain visible text.
+//! execution-policy change, no script file run with `-File` (docs/development/AV-HYGIENE.md): the runner is plain visible text.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -378,7 +378,7 @@ mod tests {
 
     #[test]
     fn a_terminal_command_file_is_private_and_removed_on_drop() {
-        // Under the build's own target folder (docs/AV-HYGIENE.md): the unit-test binary is `<target>/debug/deps/…`.
+        // Under the build's own target folder (docs/development/AV-HYGIENE.md): the unit-test binary is `<target>/debug/deps/…`.
         let exe = std::env::current_exe().unwrap();
         let target = exe
             .parent()

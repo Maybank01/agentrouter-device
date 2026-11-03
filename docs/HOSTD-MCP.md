@@ -11,7 +11,7 @@ crates in the README (`hostd-link`, `aggregator`, `sandbox`, `checkpoint`, `conn
 and later behaviour lands with its issue (e.g. space runtime event/op lines, Cloud #3607, #3675, #3691). What is still
 open is tracked in `agent-ready` issues, not here. It replaced the device-action parts of the former Cloud
 `DEVICE-PROTOCOL.md` and `LINKED-DEVICES.md` (both deleted); the Cloud side of the link is Cloud
-`docs/development/ENVIRONMENTS.md` §13–§15.
+`docs/reference/ENVIRONMENTS.md` §13–§15.
 
 Model since 2026-10-30/31 (Cloud `docs/development/AGENT-FRAMEWORK.md` §7, never restated here): devices are one model;
 a device describes its own facts and advertises which environment types it can host (a linked PC: folder, machine; the
@@ -756,7 +756,7 @@ start and the first `link` run), and `--full` provisions them too:
   srt's `npm ci` uses npmmirror first too (npm's own configuration otherwise, npmmirror as the fallback). A file that
   does not match is deleted, never unpacked.
 - Downloaded in-process (no curl, PowerShell or installer) into `<data>-shared/runtimes/<name>-<version>/`, never
-  through the temp folder; the old version's folder is removed after the new one is in place (docs/AV-HYGIENE.md, the
+  through the temp folder; the old version's folder is removed after the new one is in place (docs/development/AV-HYGIENE.md, the
   one exception to "gateway only"). Windows: the sandbox account gets read+execute on that folder, like on srt's.
 - One path: srt, the Windows sandbox entry, `npm ci` (as `node npm-cli.js`, no `npm.cmd`), `npx` and `uvx` use these,
   never the person's own installs; they go first on every local server's PATH. Without uv only `uvx` tools are
@@ -1172,7 +1172,7 @@ and release artifact names.
 
 ### 13.7 Generic MCP integration: what `hostd` adds (Cloud CONNECTIONS §8, 2026-10-20)
 
-Cloud `docs/development/CONNECTIONS.md` §8 (#2201; formerly MCP-INTEGRATION.md) owns the catalog, actions
+Cloud `docs/reference/CONNECTIONS.md` §8 (#2201; formerly MCP-INTEGRATION.md) owns the catalog, actions
 and views. The `hostd` side it needs, beyond §13.1–§13.5:
 
 - **Account home.** A credentialed catalog entry (`placement: account_home`, e.g. `bilibili`) runs on exactly one `hostd`

@@ -1,4 +1,4 @@
-//! The two layers of a checkout as one folder (Cloud PROJECT-SERVICE.md §5.5.2, §5.5.4 "Linux"): a lazy read-only
+//! The two layers of a checkout as one folder (Cloud `docs/reference/ENVIRONMENTS.md` §11.1, §11.3 "Linux"): a lazy read-only
 //! lower layer (one space version, [`Lower`]) and a writable upper layer (a real directory on this host) in **one**
 //! FUSE process on `fuser` (MIT) — kernel overlayfs over a FUSE lower is refused in Sysbox's user namespace, and two
 //! stacked FUSE hops would double every read's cost.
