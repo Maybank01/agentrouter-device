@@ -41,6 +41,9 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const INDEX = "docs/README.md";
 export const ARCHIVE = "docs/ARCHIVE.md";
 export const MODULE_README_MAX_LINES = 40;
+/** The repository charter (agentteam-deployments docs/development/CONTRACTS.md): one page, linked from AGENTS.md. */
+export const CHARTER = "docs/CHARTER.md";
+export const CHARTER_MAX_LINES = 40;
 
 const ENTRY = new Set(ENTRY_FILES);
 /** Where each doc type may live (Cloud docs/development/DOCS.md "Types"). `pending` = awaiting its cleanup verdict. */
@@ -52,6 +55,7 @@ export const TYPES = Object.freeze({
   reference: { where: "docs/reference/", ok: (p) => p.startsWith("docs/reference/") },
   operations: { where: "docs/operations/", ok: (p) => p.startsWith("docs/operations/") },
   adr: { where: "docs/adr/NNNN-name.md", ok: (p) => /^docs\/adr\/\d{4}-[a-z0-9-]+\.md$/u.test(p) },
+  charter: { where: CHARTER, ok: (p) => p === CHARTER },
   module: { where: `a README.md, AGENTS.md or CLAUDE.md of a module or package directory outside docs/ (at most ${MODULE_README_MAX_LINES} lines)`, ok: (p) => !p.startsWith("docs/") && p.includes("/") && /\/(?:README|AGENTS|CLAUDE)\.md$/u.test(p) },
   pending: { where: "anywhere (until its cleanup verdict lands)", ok: () => true },
   ...EXTRA_TYPES,
@@ -160,6 +164,10 @@ export function checkDocs({ files, index, archive = [], read, modules = MODULE_I
       const lines = read(doc.path).split(/\r?\n/u).length;
       if (lines > MODULE_README_MAX_LINES) errors.push(`${doc.at}: ${doc.path} has ${lines} lines; a module README says what the directory is and links into docs/ (at most ${MODULE_README_MAX_LINES}); move the body to a docs/ type`);
     }
+    if (doc.type === "charter") {
+      const lines = read(doc.path).split(/\r?\n/u).length;
+      if (lines > CHARTER_MAX_LINES) errors.push(`${doc.at}: ${doc.path} has ${lines} lines; a charter is one page (at most ${CHARTER_MAX_LINES}): purpose, layer, belongs / never, contracts, dependencies, rules`);
+    }
     if (doc.type === "reference") {
       const head = read(doc.path).split(/\r?\n/u).slice(0, 10).join("\n");
       const verified = LAST_VERIFIED.exec(head);
@@ -167,6 +175,9 @@ export function checkDocs({ files, index, archive = [], read, modules = MODULE_I
       else if (doc.verified !== verified[1]) errors.push(`${doc.at}: Last verified is ${verified[1]} in ${doc.path}; the map says "${doc.verified}"`);
     }
   }
+  // Every repository has a charter, and its AGENTS.md links it (agentteam-deployments docs/development/CONTRACTS.md).
+  if (!index.docs.some((doc) => doc.type === "charter")) errors.push(`${INDEX}: no ${CHARTER} row; every repository has a charter (agentteam-deployments docs/development/CONTRACTS.md)`);
+  else if (fileSet.has("AGENTS.md") && !read("AGENTS.md").includes(CHARTER)) errors.push(`AGENTS.md: link the charter (${CHARTER})`);
   for (const removed of archive) {
     if (fileSet.has(removed.path) || byPath.has(removed.path)) errors.push(`${removed.at}: ${removed.path} is recorded as removed but exists or is mapped; drop the row or the file`);
   }
