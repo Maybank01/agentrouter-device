@@ -28,7 +28,7 @@ a hundred times).
 | [docs/CHARTER.md](CHARTER.md) | charter | all | what belongs here and what never does, contract provided, how Cloud pins it, checks | 2026-11-03 |
 | [docs/ARCHIVE.md](ARCHIVE.md) | index | all | docs removed or moved and how to recover them | 2026-11-03 |
 | [docs/HOSTD-MCP.md](HOSTD-MCP.md) | protocol | hostd-link, aggregator, sandbox, connector-cli | `hostd` + MCP aggregation: link protocol, host tools, sandbox, placements | 2026-11-03 |
-| [docs/development/AV-HYGIENE.md](development/AV-HYGIENE.md) | development | connector-cli (builds) | build rules against antivirus false positives, enforced by `scripts/av-hygiene.sh` | 2026-10-22 |
+| [docs/development/AV-HYGIENE.md](development/AV-HYGIENE.md) | development | connector-cli, client (builds) | build rules against antivirus false positives (hostd; Go client: one visible console window), enforced by `scripts/av-hygiene.sh` | 2026-11-04 |
 | [docs/adr/0001-code-signing.md](adr/0001-code-signing.md) | adr | releases | code signing: deferred, owner 2026-10-08 | 2026-10-22 |
 | [docs/adr/0002-own-ssh-server.md](adr/0002-own-ssh-server.md) | adr | client | the Go client serves SSH itself on the NetBird address; NetBird is the network only (P3 evidence, #221) | 2026-11-04 |
 | [client/README.md](../client/README.md) | module | client | the Go device client: purpose, boundary, interfaces, submodule index, known gaps | 2026-11-04 |

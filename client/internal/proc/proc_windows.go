@@ -5,17 +5,13 @@ package proc
 import (
 	"fmt"
 	"os/exec"
-	"syscall"
 
 	"golang.org/x/sys/windows"
 )
 
-func prepare(cmd *exec.Cmd) {
-	if cmd.SysProcAttr == nil {
-		cmd.SysProcAttr = &syscall.SysProcAttr{}
-	}
-	cmd.SysProcAttr.CreationFlags |= windows.CREATE_NO_WINDOW
-}
+// prepare sets nothing: no creation flag that hides, detaches or adds a console. A console child shares the
+// client's one visible console window.
+func prepare(*exec.Cmd) {}
 
 type job struct {
 	handle windows.Handle
@@ -94,3 +90,5 @@ func WaitPID(pid int) (int, error) {
 	}
 	return int(code), nil
 }
+
+func creationFlags(cmd *exec.Cmd) uint32 { return cmd.SysProcAttr.CreationFlags }

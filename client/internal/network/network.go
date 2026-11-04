@@ -137,9 +137,9 @@ func (n *Network) Status() State {
 	return s
 }
 
-// Stop leaves the network.
+// Stop leaves the network; bounded so closing the console window (Windows allows about 5 s) still ends cleanly.
 func (n *Network) Stop() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	return n.c.Stop(ctx)
 }

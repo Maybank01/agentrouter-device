@@ -22,12 +22,12 @@ in agentrouter-newapi#157) and compute/v1 (AgentCompute: `POST /v1/devices`, `PU
 | `internal/compute` | compute/v1 client; RFC 9457 problems kept whole |
 | `internal/facts` | os, arch, shell, cpu, memory, gpu, software; no WMI, no admin |
 | `internal/autostart` | systemd user unit, LaunchAgent, Task Scheduler at least privilege; off by default |
-| `internal/tray`, `internal/winconsole` | minimal tray; the Windows GUI build attaching to a parent console |
+| `internal/tray`, `internal/winconsole` | minimal tray; the one visible console window 「AgentRouter 设备」 with the activity log (Windows) |
 | `internal/proc`, `internal/state` | child processes (no window, tree kill); the per-user folder and its files |
 
 **Checks**: locally only `go build ./...` and `go vet ./...` (also `GOOS=windows`, `CGO_ENABLED=0 GOOS=darwin`);
 tests on GitHub-hosted Linux, macOS, Windows in `.github/workflows/client.yml` (R47).
 
 **Known gaps** (2026-11-04): not run end to end on Dev (needs AgentCompute#14 and the NewAPI Dev issuer with
-device-code login); no release flow (CI artifacts only); sandboxes' headless enrolment not here;
-`scripts/av-hygiene.sh` does not scan `client/` (`CREATE_NO_WINDOW`, ADR 0002, owner to confirm).
+device-code login); no release flow (CI artifacts only); sandboxes' headless enrolment not here; no Windows
+version resource or icon yet (AV-HYGIENE.md "Go 客户端").

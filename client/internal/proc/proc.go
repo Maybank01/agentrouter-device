@@ -1,11 +1,10 @@
-// Package proc starts the device's child processes (SSH sessions' shells, fact probes) the same way on every OS:
-// no window of their own on the person's desktop, and the whole process tree ends when the client disconnects
-// while its command runs.
+// Package proc starts the device's child processes (SSH sessions' shells, fact probes) the same way on every OS, and
+// ends the whole process tree when the client disconnects while its command runs.
 //
-// Windows: the client is a tray program without a console, so a console child would open a new console window
-// for every command an Agent runs. Children start with CREATE_NO_WINDOW: they get a console that has no window, and
-// what they start shares it (docs/adr/0002-own-ssh-server.md "No window per command"). Each session's shell goes
-// into a Job Object, so the whole tree ends when the client disconnects while the command still runs.
+// Windows: no hidden and no extra windows (docs/development/AV-HYGIENE.md). `agentdevice run` keeps one visible
+// console window (internal/winconsole); children start with no console flag at all, so a console program attaches to
+// that window while its streams are our pipes. Terminals run in a pseudo console. Each session's shell goes into a
+// Job Object, so the whole tree ends when the client disconnects while the command still runs.
 // Unix: each session's shell leads its own process group (or session, with a terminal), signalled and killed as one.
 package proc
 
@@ -21,7 +20,7 @@ type Tree interface {
 	Close() error
 }
 
-// Prepare sets the attributes every child gets (no window; own process group). Call before Start.
+// Prepare sets the attributes every child gets (Unix: its own process group). Call before Start.
 func Prepare(cmd *exec.Cmd) { prepare(cmd) }
 
 // Track returns the tree of a started command (Windows: puts it into a new Job Object).

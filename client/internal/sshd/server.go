@@ -37,6 +37,8 @@ type Config struct {
 	Home    string
 	Version string
 	Log     *slog.Logger
+	// Activity, when set, receives one entry per command, terminal, SFTP session and forward (the visible log).
+	Activity func(Activity)
 }
 
 type claimsKey struct{}
@@ -111,7 +113,9 @@ func (s *Server) password(ctx ssh.Context, password string) bool {
 // device is never a way into the person's other networks.
 func (s *Server) allowForward(ctx ssh.Context, host string, port uint32) bool {
 	ok := isLoopback(host)
-	s.cfg.Log.Info("ssh forward", "remote", ctx.RemoteAddr().String(), "to", net.JoinHostPort(host, fmt.Sprint(port)), "allowed", ok)
+	target := net.JoinHostPort(host, fmt.Sprint(port))
+	s.cfg.Log.Info("ssh forward", "remote", ctx.RemoteAddr().String(), "to", target, "allowed", ok)
+	s.report(ctx, Activity{Kind: "forward", Target: target, Allowed: ok})
 	return ok
 }
 
@@ -125,6 +129,8 @@ func isLoopback(host string) bool {
 
 func (s *Server) handleSFTP(sess ssh.Session) {
 	s.cfg.Log.Info("sftp start", "remote", sess.RemoteAddr().String())
+	start := time.Now()
+	defer func() { s.report(sess.Context(), Activity{Kind: "sftp", Seconds: time.Since(start).Seconds()}) }()
 	srv, err := sftp.NewServer(sess, sftp.WithServerWorkingDirectory(s.cfg.Home))
 	if err != nil {
 		fmt.Fprintf(sess.Stderr(), "AgentDevice sftp: start the SFTP server: %v\n", err)
@@ -183,6 +189,11 @@ func (s *Server) handleSession(sess ssh.Session) {
 	start := time.Now()
 	code := s.run(sess, args, s.env(sess, term), isPty, ptyReq)
 	log.Info("ssh session ended", "exit", code, "seconds", time.Since(start).Seconds())
+	kind := "exec"
+	if isPty {
+		kind = "terminal"
+	}
+	s.report(sess.Context(), Activity{Kind: kind, Command: FirstLine(raw), Exit: code, Seconds: time.Since(start).Seconds()})
 	_ = sess.Exit(code)
 }
 

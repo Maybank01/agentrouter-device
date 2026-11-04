@@ -40,14 +40,15 @@ filtered standard token.
   credentials, DPAPI secrets or desktop, and an SSH server running as SYSTEM.
 - An upstream patch: not needed for v1; can be proposed later without changing this contract.
 
-## No window per command (Windows)
+## One visible window (Windows; owner decision 2026-11-04)
 
-The client is a tray program without a console. A console child of such a process opens a new console window, so
-every Agent command would flash a window on the person's desktop. Non-terminal commands therefore start with
-`CREATE_NO_WINDOW` (a console without a window, shared by what they start); terminals use a pseudo console, which
-has no window. This departs from [AV-HYGIENE.md](../development/AV-HYGIENE.md)'s "visible console window per
-command", written for the hostd desktop model; that document is rewritten for the Go client when the Rust hostd is
-removed (open question for the owner until then).
+The client is a tray program (a GUI build). Owner: no hidden windows and no window per command. `agentdevice run`
+keeps **one** resident, visible, minimizable console window titled 「AgentRouter 设备」 (`AllocConsole`, or the
+terminal it was started from). Its header says 「关闭此窗口即断开连接」 and it shows one line per thing an Agent does
+(time, which conversation, the command's first line, exit code). Non-terminal commands start with no console creation
+flag, so console programs attach to that window while their streams are pipes; terminals run in a pseudo console
+(ConPTY). Closing the window disconnects cleanly. This keeps [AV-HYGIENE.md](../development/AV-HYGIENE.md)'s "no
+hidden windows" (its "Go 客户端" section; `scripts/av-hygiene.sh` scans `client/`).
 
 ## Consequences
 

@@ -44,3 +44,5 @@ func SignalNumber(name string) int { return int(signals[name]) }
 
 // WaitPID is only needed on Windows (the ConPTY spawn).
 func WaitPID(int) (int, error) { return -1, nil }
+
+func creationFlags(*exec.Cmd) uint32 { return 0 }

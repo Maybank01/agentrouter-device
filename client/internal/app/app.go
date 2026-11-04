@@ -44,6 +44,8 @@ type App struct {
 	Self string
 	// BaseEnv is the process environment as it was before NetBird changed it.
 	BaseEnv []string
+	// Console is the visible activity log (Windows: the one console window); nil = none.
+	Console io.Writer
 }
 
 func (a *App) identityClient(cred string) *identity.Client {
@@ -238,6 +240,9 @@ func (a *App) Run(ctx context.Context, join *compute.Join, ui UI) error {
 		Home:    home,
 		Version: a.Version,
 		Log:     a.Log.With("part", "sshd"),
+		Activity: func(act sshd.Activity) {
+			say(a.Console, ActivityLine(act))
+		},
 	})
 	if err != nil {
 		return err

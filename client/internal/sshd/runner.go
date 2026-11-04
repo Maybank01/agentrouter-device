@@ -28,8 +28,10 @@ const psRun = "$null = [scriptblock]::Create($__ar_t); if (-not $?) { exit 1 }; 
 	"$__ar_sb = [scriptblock]::Create($__ar_t + \"`n`n`$__ar_ok = `$?\"); if (-not $?) { exit 1 }; " +
 	"$__ar_ok = $true; . $__ar_sb; exit [int](-not $__ar_ok)"
 
-// psUTF8 makes PowerShell read and write UTF-8 whatever the console code page (a zh-CN system defaults to 936).
-const psUTF8 = "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding; "
+// psUTF8 makes PowerShell read and write UTF-8 whatever the console code page (a zh-CN system defaults to 936), and
+// keeps progress bars out of the shared console window (nobody reads them there; the output is in the pipes).
+const psUTF8 = "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding; " +
+	"$ProgressPreference = 'SilentlyContinue'; "
 
 // psFileRunner is the PowerShell runner for the text in file (UTF-8): read, delete, run.
 func psFileRunner(file string) string {

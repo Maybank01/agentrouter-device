@@ -99,6 +99,7 @@ func mint(t *testing.T, priv *ecdsa.PrivateKey, edit func(claims)) string {
 }
 
 type harness struct {
+	acts    chan Activity
 	addr    string
 	hostKey gossh.PublicKey
 	home    string
@@ -113,7 +114,14 @@ func start(t *testing.T) *harness {
 		t.Fatal(err)
 	}
 	home := t.TempDir()
+	acts := make(chan Activity, 64)
 	srv, err := New(Config{
+		Activity: func(a Activity) {
+			select {
+			case acts <- a:
+			default:
+			}
+		},
 		HostKey: signer,
 		Authorizer: &Authorizer{
 			Verifier:   &identity.Verifier{Issuer: testIssuer, Keys: keys},
@@ -133,7 +141,7 @@ func start(t *testing.T) *harness {
 	}
 	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(func() { _ = srv.Close() })
-	return &harness{addr: ln.Addr().String(), hostKey: signer.PublicKey(), home: home, priv: priv}
+	return &harness{acts: acts, addr: ln.Addr().String(), hostKey: signer.PublicKey(), home: home, priv: priv}
 }
 
 func (h *harness) dial(t *testing.T, token string) (*gossh.Client, error) {
@@ -229,13 +237,24 @@ func TestAuthAcceptsOnlyThisDevicesOwnerWithTheSSHScope(t *testing.T) {
 }
 
 func TestExecOutputExitCodeAndStdin(t *testing.T) {
-	c := start(t).client(t)
+	h := start(t)
+	c := h.client(t)
 	out, _, code := run(t, c, pick("echo hello; echo 中文", "Write-Output hello; Write-Output 中文"), nil)
 	if code != 0 || !strings.Contains(out, "hello") || !strings.Contains(out, "中文") {
 		t.Fatalf("out %q code %d", out, code)
 	}
 	if _, _, code := run(t, c, "exit 3", nil); code != 3 {
 		t.Fatalf("exit 3 gave %d", code)
+	}
+	// The visible activity log gets one entry per command, with who and the first line.
+	deadline := time.After(5 * time.Second)
+	for found := false; !found; {
+		select {
+		case a := <-h.acts:
+			found = a.Kind == "exec" && a.Command == "exit 3" && a.Exit == 3 && a.Run == "cnv_test1"
+		case <-deadline:
+			t.Fatal("no activity entry for `exit 3`")
+		}
 	}
 	_, errOut, code := run(t, c, pick("echo oops >&2; false", "Write-Error oops"), nil)
 	if code == 0 || !strings.Contains(errOut, "oops") {

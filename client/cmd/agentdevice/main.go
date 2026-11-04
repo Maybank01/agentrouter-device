@@ -24,9 +24,11 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/skratchdot/open-golang/open"
 
@@ -150,19 +152,53 @@ func defaultName() string {
 	return "我的电脑"
 }
 
-// terminalUI prints to the terminal.
-type terminalUI struct{}
+// terminalUI prints to the terminal or the console window.
+type terminalUI struct{ w io.Writer }
 
-func (terminalUI) Prompt(p identity.Prompt) {
+func (u terminalUI) out() io.Writer {
+	if u.w != nil {
+		return u.w
+	}
+	return os.Stdout
+}
+
+func (u terminalUI) Prompt(p identity.Prompt) {
 	addr := p.VerificationURIComplete
 	if addr == "" {
 		addr = p.VerificationURI
 	}
-	fmt.Printf("在浏览器里打开 %s ，确认代码 %s（%s 前有效）。\n", addr, p.UserCode, p.Expiry.Local().Format("15:04"))
+	fmt.Fprintf(u.out(), "在浏览器里打开 %s ，确认代码 %s（%s 前有效）。\n", addr, p.UserCode, p.Expiry.Local().Format("15:04"))
 	_ = open.Run(addr)
 }
 
-func (terminalUI) Status(_ tray.State, text string) { fmt.Println(text) }
+func (u terminalUI) Status(_ tray.State, text string) {
+	fmt.Fprintln(u.out(), time.Now().Format("15:04:05")+"  "+text)
+}
+
+// bothUI shows everything in the tray and in the console window.
+type bothUI []app.UI
+
+func (b bothUI) Prompt(p identity.Prompt) {
+	for i, u := range b {
+		if i == 0 {
+			u.Prompt(p)
+			continue
+		}
+		if t, ok := u.(terminalUI); ok { // the browser is opened once
+			addr := p.VerificationURIComplete
+			if addr == "" {
+				addr = p.VerificationURI
+			}
+			fmt.Fprintf(t.out(), "在浏览器里确认登录：%s ，代码 %s\n", addr, p.UserCode)
+		}
+	}
+}
+
+func (b bothUI) Status(s tray.State, text string) {
+	for _, u := range b {
+		u.Status(s, text)
+	}
+}
 
 // trayUI shows everything in the tray.
 type trayUI struct {
@@ -185,11 +221,18 @@ func runCmd(args []string, console bool) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	name := fs.String("name", "", "the device name, at the first enrolment (default: the computer's name)")
 	noTray := fs.Bool("no-tray", false, "run without the tray icon")
+	// The one visible console window comes first, before any child process starts: on Windows every command the
+	// Agents run attaches to it (no hidden and no extra windows, docs/development/AV-HYGIENE.md).
+	consoleOut, consoleErr := winconsole.Resident("AgentRouter 设备")
 	a, closeLog, err := common(fs, args)
 	if err != nil {
 		return err
 	}
 	defer closeLog()
+	if consoleErr != nil {
+		a.Log.Warn("no console window", "error", consoleErr.Error())
+	}
+	a.Console = consoleOut
 	if err := a.Cfg.Validate(a.Dir.Path("config.json")); err != nil {
 		return err
 	}
@@ -204,6 +247,16 @@ func runCmd(args []string, console bool) error {
 	case shown == "":
 		shown = defaultName()
 	}
+	if consoleOut != nil {
+		fmt.Fprintln(consoleOut, "AgentRouter 设备 · "+shown)
+		if runtime.GOOS == "windows" {
+			fmt.Fprintln(consoleOut, "关闭此窗口即断开连接")
+		} else {
+			fmt.Fprintln(consoleOut, "按 Ctrl+C 断开连接")
+		}
+		fmt.Fprintln(consoleOut, "下面每一行是云端 Agent 在这台电脑上做的一件事。")
+	}
+	// Ctrl+C, and on Windows closing the window (CTRL_CLOSE_EVENT arrives as SIGTERM), disconnect cleanly.
 	ctx, cancel := signalContext()
 	defer cancel()
 	work := func(ui app.UI) error {
@@ -218,7 +271,7 @@ func runCmd(args []string, console bool) error {
 		return a.Run(ctx, join, ui)
 	}
 	if *noTray || !tray.Available() {
-		err := work(terminalUI{})
+		err := work(terminalUI{w: consoleOut})
 		if errors.Is(err, context.Canceled) {
 			return nil
 		}
@@ -228,7 +281,7 @@ func runCmd(args []string, console bool) error {
 	quit := func() { once.Do(func() { cancel(); tray.Quit() }) }
 	errc := make(chan error, 1)
 	tray.Run(func(h *tray.Handle) {
-		ui := &trayUI{h: h, name: shown}
+		ui := bothUI{&trayUI{h: h, name: shown}, terminalUI{w: consoleOut}}
 		go func() {
 			err := work(ui)
 			if err != nil && ctx.Err() == nil {
