@@ -1,32 +1,33 @@
 # client: the Go device client (base layers v1)
 
-`agentdevice` makes a computer an execution device the cloud reaches by SSH over its owner's private NetBird network
-(R45, Cloud #3976). It replaces the Rust `hostd` once verified on Dev; until then both live in this repository.
+**Purpose**: `agentdevice` makes a computer an execution device the cloud reaches by SSH over its owner's private
+NetBird network (R45, Cloud #3976). It replaces the Rust `hostd` once verified on Dev; until then both live here.
 
-- **Network**: NetBird `client/embed` v0.82.0 in userspace; no admin rights, no driver, no inbound port
-  (`internal/network`; the 20 s Windows startup delay is skipped there).
-- **SSH**: its own server on the NetBird address, port 22 (`internal/sshd`): exec, terminal, SFTP, local
-  forwarding to this computer's loopback services; identity/v1 token as password. Why: [ADR 0002](../docs/adr/0002-own-ssh-server.md).
-- **Enrolment**: device-code login to the NewAPI account (`internal/identity`), compute/v1 enrol / facts / unbind
-  (`internal/compute`, `internal/facts`).
-- **Person-facing**: tray (`internal/tray`), autostart per user without admin (`internal/autostart`), device name.
-- State in the per-user config folder (`internal/state`): `config.json` (endpoints), `device.json`, `credential`,
-  `ssh_host_ed25519_key`, `netbird.json`, `agentdevice.log`.
-- Contracts: vendored copies with sha256 in `testdata/contracts/` (identity/v1, compute/v1).
+**Boundary**: network (NetBird `client/embed`, userspace), our own SSH server, login, enrolment, facts, tray,
+autostart, device name. Never here: MCP, tools of its own, admin rights, an inbound port on the computer's own network,
+placement or environments (AgentCompute, AgentHost). Why our own SSH server: [ADR 0002](../docs/adr/0002-own-ssh-server.md).
 
-Known gaps (current state, 2026-11-04): not yet run end to end on Dev (needs AgentCompute#14 and the NewAPI Dev
-issuer with device-code login, agentrouter-newapi#157); no release flow yet (CI artifacts only); sandboxes' headless
-enrolment is not here; `scripts/av-hygiene.sh` does not scan `client/` (CREATE_NO_WINDOW, ADR 0002).
+**Interfaces**: consumes identity/v1 (agentrouter-newapi: JWKS, `POST /v1/identity/token`; device-code login proposed
+in agentrouter-newapi#157) and compute/v1 (AgentCompute: `POST /v1/devices`, `PUT /v1/computers/{id}/facts`,
+`DELETE /v1/devices/{id}`); provides SSH on the NetBird address, port 22. Vendored copies with sha256:
+`testdata/contracts/`.
 
-Commands: `agentdevice [run]`, `login`, `status`, `autostart on|off|status`, `unbind`, `facts`, `version`
-(`cmd/agentdevice/main.go`).
+| Submodule | Current state |
+| --- | --- |
+| `cmd/agentdevice` | commands `run` (default), `login`, `status`, `autostart on\|off\|status`, `unbind`, `facts`, `version`; `--home` |
+| `internal/app` | the flow: login → enrol → join → SSH + facts + tray state |
+| `internal/network` | embed v0.82.0, NetBird's SSH server off; skips NetBird's slow static-info probes (Windows 20 s) |
+| `internal/sshd` | exec, terminal (ConPTY / PTY), SFTP, loopback-only forwarding; token auth; command text via files (R21) |
+| `internal/identity` | ES256 verifier (contract vectors), JWKS cache, token client, RFC 8628 login |
+| `internal/compute` | compute/v1 client; RFC 9457 problems kept whole |
+| `internal/facts` | os, arch, shell, cpu, memory, gpu, software; no WMI, no admin |
+| `internal/autostart` | systemd user unit, LaunchAgent, Task Scheduler at least privilege; off by default |
+| `internal/tray`, `internal/winconsole` | minimal tray; the Windows GUI build attaching to a parent console |
+| `internal/proc`, `internal/state` | child processes (no window, tree kill); the per-user folder and its files |
 
-Locally only build and vet (R47):
+**Checks**: locally only `go build ./...` and `go vet ./...` (also `GOOS=windows`, `CGO_ENABLED=0 GOOS=darwin`);
+tests on GitHub-hosted Linux, macOS, Windows in `.github/workflows/client.yml` (R47).
 
-```sh
-go build ./... && go vet ./...
-GOOS=windows go vet ./... && CGO_ENABLED=0 GOOS=darwin go vet ./...
-```
-
-Tests run on GitHub-hosted Linux, macOS and Windows runners (`.github/workflows/client.yml`). The Windows build is a
-GUI program (`-ldflags "-H windowsgui"`); from a terminal it attaches to that console.
+**Known gaps** (2026-11-04): not run end to end on Dev (needs AgentCompute#14 and the NewAPI Dev issuer with
+device-code login); no release flow (CI artifacts only); sandboxes' headless enrolment not here;
+`scripts/av-hygiene.sh` does not scan `client/` (`CREATE_NO_WINDOW`, ADR 0002, owner to confirm).
