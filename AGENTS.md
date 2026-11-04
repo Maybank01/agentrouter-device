@@ -33,8 +33,8 @@ Charter (what belongs here, the contract it provides, how Cloud pins it): [docs/
 ## Landing
 - From the Cloud checkout: `npm run task -- start <n> --repo AgentDevice --agent <name>`, then `npm run task -- pr <n>
   --repo AgentDevice` (label `merge-on-green`, then stop): `.github/workflows/merge-on-green.yml` (a vendored copy of the
-  private shared workflow, #216) merges it once the required checks are green. A PR that changes `.github/workflows` is
-  merged by hand once green.
+  private shared workflow, #216) merges it once the required checks are green; no review (workspace rule R60). A PR that changes `.github/workflows`,
+  or one blocked only by a check that cannot run, is admin-merged by hand once its own checks are green (R60).
 - The PR body names the root cause / structure, not only the symptom.
 
 ## Release
