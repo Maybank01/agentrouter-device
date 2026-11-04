@@ -267,15 +267,16 @@ func TestExecOutputExitCodeAndStdin(t *testing.T) {
 	}
 }
 
-// R21 regression: a command of 300 KiB (over Linux's 128 KiB argument limit and Windows' 32 767 characters) runs,
-// because its text never travels in a command line.
+// R21 regression: a command of 200 KiB (over Linux's 128 KiB per-argument limit and Windows' 32 767 characters) runs,
+// because its text never travels in a command line. 200 KiB is the most an SSH exec request can carry: the protocol
+// packet limit is 256 KiB (x/crypto maxPacket, OpenSSH the same), so a larger command is refused before it arrives.
 func TestLargeCommandRuns(t *testing.T) {
 	c := start(t).client(t)
-	pad := strings.Repeat("x", 300<<10)
+	pad := strings.Repeat("x", 200<<10)
 	cmd := pick(": "+pad+"\necho big-ok", "# "+pad+"\nWrite-Output big-ok")
 	out, errOut, code := run(t, c, cmd, nil)
 	if code != 0 || !strings.Contains(out, "big-ok") {
-		t.Fatalf("out %q err %q code %d", out, errOut, code)
+		t.Fatalf("out %.200q err %.200q code %d", out, errOut, code)
 	}
 	left, _ := filepath.Glob(filepath.Join(runDir(), "cmd-*.txt"))
 	if len(left) > 0 {
