@@ -1,0 +1,6 @@
+{
+  "about": "Byte copies of the executor protocol contract this repository implements (agentteam-deployments docs/development/CONTRACTS.md C4: one sha256 per file, SHA256SUMS here). The provider is agentrouter-top/AgentCompute (contracts/executor-protocol/v0); only the machine-readable files hostd's contract test reads are copied. Refresh: copy the files at the new ref, rewrite SHA256SUMS (sha256sum over contracts/, sorted), move ref and commit here, in the same PR as the code change.",
+  "repo": "agentrouter-top/AgentCompute",
+  "ref": "v0.1.0",
+  "commit": "b4bf0b26a4786d0c528aefdb3269d042ee192460"
+}

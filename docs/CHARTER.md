@@ -17,10 +17,10 @@ the abandoned DSH-plugin / Desktop-adapter client (R46).
 
 | Contract | Path | Version | Consumers |
 | --- | --- | --- | --- |
-| Executor side of the link protocol (hello v2, `{s, m}` frames) and `hostd` design | `crates/device-core/src/protocol.rs` + vectors, `docs/HOSTD-MCP.md` | v2 | Cloud link gateway (`runtime-gateway`, until AgentCompute owns it) |
+| Executor side of the link protocol (hello v2, `{s, m}` frames) and `hostd` design | `crates/device-core/src/protocol.rs` + vectors, `docs/HOSTD-MCP.md` | v2 | AgentCompute's link hub and Cloud Control |
 
-C1 target: `contracts/executor/v1/`, once AgentCompute owns the executor protocol. A released `hostd` on people's
-computers is a real external dependency (C3): an old protocol major stays until those clients are gone.
+The executor protocol is AgentCompute's (`contracts/executor-protocol/v0`; copies in `vendor/agentcompute/`, tested by
+`crates/connector-cli/tests/executor_contract.rs`). A released `hostd` is a real external dependency (C3).
 
 **Consumes**: Cloud's pairing (`/device/v1/pair`) and link gateway (`/device/v2/link`, `/device/v2/port/`), over the
 network only; pinned MCP packages and `sandbox-runtime` by lockfile/catalog;
