@@ -1,5 +1,15 @@
 # AgentRouter 设备连接器（控制台模式）
 
+## Direction (2026-11-04)
+
+The Rust `hostd` / `agentrouter link` described below is being replaced. The client becomes our Go program embedding
+NetBird's `client/embed` (userspace networking, no admin rights, no driver) with NetBird's JWT-authenticated SSH server:
+the computer joins the owner's private network and only executes what arrives over SSH (no MCP, no tools of its own).
+Purpose and boundaries: [docs/CHARTER.md](docs/CHARTER.md) (umbrella task agentrouter-top/agentrouter-cloud#3976). The
+code below stays and keeps releasing until the Go client is verified on Dev.
+
+## 现在的连接器（Rust `hostd`）
+
 在电脑上任意一个文件夹里运行一条命令，云端对话里的 Agent 就能在**这个文件夹里**干活；命令开着就一直连着，Ctrl+C 断开。
 
 ```text
