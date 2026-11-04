@@ -21,11 +21,11 @@ a hundred times).
 
 | Path | Type | Module | What | Last verified |
 | --- | --- | --- | --- | --- |
-| [README.md](../README.md) | entry | all | the device connector for people (zh) and for developers: crates, CI, local checks | 2026-11-03 |
-| [AGENTS.md](../AGENTS.md) | entry | all | agent instructions: scope, checks, landing, release, open-source base | 2026-11-03 |
+| [README.md](../README.md) | entry | all | direction (2026-11-04: Go client embedding NetBird replaces `hostd`); the current connector for people (zh) and for developers: crates, CI, local checks | 2026-11-04 |
+| [AGENTS.md](../AGENTS.md) | entry | all | agent instructions: direction, scope, checks, landing, release, open-source base | 2026-11-04 |
 | [SECURITY.md](../SECURITY.md) | entry | all | security policy and reporting; design points of the current chain | 2026-11-03 |
 | [docs/README.md](README.md) | index | all | this map | 2026-11-03 |
-| [docs/CHARTER.md](CHARTER.md) | charter | all | what belongs here and what never does, contract provided, how Cloud pins it, checks | 2026-11-03 |
+| [docs/CHARTER.md](CHARTER.md) | charter | all | the Go client embedding NetBird (direction 2026-11-04): what belongs here and what never does, contracts consumed, how it is pinned, checks | 2026-11-04 |
 | [docs/ARCHIVE.md](ARCHIVE.md) | index | all | docs removed or moved and how to recover them | 2026-11-03 |
 | [docs/HOSTD-MCP.md](HOSTD-MCP.md) | protocol | hostd-link, aggregator, sandbox, connector-cli | `hostd` + MCP aggregation: link protocol, host tools, sandbox, placements | 2026-11-03 |
 | [docs/development/AV-HYGIENE.md](development/AV-HYGIENE.md) | development | connector-cli (builds) | build rules against antivirus false positives, enforced by `scripts/av-hygiene.sh` | 2026-10-22 |

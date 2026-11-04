@@ -8,6 +8,9 @@ checks it.
 Charter (what belongs here, the contract it provides, how Cloud pins it): [docs/CHARTER.md](docs/CHARTER.md).
 
 ## What this repo is / is not
+- Direction (owner 2026-11-04, Cloud #3976): the client becomes a Go program embedding NetBird (`client/embed` + its
+  JWT-authenticated SSH server); the device only executes over SSH, no MCP, no tools of its own. It replaces everything
+  below; until it is verified on Dev the bullets below describe the current code. Purpose and boundaries: the charter.
 - `hostd` (`agentrouter link`, npm `@agentrouter-top/cli`): a pure remote MCP client that links the user's computer to
   our server, outbound only. It links, relays and installs/supervises the local MCP services; it has no file, command
   or screen tools of its own and opens no inbound port. Crates and roles: [README.md](README.md) "Development".

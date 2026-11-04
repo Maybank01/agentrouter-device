@@ -1,39 +1,39 @@
 # Charter: AgentDevice
 
-The device connector: `hostd` + the `agentrouter` CLI (and the frozen desktop shell) on a person's computer — a pure
-remote MCP client that links the computer out to our server and runs the local MCP services in the OS sandbox. Layer:
-behind NewAPI, the executor side of the compute layer (Cloud AGENT-FRAMEWORK §10.2: it implements the executor
-protocol AgentCompute defines). The cloud sandbox image ships the same `hostd`.
+Our client: a branded Go program a person installs so that their computer becomes a computer of the compute layer,
+reachable by SSH inside the owner's own private network and nothing else. Owner 2026-11-04: 「装上客户端，云端就有一个按照SSH
+协议的执行设备」, 「设备端只做执行」 (base layers v1 design §4.3, Cloud #3976). AgentCompute's cloud sandboxes run the same
+program, so a sandbox and a person's computer are reached the same way. Layer: the device side of the compute layer.
+**Transition**: the Rust `hostd` / `agentrouter link` here today keeps releasing until the Go client is verified on Dev,
+then it is deleted (C3: released copies on people's computers hold it).
 
-**Belongs here**: the link layer (`crates/hostd-link`), the MCP aggregator, the sandbox, checkpoints and undo,
-`device-core` (pairing, keys, protocol primitives, audit), `connector-cli` (`agentrouter link`, npm
-`@agentrouter-top/cli`), release builds of `hostd` and the sandbox tools.
+**Belongs here**: embedding NetBird `client/embed` (BSD-3, pinned release): userspace networking, no admin rights, no
+driver; it joins the owner's NetBird network on our self-hosted management. NetBird's SSH server (`client/ssh/server`:
+shell, commands, SFTP, port forwarding, Windows included), JWT only: its `JWTConfig` (`Issuer`, `KeysLocation` = JWKS,
+`Audiences` = `netbird`, `MaxTokenAge`) comes per peer from management; the client allows the server. Our login (device
+code to the person's NewAPI account), device name, tray, autostart, logout (= the peer is removed), updates, per-OS
+release builds (signing deferred, ADR 0001). Honest `facts` (OS, architecture, shell, CPU / memory / GPU, installed
+software) in AgentCompute's shape, with no flattening of OS differences.
 
-**Never here**: file, command or screen tools of its own (the tools are the installed MCP services, R45); inbound
-ports; decisions about placement, environments or Agents (AgentCompute, AgentHost, ECS); accounts and prices (NewAPI);
-the abandoned DSH-plugin / Desktop-adapter client (R46).
+**Never here**: MCP, or any file, command, screen or other tool of its own: the device only executes what arrives over
+SSH. Per-folder sandboxes or access levels (the session runs as the user on that computer; folders only tell the Agent
+where to look, owner 2026-11-04). Placement, sandboxes, environments, spaces, Agents (AgentCompute, AgentHost,
+AgentSpace, ECS). Accounts, token issuance, prices (NewAPI). NetBird management, signal, relay and the SSH gateway
+(AgentCompute; NetBird's AGPL directories never enter this program). Patches to NetBird (pin a release, fix upstream).
+The abandoned DSH-plugin / Desktop-adapter client (R46).
 
-**Contracts provided** (C1–C3)
+**Contracts provided** (C1–C3): none; it provides a computer, an SSH endpoint in the owner's network. Until deleted, the
+`hostd` link protocol v2 (`crates/device-core/src/protocol.rs`, `docs/HOSTD-MCP.md`) is held by released `hostd`.
 
-| Contract | Path | Version | Consumers |
-| --- | --- | --- | --- |
-| Executor side of the link protocol (hello v2, `{s, m}` frames) and `hostd` design | `crates/device-core/src/protocol.rs` + vectors, `docs/HOSTD-MCP.md` | v2 | AgentCompute's link hub and Cloud Control |
+**Consumes** (pinned, C4, C6): NewAPI `identity/v1` (EdDSA JWT, JWKS, device-code login, `aud: netbird` tokens);
+AgentCompute `compute/v1` conventions (`kind: device`, `name`, `facts`; `state` comes from the network, not from us);
+NetBird by `go.mod` version; our NetBird management by URL only. Until deleted, `hostd` implements AgentCompute
+`contracts/executor-protocol/v0` (copy in `vendor/agentcompute/`).
 
-The executor protocol is AgentCompute's (`contracts/executor-protocol/v0`; copies in `vendor/agentcompute/`, tested by
-`crates/connector-cli/tests/executor_contract.rs`). A released `hostd` is a real external dependency (C3).
+**How it is pinned**: per-OS release binaries with `SHA256SUMS`; a consumer pins asset + `sha256` (today Cloud
+`deploy/versions.json` `components.agentDevice` pins `hostd`; AgentCompute's sandbox image will pin the Go client).
+**Dependencies** (C5): only those two contracts and NetBird; nothing upward (online / offline is what NetBird reports).
+**Checks on the PR path** (GitHub-hosted, R47): `check-docs.mjs`, `check-repo-imports.mjs` (C6), build, lint, tests.
 
-**Consumes**: Cloud's pairing (`/device/v1/pair`) and link gateway (`/device/v2/link`, `/device/v2/port/`), over the
-network only; pinned MCP packages and `sandbox-runtime` by lockfile/catalog;
-nothing of another repository's source (C6).
-
-**How it is pinned**: Cloud `deploy/versions.json` `components.agentDevice` (`hostd` release asset + `sha256` from
-`SHA256SUMS`, `follow: manual`, rebuilds the session image) (C4).
-
-**Dependencies** (C5): down to nothing of ours; reports to its gateway by events and live output only.
-
-**Checks on the PR path** (CI `ci.yml`, job "Linux (core + command line)", GitHub-hosted, R47): `cargo fmt`,
-`scripts/check-docs.mjs` (map, charter, links), `scripts/check-repo-imports.mjs` (C6), then build, clippy and tests.
-
-**Owner rules** (`workspace/RULES.md`): R45 R53 (the client is the device connector), R46 R54 (DSH plugin client
-abandoned), R47 (tests on GitHub-hosted runners only), R48 (client work parked behind Cloud), R14 (own release flow),
-R17 (open source first), R38 (secrets).
+**Owner rules** (`workspace/RULES.md`): R45 R53 (the client; superseded 2026-11-04 by this model), R46 R54 (DSH plugin
+client abandoned), R47 (tests on GitHub-hosted runners only), R48, R14 (own release flow), R17, R21, R38.
