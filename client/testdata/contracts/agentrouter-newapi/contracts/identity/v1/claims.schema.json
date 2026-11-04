@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agentrouter-newapi:identity:v1:claims",
+  "title": "identity/v1 JWT payload",
+  "description": "The claims of every token NewAPI's identity plugin issues (header: alg ES256, typ at+jwt, kid). The schema checks shape only; signature, iss, aud, time and lifetime rules are in README.md (\"Verifying\"). Unknown claims are allowed and must be ignored (C2: new optional claims are additive).",
+  "type": "object",
+  "required": ["iss", "sub", "ten", "own", "pay", "aud", "scp", "exp", "iat", "jti"],
+  "properties": {
+    "iss": {
+      "type": "string",
+      "format": "uri",
+      "description": "The issuer: the NewAPI base URL of the environment. Verifiers compare it exactly and fetch keys from <iss>/.well-known/jwks.json."
+    },
+    "sub": {
+      "type": "string",
+      "pattern": "^(acc_[0-9A-Za-z]{1,64}|svc_[a-z][a-z0-9-]{1,31})$",
+      "description": "Who calls: a NewAPI account (acc_<id>) or a service token's service (svc_<layer>: svc_ecs, svc_agentspace, svc_agentevents, svc_agentcompute, svc_agenthost), issued to that layer for one tenant and owner; the layer exchanges it for narrowed child tokens per run or attempt (sub stays svc_<layer>)."
+    },
+    "ten": { "$ref": "#/$defs/account", "description": "Tenant: the account that buys the layer. In our own product the tenant is ECS's account and the product's users are owners inside it." },
+    "own": { "$ref": "#/$defs/account", "description": "Owner: whose resources these are (devices, spaces, conversations)." },
+    "pay": { "$ref": "#/$defs/account", "description": "Payer: whose quota this usage is booked to (metering/v1 records carry it unchanged)." },
+    "aud": {
+      "type": "string",
+      "enum": ["agentspace", "agentevents", "agentcompute", "agenthost", "netbird"],
+      "description": "The one layer this token is for. A single string, never an array: a token for two layers is two tokens."
+    },
+    "scp": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/scope" },
+      "description": "Scope entries <kind>:<id>:<right>. A ceiling, not a grant: the layer still checks its own data for what `own` may do (authorisation stays in the layers)."
+    },
+    "run": {
+      "type": "string",
+      "pattern": "^cnv_[0-9A-Za-z_-]{1,64}$",
+      "description": "Optional: the run (conversation id) this token acts for. Present = a run token, lifetime at most 900 s."
+    },
+    "iat": { "type": "integer", "minimum": 0, "description": "Issued at, Unix seconds." },
+    "exp": { "type": "integer", "minimum": 0, "description": "Expires at, Unix seconds. exp - iat <= 3600, and <= 900 when `run` is present." },
+    "jti": { "type": "string", "format": "uuid", "description": "Unique token id (lowercase UUID); logs and revocation lists name it." }
+  },
+  "$defs": {
+    "account": {
+      "type": "string",
+      "pattern": "^acc_[0-9A-Za-z]{1,64}$",
+      "description": "A NewAPI account id, acc_<native user id>."
+    },
+    "scope": {
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^[a-z][a-z0-9-]{0,31}:(\\*|[0-9A-Za-z][0-9A-Za-z_.-]{0,127}):[a-z][a-z0-9-]{0,31}$",
+      "description": "<kind>:<id>:<right>. v1 kinds and rights: space:<spc_id>:ro|rw (rw implies ro), space:new:create (create a space; its owner is the token's own), computer:<cmp_id>:ssh, conversation:<cnv_id>:send|read|children (children: a run managing its own sub-Agents), conversation:new:create (create a conversation; its owner is the token's own). A layer's contract may add kinds and rights (additive). id is a resource id, `new` for create, or * (every existing resource of that kind `own` may use; never `new`). The only implication between rights is rw -> ro."
+    }
+  }
+}

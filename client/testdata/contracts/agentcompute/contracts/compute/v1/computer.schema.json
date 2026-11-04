@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agentcompute:compute:v1:computer",
+  "title": "compute/v1 Computer",
+  "description": "The one unit of the compute layer: a machine reachable by SSH. kind device = a computer or server where the person installed the client (AgentDevice); kind sandbox = a cloud sandbox this layer created on demand (POST /v1/sandboxes), running the same client. Facts are reported as they are; differences between systems are not smoothed over (the Agent knows them). README.md: contracts/compute/v1/README.md.",
+  "type": "object",
+  "required": ["id", "kind", "name", "own", "state", "facts", "createdAt"],
+  "properties": {
+    "id": { "$ref": "#/$defs/computerId" },
+    "kind": { "enum": ["device", "sandbox"] },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "The person's name for a device (「台式机」); for a sandbox the name its creator gave (POST /v1/sandboxes `name`)."
+    },
+    "own": {
+      "type": "string",
+      "pattern": "^acc_[0-9A-Za-z]{1,64}$",
+      "description": "The owner (identity/v1 `own`): the computer is in this owner's network and only tokens with this `own` reach it."
+    },
+    "state": {
+      "enum": ["online", "offline", "sleeping", "starting"],
+      "description": "From the connection layer (the NetBird peer's status; for a sandbox also its provider's lifecycle), never stored as a second copy. online: its client is connected and SSH answers. offline: it should be reachable and is not (device switched off, network lost). sleeping: a stopped sandbox (:start wakes it). starting: a sandbox being created or started, or a device whose client is connecting."
+    },
+    "stateSince": { "type": "string", "format": "date-time", "description": "When `state` last changed." },
+    "facts": { "$ref": "#/$defs/facts" },
+    "client": {
+      "type": "object",
+      "required": ["version"],
+      "properties": { "version": { "type": "string", "maxLength": 64, "description": "The AgentDevice client version running on it." } },
+      "additionalProperties": false
+    },
+    "sandbox": {
+      "$ref": "#/$defs/sandboxState",
+      "description": "Present exactly when kind is sandbox."
+    },
+    "createdAt": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "computerId": { "type": "string", "pattern": "^cmp_[0-9A-Za-z]{1,64}$" },
+    "facts": {
+      "type": "object",
+      "description": "What the machine is, reported by its client (PUT /v1/computers/{id}/facts) and refreshed when it changes. Every value is what the system says; nothing is mapped to a common vocabulary beyond the enums below.",
+      "required": ["os", "arch", "shell", "cpu", "memory", "gpu", "software", "observedAt"],
+      "properties": {
+        "os": {
+          "type": "object",
+          "required": ["family", "name", "version"],
+          "properties": {
+            "family": { "enum": ["windows", "macos", "linux", "freebsd", "other"] },
+            "name": { "type": "string", "maxLength": 128, "description": "As the system names itself (\"Windows 11 Pro\", \"Ubuntu 24.04.3 LTS\", \"macOS 15.6\")." },
+            "version": { "type": "string", "maxLength": 64, "description": "Build or release (\"10.0.26100\", \"24.04\", \"15.6\")." },
+            "kernel": { "type": "string", "maxLength": 128 }
+          },
+          "additionalProperties": false
+        },
+        "arch": { "type": "string", "maxLength": 32, "description": "Go GOARCH naming, as the client (Go) reports it: amd64, arm64, 386, arm, riscv64, …" },
+        "shell": {
+          "type": "object",
+          "required": ["name", "path"],
+          "description": "The shell an SSH session of `user` (POST /v1/computers/{id}/access) runs commands in.",
+          "properties": {
+            "name": { "type": "string", "maxLength": 32, "description": "bash, zsh, fish, sh, pwsh, powershell, cmd, …" },
+            "path": { "type": "string", "maxLength": 1024 },
+            "version": { "type": "string", "maxLength": 64 }
+          },
+          "additionalProperties": false
+        },
+        "cpu": {
+          "type": "object",
+          "required": ["cores"],
+          "properties": {
+            "model": { "type": "string", "maxLength": 128 },
+            "cores": { "type": "number", "exclusiveMinimum": 0, "description": "Logical cores; a sandbox reports its vCPU limit (may be fractional)." }
+          },
+          "additionalProperties": false
+        },
+        "memory": {
+          "type": "object",
+          "required": ["totalBytes"],
+          "properties": { "totalBytes": { "type": "integer", "minimum": 0 } },
+          "additionalProperties": false
+        },
+        "gpu": {
+          "type": "array",
+          "maxItems": 16,
+          "description": "Empty when it has none.",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+              "name": { "type": "string", "maxLength": 128 },
+              "vendor": { "type": "string", "maxLength": 64 },
+              "memoryBytes": { "type": "integer", "minimum": 0 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "software": {
+          "type": "array",
+          "maxItems": 512,
+          "description": "Programs found on the PATH of `user` that the client looks for (toolchains, package managers, editors, runtimes), each as found.",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+              "name": { "type": "string", "maxLength": 64 },
+              "version": { "type": "string", "maxLength": 64 },
+              "path": { "type": "string", "maxLength": 1024 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "observedAt": { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": false
+    },
+    "sandboxState": {
+      "type": "object",
+      "required": ["lifespan", "resources", "holds"],
+      "properties": {
+        "lifespan": { "enum": ["temporary", "long"] },
+        "resources": { "$ref": "sandbox.schema.json#/$defs/resources" },
+        "specDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "Digest of the spec it was created with (canonical JSON), for caching and comparison." },
+        "holds": {
+          "type": "array",
+          "items": { "$ref": "sandbox.schema.json#/$defs/hold" },
+          "description": "Live holds. A temporary sandbox without one is reclaimed at `reclaimAt`."
+        },
+        "reclaimAt": { "type": "string", "format": "date-time", "description": "Present for a temporary sandbox that has no live hold: when it is removed (30 minutes after the last hold ended)." }
+      },
+      "additionalProperties": false
+    }
+  }
+}

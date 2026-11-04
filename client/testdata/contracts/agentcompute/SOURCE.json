@@ -1,0 +1,6 @@
+{
+  "about": "Byte copies of the compute/v1 schemas the client's enrolment and facts follow (agentteam-deployments docs/development/CONTRACTS.md C4: one sha256 per file, SHA256SUMS here). Provider: agentrouter-top/AgentCompute contracts/compute/v1. The commit is the additive change of AgentCompute#18 (enrolRequest hostKey and user); move ref to main once it merges. Refresh: copy the files at the new commit, rewrite SHA256SUMS (sha256sum over contracts/, sorted), update commit, in the same PR as the code change.",
+  "repo": "agentrouter-top/AgentCompute",
+  "ref": "task/17-compute-v1-device-enrolment-carries-the (PR #18)",
+  "commit": "e3e1ca29aeaa3b1aa0c11c2e78b8ddc5a4961c79"
+}
