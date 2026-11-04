@@ -382,6 +382,9 @@ func statusCmd(args []string) error {
 	}
 	fmt.Println("文件夹      ", a.Dir)
 	fmt.Println("身份        ", orNone(a.Cfg.Issuer))
+	if a.Cfg.Zitadel != nil {
+		fmt.Println("登录        ", a.Cfg.Zitadel.URL)
+	}
 	fmt.Println("算力层      ", orNone(a.Cfg.ComputeURL))
 	if dev == nil {
 		fmt.Println("这台电脑    没有加入（agentdevice 或 agentdevice login）")

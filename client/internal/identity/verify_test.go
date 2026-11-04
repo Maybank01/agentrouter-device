@@ -12,8 +12,8 @@ import (
 	"time"
 )
 
-// The provider's vectors, vendored byte for byte (testdata/contracts/agentrouter-newapi, SHA256SUMS there).
-var vectorDir = filepath.Join("..", "..", "testdata", "contracts", "agentrouter-newapi", "contracts", "identity", "v1", "vectors")
+// The provider's vectors, vendored byte for byte (testdata/contracts/agentidentity, SHA256SUMS there).
+var vectorDir = filepath.Join("..", "..", "testdata", "contracts", "agentidentity", "contracts", "identity", "v1", "vectors")
 
 func loadKeys(t *testing.T) StaticKeys {
 	t.Helper()
