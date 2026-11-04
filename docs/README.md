@@ -31,6 +31,7 @@ a hundred times).
 | [docs/development/AV-HYGIENE.md](development/AV-HYGIENE.md) | development | connector-cli, client (builds) | build rules against antivirus false positives (hostd; Go client: one visible console window), enforced by `scripts/av-hygiene.sh` | 2026-11-04 |
 | [docs/adr/0001-code-signing.md](adr/0001-code-signing.md) | adr | releases | code signing: deferred, owner 2026-10-08 | 2026-10-22 |
 | [docs/adr/0002-own-ssh-server.md](adr/0002-own-ssh-server.md) | adr | client | the Go client serves SSH itself on the NetBird address; NetBird is the network only (P3 evidence, #221) | 2026-11-04 |
+| [docs/adr/0003-sandbox-egress-relay.md](adr/0003-sandbox-egress-relay.md) | adr | client | a sandbox's client relays NetBird's TLS by SNI through the node's HTTP proxy; AgentCompute maps NetBird's names to 127.0.0.1 (P5, #223) | 2026-11-04 |
 | [client/README.md](../client/README.md) | module | client | the Go device client: purpose, boundary, interfaces, submodule index, known gaps | 2026-11-04 |
 | [npm/agentrouter/README.md](../npm/agentrouter/README.md) | module | npm package | README shipped in `@agentrouter-top/cli` | 2026-10-14 |
 

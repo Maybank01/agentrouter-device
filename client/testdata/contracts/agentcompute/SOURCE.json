@@ -1,6 +1,6 @@
 {
-  "about": "Byte copies of the compute/v1 schemas the client's enrolment and facts follow (agentteam-deployments docs/development/CONTRACTS.md C4: one sha256 per file, SHA256SUMS here). Provider: agentrouter-top/AgentCompute contracts/compute/v1. The commit is the additive change of AgentCompute#18 (enrolRequest hostKey and user); move ref to main once it merges. Refresh: copy the files at the new commit, rewrite SHA256SUMS (sha256sum over contracts/, sorted), update commit, in the same PR as the code change.",
+  "about": "Byte copies of the compute/v1 schemas the client's enrolment, facts and sandbox join file follow (agentteam-deployments docs/development/CONTRACTS.md C4: one sha256 per file, SHA256SUMS here). Provider: agentrouter-top/AgentCompute contracts/compute/v1. The commit is the additive change of AgentCompute#27 (sandbox-join.schema.json); the other files are unchanged since AgentCompute#18. Move ref to main once it merges. Refresh: copy the files at the new commit, rewrite SHA256SUMS (sha256sum over contracts/, sorted), update commit, in the same PR as the code change.",
   "repo": "agentrouter-top/AgentCompute",
-  "ref": "task/17-compute-v1-device-enrolment-carries-the (PR #18)",
-  "commit": "e3e1ca29aeaa3b1aa0c11c2e78b8ddc5a4961c79"
+  "ref": "task/27-sandboxes-join-their-owner-s-network-hea (AgentCompute#27)",
+  "commit": "bbad0b3201d93865bb0f9895453d45a8f6b4a5eb"
 }

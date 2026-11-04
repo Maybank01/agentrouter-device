@@ -8,6 +8,7 @@
 //	agentdevice autostart on|off|status             start at login (per user, no admin)
 //	agentdevice unbind                              remove this computer from the account
 //	agentdevice facts                               print the facts compute/v1 gets
+//	agentdevice sandbox [--join <file>]             a compute/v1 sandbox: join from AgentCompute's file, stay online
 //	agentdevice version
 //
 // Every command takes --home <folder> (default: the per-user config folder). Flags carry only small fixed values and
@@ -72,6 +73,8 @@ func main() {
 		err = unbindCmd(args)
 	case "facts":
 		err = factsCmd(args)
+	case "sandbox":
+		err = sandboxCmd(args)
 	case "version", "--version":
 		fmt.Println("agentdevice", version)
 	case "help", "-h", "--help":
@@ -92,6 +95,7 @@ const usage = `用法：
   agentdevice autostart on|off|status           登录电脑后自动启动
   agentdevice unbind                            从账号里移除这台电脑
   agentdevice facts                             看上报的电脑信息
+  agentdevice sandbox [--join 文件]             云电脑（算力层的沙箱）：按算力层给的文件加入网络并保持在线
   agentdevice version
 每个命令都可以加 --home <文件夹>。
 `
@@ -476,4 +480,25 @@ func factsCmd(args []string) error {
 	enc.SetIndent("", "  ")
 	enc.SetEscapeHTML(false)
 	return enc.Encode(facts.Collect(ctx))
+}
+
+// sandboxCmd is a compute/v1 sandbox's client (compute/v1 README §7.1): no person, no login, no tray. AgentCompute
+// wrote the join file and starts this as the sandbox's work user; the log goes to the client's folder and stdout.
+func sandboxCmd(args []string) error {
+	fs := flag.NewFlagSet("sandbox", flag.ContinueOnError)
+	joinFile := fs.String("join", app.DefaultJoinFile, "the join file AgentCompute wrote")
+	a, closeLog, err := common(fs, args)
+	if err != nil {
+		return err
+	}
+	defer closeLog()
+	j, err := app.ReadSandboxJoin(*joinFile)
+	if err != nil {
+		return err
+	}
+	a.Console = os.Stdout
+	ctx, cancel := signalContext()
+	defer cancel()
+	a.Log.Info("sandbox: starting", "computer", j.Computer, "own", j.Own, "version", version)
+	return a.RunSandbox(ctx, j, terminalUI{})
 }

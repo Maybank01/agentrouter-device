@@ -10,13 +10,14 @@ placement or environments (AgentCompute, AgentHost). Why our own SSH server: [AD
 **Interfaces**: consumes identity/v1 (agentrouter-newapi; "Device login", RFC 8628: `POST /v1/identity/device/code`,
 then `POST /v1/identity/device/token` — the device code once, then `grant_type=refresh_token` for every short token,
 `audience=agentcompute` or `netbird`; JWKS for SSH tokens) and compute/v1 (AgentCompute: `POST /v1/devices`,
-`PUT /v1/computers/{id}/facts`, `DELETE /v1/devices/{id}`); provides SSH on the NetBird address, port 22. Vendored
-copies with sha256: `testdata/contracts/`.
+`PUT /v1/computers/{id}/facts`, `DELETE /v1/devices/{id}`; in a sandbox the join file `sandbox-join.schema.json`,
+§7.1); provides SSH on the NetBird address, port 22. Vendored copies with sha256: `testdata/contracts/`.
 
 | Submodule | Current state |
 | --- | --- |
-| `cmd/agentdevice` | commands `run` (default), `login`, `status`, `autostart on\|off\|status`, `unbind`, `facts`, `version`; `--home` |
-| `internal/app` | the flow: login → enrol → join → SSH + facts + tray state |
+| `cmd/agentdevice` | commands `run` (default), `login`, `status`, `autostart on\|off\|status`, `unbind`, `facts`, `sandbox`, `version`; `--home` |
+| `internal/app` | the flow: login → enrol → join → SSH + facts + tray state; `sandbox.go`: a sandbox, headless (below) |
+| `internal/egress` | relays NetBird's TLS by SNI through an HTTP CONNECT proxy ([ADR 0003](../docs/adr/0003-sandbox-egress-relay.md)) |
 | `internal/network` | embed v0.82.0, NetBird's SSH server off; skips NetBird's slow static-info probes (Windows 20 s) |
 | `internal/sshd` | exec, terminal (ConPTY / PTY), SFTP, loopback-only forwarding; token auth; command text via files (R21) |
 | `internal/identity` | ES256 verifier (contract vectors), JWKS cache; device login: keeps only the newest refresh token (rotated on every use, one refresh at a time, a lost answer retried within the 30 s grace), short tokens per audience |
@@ -26,12 +27,13 @@ copies with sha256: `testdata/contracts/`.
 | `internal/tray`, `internal/winconsole` | minimal tray; the one visible console window 「AgentRouter 设备」 with the activity log (Windows) |
 | `internal/proc`, `internal/state` | child processes (no window, tree kill); the per-user folder and its files |
 
-**Checks**: locally only `go build ./...` and `go vet ./...` (also `GOOS=windows`, `CGO_ENABLED=0 GOOS=darwin`);
-tests on GitHub-hosted Linux, macOS, Windows in `.github/workflows/client.yml` (R47).
+**Checks**: locally `go build` / `go vet` only (also windows, darwin); tests on GitHub-hosted runners, `client.yml` (R47).
 
-**Removed device**: a refused refresh (the person removed the device, or it was revoked) shows
-「此设备已被移除，请重新登录」 in the window, forgets the enrolment and stops; the next start logs in again.
+**Sandboxes**: `agentdevice sandbox [--join <file>]` (compute/v1 §7.1): no login, enrolment call, facts or tray.
+Linux pre-releases `client-v0.0.0-<sha7>` (static amd64/arm64, `SHA256SUMS`) feed AgentCompute's environment image.
 
-**Known gaps** (2026-11-04): not run end to end on Dev (needs AgentCompute#14 and the NewAPI Dev issuer with
-device login, agentrouter-newapi#161); no release flow (CI artifacts only); sandboxes' headless enrolment not here; no Windows
-version resource or icon yet (AV-HYGIENE.md "Go 客户端").
+**Removed device**: a refused refresh shows 「此设备已被移除，请重新登录」, forgets the enrolment and stops.
+
+**Known gaps** (2026-11-04): Dev ran a Linux device (device code approved through the session API) and a sandbox
+(#223); Dev has no NewAPI web origin for the browser approval page; no Windows PC end to end yet; no release flow for
+people; no Windows version resource or icon (AV-HYGIENE.md "Go 客户端"); a sandbox reports no facts.
