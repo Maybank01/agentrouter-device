@@ -932,7 +932,7 @@ those count as custom and need the local `y`.
 
 ## 9. What is deleted
 
-**Device repo (`agentrouter-device`)**
+**Device repo (`agentrouter-top/AgentDevice`)**
 
 - The signed device action set and its dispatcher: `protocol.rs` request v1/v2 strings and actions,
   `device.rs` action routing, `info`/`mcp_*`/`workspace_*`/`worktree_*` actions (→ MCP + `_meta`).
@@ -1092,7 +1092,7 @@ event on stdout; SIGTERM/SIGINT stop it (exit 0), a revoked token or a refused l
 `aarch64-unknown-linux-musl` (static, rustls with bundled web PKI roots — no OpenSSL, no CA bundle needed; the PC build
 keeps native-tls). Every merge to `main` that changes the program publishes a GitHub pre-release
 `hostd-v<crate version>-<sha7>` with `hostd-x86_64-linux-musl`, `hostd-aarch64-linux-musl` and `SHA256SUMS`:
-`https://github.com/Maybank01/agentrouter-device/releases/download/<tag>/hostd-<arch>-linux-musl`. The Cloud sandbox
+`https://github.com/agentrouter-top/AgentDevice/releases/download/<tag>/hostd-<arch>-linux-musl`. The Cloud sandbox
 image pins one tag and checks the sha256. Locally: `cargo build --release -p agentrouter-device-cli --bin agentrouter
 --no-default-features --features rustls --target x86_64-unknown-linux-musl` (needs `musl-gcc` for `ring`).
 

@@ -33,7 +33,7 @@ test("never reverts without proof, a revert, or without a PR", () => {
   assert.equal(decide({ ...twice, parent: { run: { status: "in_progress" }, jobs: [] }, pr }).action, "report");
   assert.equal(decide({ ...twice, parent: { run: { status: "completed" }, jobs: [job("Sandbox (Windows)", "failure")] }, pr }).action, "report");
   assert.equal(decide({ ...twice, parent: parentGreen, pr, message: "Revert x\n\nReverted-Commit: abc" }).action, "report");
-  assert.equal(decide({ ...twice, parent: parentGreen, pr, message: "Revert \"x\"\n\nReverts Maybank01/agentrouter-device#7" }).action, "report");
+  assert.equal(decide({ ...twice, parent: parentGreen, pr, message: "Revert \"x\"\n\nReverts agentrouter-top/AgentDevice#7" }).action, "report");
   assert.equal(decide({ ...twice, parent: parentGreen, pr: null }).action, "report");
 });
 

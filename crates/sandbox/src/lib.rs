@@ -1377,7 +1377,7 @@ impl Runtime {
                 let (name, handle) = windows_stdio_pipe(&ready.sid).map_err(|e| {
                     Unavailable::new(
                         format!("建不了本机工具的输入输出通道：{e}"),
-                        "请重新运行 agentrouter；仍然不行就在 agentrouter-device 仓库报告这一行。",
+                        "请重新运行 agentrouter；仍然不行就在 AgentDevice 仓库（github.com/agentrouter-top/AgentDevice）报告这一行。",
                     )
                 })?;
                 spec["pipe"] = Value::String(name);
@@ -1422,7 +1422,7 @@ fn windows_job_spec(job: &JobJoin) -> Result<Value, Unavailable> {
     let fail = |e: String| {
         Unavailable::new(
             format!("资源上限的作业对象接不上隔离环境：{e}"),
-            "请重新运行 agentrouter；仍然不行就在 agentrouter-device 仓库报告这一行（device #129）。",
+            "请重新运行 agentrouter；仍然不行就在 AgentDevice 仓库（github.com/agentrouter-top/AgentDevice）报告这一行（device #129）。",
         )
     };
     let name = job.name;

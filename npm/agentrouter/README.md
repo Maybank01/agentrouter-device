@@ -23,4 +23,4 @@ agentrouter link
 
 `next` 是测试版，连的是 AgentRouter 的 Dev 环境。目前只有 Windows x64，需要 Node.js 18 或更新。
 
-源代码（Apache-2.0）：https://github.com/Maybank01/agentrouter-device
+源代码（Apache-2.0）：https://github.com/agentrouter-top/AgentDevice

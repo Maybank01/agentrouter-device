@@ -37,7 +37,7 @@ fn main() -> Result<(), String> {
         "version": version,
         "description": "Static socat and bubblewrap for Linux as the AgentRouter device pins them (the same archives as its GitHub releases), with their source. The device downloads this tarball itself; do not install it.",
         "license": "(GPL-2.0-only AND LGPL-2.0-or-later)",
-        "repository": { "type": "git", "url": "git+https://github.com/Maybank01/agentrouter-device.git" },
+        "repository": { "type": "git", "url": "git+https://github.com/agentrouter-top/AgentDevice.git" },
         "os": ["linux"],
         "files": files,
     });
@@ -49,7 +49,7 @@ fn main() -> Result<(), String> {
         out.join("README.md"),
         format!(
             "# {name}\n\nsocat {socat} (GPL-2.0) and bubblewrap {bwrap} (LGPL-2.0-or-later), built statically against musl for \
-             Linux x86_64 and aarch64 by [agentrouter-device](https://github.com/Maybank01/agentrouter-device) \
+             Linux x86_64 and aarch64 by [AgentDevice](https://github.com/agentrouter-top/AgentDevice) \
              (`.github/workflows/socat.yml`, `bwrap.yml`). The archives are byte for byte the ones attached to its \
              `socat-static-{socat}` and `bwrap-static-{bwrap}` releases; the device checks each against the SHA-256 \
              pinned in `crates/sandbox/src/runtimes.rs`. `src/` holds the official source tarballs and the build \

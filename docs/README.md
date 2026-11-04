@@ -34,7 +34,9 @@ a hundred times).
 
 ## Not documentation
 
-Markdown that code, a build or a tool reads. None in this repository today; a pattern added here must match a file.
+Markdown that code, a build or a tool reads. The check skips these; change them with what reads them. A pattern
+added here must match a file.
 
 | Pattern | What | Read by |
 | --- | --- | --- |
+| `skills/**/*.md` | Agent skills (SKILL.md and references) shipped with the repository | coding agents (Claude Code skills, `~/.claude/skills` links) |

@@ -119,7 +119,7 @@ jobs:
           sha256sum bwrap-*-linux-musl.tar.gz "$file" build-bwrap-static.sh > SHA256SUMS
           cat SHA256SUMS
           {
-            echo "bubblewrap ${VERSION} built statically against musl for Linux folder mode (agentrouter-device #122), commit ${GITHUB_SHA}."
+            echo "bubblewrap ${VERSION} built statically against musl for Linux folder mode (AgentDevice #122), commit ${GITHUB_SHA}."
             echo "The device downloads these archives itself and checks the SHA-256 pinned in crates/sandbox/src/runtimes.rs."
             echo "LGPL-2.0-or-later: the official source tarball and the build script are attached. Not a device release."
             echo

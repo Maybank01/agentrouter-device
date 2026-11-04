@@ -332,7 +332,7 @@ pub const SOCAT: Pinned = Pinned {
     version: "1.8.1.3-r1",
     sources: &[
         Source::Archive {
-            url: "https://github.com/Maybank01/agentrouter-device/releases/download/socat-static-{version}/{file}",
+            url: "https://github.com/agentrouter-top/AgentDevice/releases/download/socat-static-{version}/{file}",
             mirror: false,
         },
         Source::Carrier {
@@ -372,7 +372,7 @@ pub const BWRAP: Pinned = Pinned {
     version: "0.13.1-r1",
     sources: &[
         Source::Archive {
-            url: "https://github.com/Maybank01/agentrouter-device/releases/download/bwrap-static-{version}/{file}",
+            url: "https://github.com/agentrouter-top/AgentDevice/releases/download/bwrap-static-{version}/{file}",
             mirror: false,
         },
         Source::Carrier {
@@ -469,7 +469,7 @@ pub fn set_prefer_mirrors(root: &Path) {
     PREFER_MIRRORS.store(true, Ordering::Relaxed);
     let _ = std::fs::write(
         root.join(PREFER_MIRRORS_FILE),
-        "An official download host was slow or unreachable here; mirrors go first (agentrouter-device #154).\n",
+        "An official download host was slow or unreachable here; mirrors go first (AgentDevice #154).\n",
     );
 }
 
@@ -1111,7 +1111,7 @@ mod tests {
         let tries = SOCAT.attempts(a, false);
         assert_eq!(
             tries[0].url,
-            "https://github.com/Maybank01/agentrouter-device/releases/download/socat-static-1.8.1.3-r1/socat-1.8.1.3-aarch64-linux-musl.tar.gz"
+            "https://github.com/agentrouter-top/AgentDevice/releases/download/socat-static-1.8.1.3-r1/socat-1.8.1.3-aarch64-linux-musl.tar.gz"
         );
         assert_eq!(
             tries[1].url,

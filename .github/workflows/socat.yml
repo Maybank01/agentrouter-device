@@ -134,7 +134,7 @@ jobs:
           sha256sum socat-*-linux-musl.tar.gz "$file" build-socat-static.sh > SHA256SUMS
           cat SHA256SUMS
           {
-            echo "socat ${VERSION} built statically against musl for Linux folder mode (agentrouter-device #119), commit ${GITHUB_SHA}."
+            echo "socat ${VERSION} built statically against musl for Linux folder mode (AgentDevice #119), commit ${GITHUB_SHA}."
             echo "The device downloads these archives itself and checks the SHA-256 pinned in crates/sandbox/src/runtimes.rs."
             echo "GPL-2.0: the official source tarball and the build script are attached. Not a device release."
             echo
