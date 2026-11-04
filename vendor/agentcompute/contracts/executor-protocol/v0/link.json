@@ -1,0 +1,437 @@
+{
+  "version": "agentcompute.executor-protocol/v0",
+  "verifiedAgainst": "agentrouter-cloud 4defde27b887 (dev), AgentDevice 5ea20669f2d8 (main), 2026-11-03",
+  "notes": [
+    "device = AgentDevice paths (crates/...); gateway = Cloud services/control-plane/modules/runtime-gateway/src/link-gateway.mjs; control = Cloud services/control-plane/modules/devices/src/linked-devices/<file>",
+    "A frame is one WebSocket text message holding one JSON object. A data frame has `s` and `m` and no `op`; every other frame has `op` (device crates/hostd-link/src/lib.rs:730-738).",
+    "Fields marked '?' are optional. Unknown `op`s are ignored by both ends (device lib.rs:719-796 `_ => Inbound::None`; gateway handles only the ops it names)."
+  ],
+  "protocol": {
+    "linkVersion": 2,
+    "linkVersionSource": "device crates/hostd-link/src/lib.rs:50 (VERSION); gateway link-gateway.mjs:352 refuses hello.v != 2 with error DEVICE_OUTDATED",
+    "mcpProtocolVersion": "2025-06-18",
+    "mcpProtocolVersionSource": "device crates/connector-cli/src/host/mod.rs:39 (the host server's default; it echoes the client's protocolVersion, mod.rs:495)",
+    "linkSignatureVersion": 3,
+    "linkSignatureVersionSource": "device crates/aggregator/src/sig.rs:22; control protocol.ts:93",
+    "ownerStatementVersion": 1,
+    "ownerStatementVersionSource": "device crates/aggregator/src/sig.rs:66; control protocol.ts:137"
+  },
+  "limits": {
+    "frameMaxBytes": 8388608,
+    "frameMaxSource": "device crates/hostd-link/src/lib.rs:54; gateway link-gateway.mjs:42 (MESSAGE_MAX)",
+    "helloTimeoutMs": 10000,
+    "helloTimeoutSource": "gateway link-gateway.mjs:180 (helloTimeoutMs), close 4408 at :334",
+    "welcomeWaitMs": 15000,
+    "welcomeWaitSource": "device crates/hostd-link/src/lib.rs:60",
+    "heartbeatMs": 20000,
+    "heartbeatSource": "device lib.rs:58 (audit_head + load); gateway link-gateway.mjs:180 (ping interval), :263 (no pong/frame for 2 x heartbeat -> close 4408)",
+    "silenceLimitMs": 75000,
+    "silenceLimitSource": "device crates/hostd-link/src/lib.rs:56",
+    "reconnectBackoffMs": {
+      "min": 1000,
+      "max": 30000,
+      "jitter": "x0.8..1.2",
+      "source": "device crates/hostd-link/src/lib.rs:61-62,370-375,429"
+    },
+    "relayRequestMaxWaitMs": 1860000,
+    "relayRequestMaxWaitSource": "gateway link-gateway.mjs:39 (MAX_WAIT_MS = 31 min); on expiry the relay sends notifications/cancelled and answers TIMEOUT (:546-551)",
+    "leaseLostMaxJobs": 64,
+    "leaseLostMaxSource": "device crates/hostd-link/src/lib.rs:709; gateway link-gateway.mjs:48 (LEASED_JOBS_MAX)",
+    "eventsMaxItemsAccepted": 256,
+    "eventsMaxSource": "gateway link-gateway.mjs:50 (EVENTS_MAX); the device sends at most 200 per batch",
+    "eventsAckWaitMs": 60000,
+    "eventsRetryMs": {
+      "default": 5000,
+      "max": 300000
+    },
+    "eventsAckSource": "device crates/hostd-link/src/lib.rs:64-68",
+    "portStreamsMaxPerLink": 64,
+    "portStreamsSource": "device crates/hostd-link/src/port.rs:96 (limit), HOSTD-MCP.md §3.8",
+    "portDialMs": 15000,
+    "portDialSource": "gateway link-gateway.mjs:46",
+    "requestTtlMs": 60000,
+    "requestTtlSource": "control protocol.ts:12 (REQUEST_TTL_MS, used for exp at :112)",
+    "requestMaxAheadMs": 65000,
+    "requestMaxAheadSource": "device crates/device-core/src/protocol.rs:16 (60 s + 5 s skew; checked in crates/aggregator/src/sig.rs:150-155)",
+    "replayCacheMaxEntries": 100000,
+    "replayCacheSource": "device crates/device-core/src/protocol.rs:225-235 (a full cache refuses)"
+  },
+  "closeCodes": [
+    {
+      "code": 4400,
+      "by": "gateway",
+      "meaning": "first frame not a hello / unsupported version / bad link id",
+      "source": "link-gateway.mjs:351-354"
+    },
+    {
+      "code": 4401,
+      "by": "gateway",
+      "meaning": "token refused or device revoked/closed",
+      "source": "link-gateway.mjs:362,585,613"
+    },
+    {
+      "code": 4403,
+      "by": "gateway",
+      "meaning": "LINK_TAKEN: another device holds this link id",
+      "source": "link-gateway.mjs:369-370"
+    },
+    {
+      "code": 4408,
+      "by": "gateway",
+      "meaning": "hello timeout, or no pong/frame for 2 heartbeats",
+      "source": "link-gateway.mjs:263,334"
+    },
+    {
+      "code": 4409,
+      "by": "gateway",
+      "meaning": "replaced by a newer connection of the same link; the device ends (End::Replaced) instead of reconnecting",
+      "source": "link-gateway.mjs:378; device crates/hostd-link/src/lib.rs:70,584-585"
+    },
+    {
+      "code": 1011,
+      "by": "gateway",
+      "meaning": "Control unreachable during hello",
+      "source": "link-gateway.mjs:358"
+    },
+    {
+      "code": 1001,
+      "by": "gateway",
+      "meaning": "gateway stopping",
+      "source": "link-gateway.mjs:619"
+    }
+  ],
+  "frames": [
+    {
+      "op": null,
+      "name": "data",
+      "direction": "both",
+      "fields": {
+        "s": "string, MCP session id mcs_[a-f0-9]{32} (issued by the gateway)",
+        "m": "one JSON-RPC 2.0 message, unchanged"
+      },
+      "source": "device lib.rs:598,730-738; gateway link-gateway.mjs:466-489,532,563"
+    },
+    {
+      "op": "hello",
+      "direction": "device->gateway",
+      "first": true,
+      "fields": {
+        "v": "integer, 2",
+        "token": "string, ldt_<32 hex>.<43 base64url>",
+        "link": "object, LinkInfo (see helloLink)"
+      },
+      "source": "device lib.rs:514; gateway link-gateway.mjs:351-382"
+    },
+    {
+      "op": "welcome",
+      "direction": "gateway->device",
+      "fields": {
+        "link": "string lnk_…",
+        "gateway": "string, the gateway instance id (not read by the device)",
+        "owner?": "object {v:1, kid, link, account, sig}, the control plane's signed owner statement"
+      },
+      "source": "gateway link-gateway.mjs:382; device lib.rs:740-743"
+    },
+    {
+      "op": "error",
+      "direction": "gateway->device",
+      "fields": {
+        "code": "string",
+        "message?": "string"
+      },
+      "notes": "DEVICE_REVOKED ends the link (revoked); DEVICE_OUTDATED, LINK_DISABLED, GATEWAY_NOT_ALLOWED, SANDBOX_REQUIRED end it (refused); any other code reconnects",
+      "source": "gateway link-gateway.mjs:352,354,361,369; device lib.rs:712-717,785-795"
+    },
+    {
+      "op": "revoked",
+      "direction": "gateway->device",
+      "fields": {
+        "reason": "string ≤ 64"
+      },
+      "source": "gateway link-gateway.mjs:245,584,612; device lib.rs:751"
+    },
+    {
+      "op": "close",
+      "direction": "both",
+      "fields": {
+        "s": "string, MCP session id"
+      },
+      "source": "device lib.rs:599,744-750; gateway link-gateway.mjs:461-463 (device→gateway: pending requests of that session answered SESSION_CLOSED), :498 (gateway→device on DELETE of the session)"
+    },
+    {
+      "op": "audit_head",
+      "direction": "device->gateway",
+      "fields": {
+        "seq": "integer",
+        "hash": "64 hex"
+      },
+      "when": "right after welcome and every heartbeat",
+      "source": "device lib.rs:523-526,545,629; gateway link-gateway.mjs:392-395"
+    },
+    {
+      "op": "load",
+      "direction": "device->gateway",
+      "fields": {
+        "cpu_percent": "number|null",
+        "load1": "number|null (null on Windows)",
+        "free_memory_mb": "number|null",
+        "free_disk_mb": "number|null",
+        "environments": "integer, running environments",
+        "free_slots": "integer"
+      },
+      "when": "every heartbeat",
+      "source": "device lib.rs:632-639, crates/device-core/src/capacity.rs (LoadMeter); gateway link-gateway.mjs:396-399"
+    },
+    {
+      "op": "info",
+      "direction": "device->gateway",
+      "fields": {
+        "link": "object, LinkInfo with the same id"
+      },
+      "when": "folders or local data changed",
+      "source": "device lib.rs:303-310,600; gateway link-gateway.mjs:448-460"
+    },
+    {
+      "op": "software",
+      "direction": "device->gateway",
+      "fields": {
+        "added": "array",
+        "removed": "array of ids",
+        "changed": "array",
+        "status": "array of strings"
+      },
+      "source": "device lib.rs:315-318,603-606; gateway link-gateway.mjs:430-447"
+    },
+    {
+      "op": "port_open",
+      "direction": "gateway->device",
+      "fields": {
+        "id": "pst_<32 hex>",
+        "port": "integer 1-65535",
+        "ticket": "string, one-time (24 random bytes base64url)"
+      },
+      "source": "gateway link-gateway.mjs:272-295; device lib.rs:562-579, crates/hostd-link/src/port.rs"
+    },
+    {
+      "op": "port_error",
+      "direction": "device->gateway",
+      "fields": {
+        "id": "pst_…",
+        "code": "PORT_CLOSED | PORT_DIAL_FAILED | PORT_BUSY | PORT_SANDBOXED | PORT_NOT_IN_SANDBOX (device names); the gateway also accepts PORT_FOLDER_MODE, PORT_OUTSIDE_LINK"
+      },
+      "source": "device lib.rs:563-577,601; gateway link-gateway.mjs:54,387-391"
+    },
+    {
+      "op": "instances",
+      "direction": "device->gateway",
+      "fields": {
+        "instances": "array of {instance: string, epoch: integer, job: string}"
+      },
+      "when": "after each welcome",
+      "source": "device lib.rs:327-329,602; gateway link-gateway.mjs:400-413 (forwards to Control /internal/devices/links/instances)"
+    },
+    {
+      "op": "lease_lost",
+      "direction": "gateway->device",
+      "fields": {
+        "jobs": "array (≤ 64) of {job, instance, reason}"
+      },
+      "source": "gateway link-gateway.mjs:406; device lib.rs:765-784 (entries without job and instance strings are dropped)"
+    },
+    {
+      "op": "events",
+      "direction": "device->gateway",
+      "fields": {
+        "host": "producer id lnk_<32 hex>.<16 hex>",
+        "items": "array of {seq, id, space, instance?, event | table, payload, key?, cause?, at}"
+      },
+      "source": "device crates/hostd-link/src/outbox.rs:555 (batch), lib.rs:617-627; gateway link-gateway.mjs:51,414-429"
+    },
+    {
+      "op": "events_ack",
+      "direction": "gateway->device",
+      "fields": {
+        "host": "producer id",
+        "seq": "integer, highest seq the platform is done with",
+        "refused": "array of {seq, code, message}",
+        "retry_ms?": "integer"
+      },
+      "source": "gateway link-gateway.mjs:421; device lib.rs:551-561,752-764"
+    }
+  ],
+  "helloLink": {
+    "source": "device crates/hostd-link/src/lib.rs:74-145 (LinkInfo::to_json); gateway cleans it in link-gateway.mjs cleanInfo/cleanCapacity",
+    "fields": {
+      "id": "string lnk_<32 hex>: PC = sha256('agentrouter-link/v1\\n<device id>\\n<canonical first folder>')[:32 hex] (device lib.rs:150-158); cloud = sha256('agentrouter-link/v1\\ncloud:<sandbox id>\\n<folder>') (control service.ts:214-216)",
+      "folder": "string, display name of the first folder",
+      "os": "string",
+      "arch": "string",
+      "app": "string, always cli",
+      "version": "string",
+      "sandbox": "string, '<backend>@<version>' or '' (always '' in full access)",
+      "readOnly": "boolean",
+      "folders": "string[] ≤ 32, real absolute paths, first is home",
+      "full": "boolean",
+      "placement": "'pc' | 'cloud'",
+      "capacity": "object|null {cores, physical_cores, memory_mb, disk_mb, gpus[{vendor,name,memory_mb}], environments, limits?}",
+      "labels": "object|null {os, arch, tools, runtimes, custom}",
+      "pool?": "string, only when set",
+      "resources?": "object, only when measured (never on a cloud host)",
+      "software?": "array, only after the first discovery",
+      "localData?": "array, only on a PC"
+    }
+  },
+  "signing": {
+    "canonicalJson": "object keys sorted by UTF-16 code units, no whitespace, numbers and strings as JSON.stringify writes them (device crates/device-core/src/protocol.rs:57-150; control protocol.ts:33-37)",
+    "strings": [
+      {
+        "prefix": "agentrouter-device-pair/v1",
+        "lines": [
+          "publicKey",
+          "name",
+          "os",
+          "arch"
+        ],
+        "signer": "device key",
+        "device": "crates/device-core/src/protocol.rs:18-20",
+        "control": "protocol.ts:27-28"
+      },
+      {
+        "prefix": "agentrouter-device-token/v1",
+        "lines": [
+          "device",
+          "challenge"
+        ],
+        "signer": "device key",
+        "device": "crates/device-core/src/protocol.rs:22-24",
+        "control": "protocol.ts:29"
+      },
+      {
+        "prefix": "agentrouter-device-request/v1",
+        "lines": [
+          "device",
+          "session",
+          "action",
+          "digest",
+          "exp",
+          "nonce"
+        ],
+        "signer": "control key",
+        "device": null,
+        "control": "protocol.ts:30-31",
+        "status": "Control only: hostd no longer verifies it (the signed action set was removed, device protocol.rs:1-3); used on the v1 device channel (device-gateway.mjs)"
+      },
+      {
+        "prefix": "agentrouter-link-request/v3",
+        "lines": [
+          "link",
+          "session",
+          "method",
+          "digest",
+          "exp",
+          "nonce"
+        ],
+        "signer": "control key",
+        "device": "crates/aggregator/src/sig.rs:29-38",
+        "control": "protocol.ts:96-97"
+      },
+      {
+        "prefix": "agentrouter-link-owner/v1",
+        "lines": [
+          "link",
+          "account"
+        ],
+        "signer": "control key",
+        "device": "crates/aggregator/src/sig.rs:57-59",
+        "control": "protocol.ts:135"
+      },
+      {
+        "prefix": "agentrouter-link/v1",
+        "lines": [
+          "device id or cloud:<sandbox id>",
+          "canonical folder"
+        ],
+        "signer": null,
+        "purpose": "link id derivation (sha256, not a signature)",
+        "device": "crates/hostd-link/src/lib.rs:150-158",
+        "control": "service.ts:214-216"
+      }
+    ],
+    "linkSignature": {
+      "metaKey": "agentrouter.top/sig",
+      "fields": {
+        "v": 3,
+        "kid": "first 16 hex of sha256(raw control public key)",
+        "link": "lnk_…",
+        "session": "the conversation/holder id (ags_…, env_…, person:…)",
+        "digest": "sha256 hex of canonical JSON of params without _meta",
+        "exp": "ms epoch, now + 60000",
+        "nonce": "32 lowercase hex",
+        "sig": "Ed25519, base64url"
+      },
+      "signedMethods": [
+        "initialize",
+        "tools/call"
+      ],
+      "otherMetaKeys": {
+        "agentrouter.top/title": "initialize only (control host-connections.ts:322)",
+        "agentrouter.top/turn": "tools/call only, a person's computer (host-connections.ts:323)",
+        "agentrouter.top/timeoutMs": "read by hostd as the call's limit (default 600 000 ms, clamped 1 s..30 min; crates/aggregator/src/lib.rs:60-69,1954-1959); Control does not send it",
+        "note": "_meta keys other than agentrouter.top/sig are not signed (the digest excludes _meta); hostd lists title, turn, timeoutMs as unsigned display/pacing keys (crates/aggregator/src/lib.rs:66-69)"
+      },
+      "signedTopLevelParams": {
+        "agentrouter.top/account": "initialize: the launching account (control protocol.ts:124; device sig.rs:49)",
+        "agentrouter.top/recipe": "initialize, when a recipe is known (control protocol.ts:132); hostd accepts and does not read it"
+      },
+      "checkOrder": "version, kid, signature, link, digest, expiry (exp > now and exp <= now + 65000), nonce format, session non-empty, replay (device crates/aggregator/src/sig.rs:112-171)",
+      "failure": "JSON-RPC error code -32001 with data.code SIGNATURE_INVALID | REQUEST_EXPIRED | REPLAYED | WRONG_LINK",
+      "source": "device crates/aggregator/src/sig.rs; control protocol.ts:89-118, host-connections.ts (SignedLinkTransport)"
+    }
+  },
+  "tokens": {
+    "deviceToken": {
+      "format": "ldt_<32 hex>.<43 base64url>",
+      "ttlMs": 300000,
+      "source": "control service.ts:126,134,364-375"
+    },
+    "challenge": {
+      "format": "<device>.<expiry ms>.<32 hex nonce>.<hmac base64url>",
+      "ttlMs": 60000,
+      "source": "control service.ts:125,344-349"
+    },
+    "cloudHostToken": {
+      "format": "ldt_<32 hex>.<43 base64url>",
+      "ttlMs": 43200000,
+      "boundTo": "one sandbox and one link id; refused on the v1 device channel and for any other link",
+      "source": "control service.ts:223,650-663,384-385"
+    }
+  },
+  "gatewayPaths": {
+    "linkWebSocket": {
+      "path": "/device/v2/link",
+      "device": "crates/hostd-link/src/lib.rs:52,357-367",
+      "gateway": "link-gateway.mjs:605"
+    },
+    "portStreamWebSocket": {
+      "path": "/device/v2/port/:id",
+      "auth": "Authorization: Bearer <ticket>",
+      "device": "crates/hostd-link/src/port.rs:72 (stream_url)",
+      "gateway": "link-gateway.mjs:44,313-323"
+    },
+    "pairing": {
+      "paths": [
+        "/device/v1/pair",
+        "/device/v1/pair/poll",
+        "/device/v1/challenge",
+        "/device/v1/token"
+      ],
+      "method": "POST",
+      "device": "crates/device-core/src/net.rs:126,150,211,224",
+      "gateway": "device-gateway.mjs:16,180-186 (forwarded to Control /internal/devices/<same>)"
+    },
+    "legacyDeviceChannel": {
+      "path": "/device/v1/connect",
+      "status": "served by the gateway's device hub (device-gateway.mjs:3); hostd never dials it"
+    }
+  }
+}

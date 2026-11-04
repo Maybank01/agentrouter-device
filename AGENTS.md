@@ -14,7 +14,7 @@ Charter (what belongs here, the contract it provides, how Cloud pins it): [docs/
 - Design and link protocol: [docs/HOSTD-MCP.md](docs/HOSTD-MCP.md) (type `protocol`; Cloud and the runner cite its
   section numbers: keep them stable or change the citations in the same release).
 - Not here: the Cloud side of the link (gateway, environments; agentrouter-cloud), the executor protocol spec
-  (AgentCompute, planned). The desktop shell `app/` is frozen (source kept, outside CI and releases).
+  (AgentCompute `contracts/executor-protocol/v0`; vendored copy in `vendor/agentcompute/`, tested by `crates/connector-cli/tests/executor_contract.rs`). The desktop shell `app/` is frozen (source kept, outside CI and releases).
 - Public repository: never commit secrets, hosts or account names; the parity bench's secrets live in the
   environment `dev-bench`.
 

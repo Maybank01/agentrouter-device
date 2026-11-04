@@ -11,3 +11,6 @@ crates/device-core/src/error-catalog.json
 
 # Lock fixtures of the aggregator tests
 crates/aggregator/tests/fixtures/locks/
+
+# Copy of AgentCompute's executor protocol contract (source of truth: agentrouter-top/AgentCompute; SOURCE.json names the ref)
+vendor/agentcompute/
