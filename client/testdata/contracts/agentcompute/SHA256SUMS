@@ -1,3 +1,4 @@
 a6edd7ca6f1eed7e264ac132223b4252e32e2a0cbf81cb1519994eb69881e444  contracts/compute/v1/computer.schema.json
 c458d438abb35759855932bf25890550efef73219c58e9f89a0a343ddae659eb  contracts/compute/v1/device.schema.json
+923f5f308bc4f15bb591bc1627eff7ee4ec83010cd953ac000f14b5bf3856c14  contracts/compute/v1/sandbox-join.schema.json
 7d037cffed7899ec3f675ae26d9a39a685dc157c3db3570f1c479f45ec8decd0  contracts/compute/v1/sandbox.schema.json

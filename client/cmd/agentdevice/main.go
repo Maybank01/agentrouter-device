@@ -8,6 +8,8 @@
 //	agentdevice autostart on|off|status             start at login (per user, no admin)
 //	agentdevice unbind                              remove this computer from the account
 //	agentdevice facts                               print the facts compute/v1 gets
+//	agentdevice sandbox [--join <file>]             a compute/v1 sandbox: join from AgentCompute's file, stay online
+//	agentdevice connect <host> <port>               stdin/stdout to host:port through the environment's proxy (ssh ProxyCommand)
 //	agentdevice version
 //
 // Every command takes --home <folder> (default: the per-user config folder). Flags carry only small fixed values and
@@ -25,6 +27,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -35,6 +38,7 @@ import (
 	"github.com/agentrouter-top/AgentDevice/client/internal/app"
 	"github.com/agentrouter-top/AgentDevice/client/internal/autostart"
 	"github.com/agentrouter-top/AgentDevice/client/internal/compute"
+	"github.com/agentrouter-top/AgentDevice/client/internal/egress"
 	"github.com/agentrouter-top/AgentDevice/client/internal/facts"
 	"github.com/agentrouter-top/AgentDevice/client/internal/identity"
 	"github.com/agentrouter-top/AgentDevice/client/internal/sshd"
@@ -72,6 +76,10 @@ func main() {
 		err = unbindCmd(args)
 	case "facts":
 		err = factsCmd(args)
+	case "sandbox":
+		err = sandboxCmd(args)
+	case "connect":
+		err = connectCmd(args)
 	case "version", "--version":
 		fmt.Println("agentdevice", version)
 	case "help", "-h", "--help":
@@ -92,6 +100,8 @@ const usage = `用法：
   agentdevice autostart on|off|status           登录电脑后自动启动
   agentdevice unbind                            从账号里移除这台电脑
   agentdevice facts                             看上报的电脑信息
+  agentdevice sandbox [--join 文件]             云电脑（算力层的沙箱）：按算力层给的文件加入网络并保持在线
+  agentdevice connect <主机> <端口>             经本机的代理连到主机端口（给 ssh 的 ProxyCommand 用）
   agentdevice version
 每个命令都可以加 --home <文件夹>。
 `
@@ -476,4 +486,58 @@ func factsCmd(args []string) error {
 	enc.SetIndent("", "  ")
 	enc.SetEscapeHTML(false)
 	return enc.Encode(facts.Collect(ctx))
+}
+
+// sandboxCmd is a compute/v1 sandbox's client (compute/v1 README §7.1): no person, no login, no tray. AgentCompute
+// wrote the join file and starts this as the sandbox's work user; the log goes to the client's folder and stdout.
+func sandboxCmd(args []string) error {
+	fs := flag.NewFlagSet("sandbox", flag.ContinueOnError)
+	joinFile := fs.String("join", app.DefaultJoinFile, "the join file AgentCompute wrote")
+	a, closeLog, err := common(fs, args)
+	if err != nil {
+		return err
+	}
+	defer closeLog()
+	j, err := app.ReadSandboxJoin(*joinFile)
+	if err != nil {
+		return err
+	}
+	a.Console = os.Stdout
+	ctx, cancel := signalContext()
+	defer cancel()
+	a.Log.Info("sandbox: starting", "computer", j.Computer, "own", j.Own, "version", version)
+	return a.RunSandbox(ctx, j, terminalUI{})
+}
+
+// connectCmd is an SSH ProxyCommand: stdin/stdout to host:port, through the environment's HTTP proxy when it names one
+// (a sandbox's only way to the compute SSH gateway).
+func connectCmd(args []string) error {
+	if len(args) != 2 {
+		return errors.New("connect: usage agentdevice connect <host> <port>")
+	}
+	port, err := strconv.Atoi(args[1])
+	if err != nil || port < 1 || port > 65535 {
+		return fmt.Errorf("connect: %q is not a port", args[1])
+	}
+	ctx, cancel := signalContext()
+	defer cancel()
+	conn, err := egress.Dial(ctx, args[0], port)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	done := make(chan struct{}, 2)
+	go func() {
+		_, _ = io.Copy(conn, os.Stdin)
+		if cw, ok := conn.(interface{ CloseWrite() error }); ok {
+			_ = cw.CloseWrite()
+		}
+		done <- struct{}{}
+	}()
+	go func() { _, _ = io.Copy(os.Stdout, conn); done <- struct{}{} }()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
+	return nil
 }

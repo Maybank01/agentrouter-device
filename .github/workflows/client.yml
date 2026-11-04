@@ -62,3 +62,73 @@ jobs:
           name: agentdevice-${{ matrix.name }}-${{ runner.arch }}
           path: client/dist/${{ matrix.exe }}
           retention-days: 14
+
+  # Static Linux builds for compute/v1 sandboxes (AgentCompute's environment image pins one by tag + sha256,
+  # #223), like hostd's pre-releases: every push to main that changes client/ publishes `client-v0.0.0-<sha7>`.
+  # Not a person's release (no signing, no npm; docs/adr/0001-code-signing.md).
+  linux:
+    name: Client (Linux ${{ matrix.arch }}, static)
+    if: github.event_name != 'pull_request'
+    needs: client
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: client
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: client/go.mod
+          cache-dependency-path: client/go.sum
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          go build -trimpath -ldflags "-s -w -X main.version=0.0.0-${GITHUB_SHA::7}" -o "dist/agentdevice-linux-${{ matrix.arch }}" ./cmd/agentdevice
+          cd dist && sha256sum "agentdevice-linux-${{ matrix.arch }}" > "agentdevice-linux-${{ matrix.arch }}.sha256" && cat ./*.sha256
+      - uses: actions/upload-artifact@v7
+        with:
+          name: client-linux-${{ matrix.arch }}
+          path: client/dist/agentdevice-linux-*
+          retention-days: 14
+
+  publish:
+    name: Publish client pre-release
+    needs: linux
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+          pattern: client-linux-*
+          merge-multiple: true
+      - name: Release client-v0.0.0-<sha7>
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd artifacts
+          tag="client-v0.0.0-${GITHUB_SHA::7}"
+          cat agentdevice-linux-*.sha256 > SHA256SUMS
+          cat SHA256SUMS
+          notes=$(printf '%s\n' \
+            "Static Linux builds of the Go client (agentdevice) for compute/v1 sandboxes, commit ${GITHUB_SHA}." \
+            "A sandbox runs \`agentdevice sandbox --join /etc/agentcompute/network.json\` (compute/v1 README §7.1). Pin by tag + SHA256SUMS." \
+            "" '```' "$(cat SHA256SUMS)" '```')
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" agentdevice-linux-amd64 agentdevice-linux-arm64 SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$tag" agentdevice-linux-amd64 agentdevice-linux-arm64 SHA256SUMS \
+              --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false \
+              --title "client ${GITHUB_SHA::7} (Linux, sandboxes)" --notes "$notes"
+          fi

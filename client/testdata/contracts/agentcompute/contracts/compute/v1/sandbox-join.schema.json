@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agentcompute:compute:v1:sandbox-join",
+  "title": "compute/v1 sandbox join file",
+  "description": "/etc/agentcompute/network.json in a sandbox this layer created: everything the client (AgentDevice `agentdevice sandbox`) needs to join the owner's NetBird network and serve SSH without a person, no login and no enrolment call. Written once per sandbox by this layer, mode 0600, owned by `user`. It holds secrets (the one-use setup key, the SSH host key): never logged, never on a command line (R21). README.md §7.1.",
+  "type": "object",
+  "required": ["managementUrl", "deviceName", "setupKey"],
+  "properties": {
+    "version": { "const": 1, "description": "This file's version; absent in the first files (managementUrl, deviceName, setupKey only)." },
+    "computer": { "type": "string", "pattern": "^cmp_[a-z0-9]{8,40}$", "description": "The sandbox's computer id: SSH tokens must cover computer:<this>:ssh." },
+    "own": { "type": "string", "minLength": 1, "maxLength": 128, "description": "The owner: SSH tokens must carry this `own`." },
+    "ten": { "type": "string", "minLength": 1, "maxLength": 128, "description": "The tenant: SSH tokens must carry this `ten`." },
+    "issuer": { "type": "string", "format": "uri", "maxLength": 512, "description": "identity/v1 issuer (`iss`); its key set is <issuer>/.well-known/jwks.json." },
+    "managementUrl": { "type": "string", "format": "uri", "maxLength": 512, "description": "The owner's NetBird management URL." },
+    "deviceName": { "type": "string", "minLength": 1, "maxLength": 64, "description": "The NetBird peer name: the computer id." },
+    "setupKey": { "type": "string", "minLength": 1, "maxLength": 256, "description": "One-use NetBird setup key of the owner's account (expires in 24 h). Spent at the first join; later starts reuse the peer key the client saved." },
+    "hostKey": { "type": "string", "maxLength": 4096, "pattern": "^-----BEGIN (OPENSSH |)PRIVATE KEY-----", "description": "The SSH host key the client serves with (Ed25519, PKCS#8 or OpenSSH PEM). This layer generates it, so its public half is the computer's `hostKey` in the access answer from the start." },
+    "user": { "type": "string", "minLength": 1, "maxLength": 64, "description": "The account the client runs as and every SSH session runs as (the access answer's `user`)." },
+    "tokenMaxAgeSeconds": { "type": "integer", "minimum": 60, "maximum": 900, "description": "How old (now - iat) an SSH token may be; default 600." },
+    "proxy": {
+      "type": "object",
+      "description": "The sandbox's only egress is an HTTP CONNECT proxy (a Daytona node's). NetBird's relay dialer does not use proxies, so: this layer maps each of `hosts` to 127.0.0.1 in /etc/hosts and lets unprivileged users bind port 443; the client listens on `listen` and relays each TLS connection whose SNI is one of `hosts` through the proxy (CONNECT <sni>:443); its own HTTPS calls use the proxy directly.",
+      "required": ["url", "hosts"],
+      "properties": {
+        "url": { "type": "string", "pattern": "^http://[^\\s/]+(:[0-9]{1,5})?/?$", "maxLength": 256, "description": "http://host:port of the proxy." },
+        "hosts": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "type": "string", "pattern": "^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$" }, "description": "NetBird's management, signal and relay host names (port 443)." },
+        "listen": { "type": "string", "default": "127.0.0.1:443", "maxLength": 64, "description": "Where the client's relay listens." }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

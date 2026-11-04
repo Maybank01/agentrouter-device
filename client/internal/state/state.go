@@ -5,6 +5,7 @@
 package state
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
@@ -270,4 +271,16 @@ func (d Dir) writePrivate(name string, data []byte) error {
 		return fmt.Errorf("state: replace %s: %w", d.Path(name), err)
 	}
 	return nil
+}
+
+// SetHostKey makes key (a PEM private key, e.g. the one compute/v1 put into a sandbox's join file) the SSH host key.
+// A sandbox's host key comes from AgentCompute, so the access answer names it before the sandbox reports anything.
+func (d Dir) SetHostKey(key []byte) error {
+	if _, err := ssh.ParsePrivateKey(key); err != nil {
+		return fmt.Errorf("state: the given host key is unreadable: %w", err)
+	}
+	if cur, err := os.ReadFile(d.Path("ssh_host_ed25519_key")); err == nil && bytes.Equal(cur, key) {
+		return nil
+	}
+	return d.writePrivate("ssh_host_ed25519_key", key)
 }

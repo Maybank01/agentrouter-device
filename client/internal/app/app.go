@@ -46,6 +46,9 @@ type App struct {
 	BaseEnv []string
 	// Console is the visible activity log (Windows: the one console window); nil = none.
 	Console io.Writer
+	// Headless is a compute/v1 sandbox (RunSandbox): no device login, so no facts report and no issuer to ask
+	// whether the device was removed.
+	Headless bool
 
 	sessOnce sync.Once
 	sess     *identity.Session
@@ -293,8 +296,10 @@ func (a *App) run(ctx context.Context, stop context.CancelCauseFunc, join *compu
 			return err
 		}
 		// A peer that cannot join may have been removed: ask the issuer, which knows for sure.
-		if _, terr := a.token(ctx, identity.AudienceCompute); errors.Is(terr, identity.ErrDeviceRemoved) {
-			return terr
+		if !a.Headless {
+			if _, terr := a.token(ctx, identity.AudienceCompute); errors.Is(terr, identity.ErrDeviceRemoved) {
+				return terr
+			}
 		}
 		a.Log.Warn("network not up; retrying", "in", backoff.String(), "error", err.Error())
 		ui.Status(tray.Offline, "连不上网络，稍后重试")
@@ -316,7 +321,9 @@ func (a *App) run(ctx context.Context, stop context.CancelCauseFunc, join *compu
 
 	var wg sync.WaitGroup
 	wg.Go(func() { a.serveSSH(ctx, nw, srv) })
-	wg.Go(func() { a.reportFacts(ctx, stop, dev) })
+	if !a.Headless {
+		wg.Go(func() { a.reportFacts(ctx, stop, dev) })
+	}
 	wg.Go(func() { a.watch(ctx, nw, ui) })
 	<-ctx.Done()
 	_ = srv.Close()
