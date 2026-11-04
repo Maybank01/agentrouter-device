@@ -14,6 +14,10 @@
   `ssh_host_ed25519_key`, `netbird.json`, `agentdevice.log`.
 - Contracts: vendored copies with sha256 in `testdata/contracts/` (identity/v1, compute/v1).
 
+Known gaps (current state, 2026-11-04): not yet run end to end on Dev (needs AgentCompute#14 and the NewAPI Dev
+issuer with device-code login, agentrouter-newapi#157); no release flow yet (CI artifacts only); sandboxes' headless
+enrolment is not here; `scripts/av-hygiene.sh` does not scan `client/` (CREATE_NO_WINDOW, ADR 0002).
+
 Commands: `agentdevice [run]`, `login`, `status`, `autostart on|off|status`, `unbind`, `facts`, `version`
 (`cmd/agentdevice/main.go`).
 
