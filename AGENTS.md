@@ -24,6 +24,8 @@ Charter (what belongs here, the contract it provides, how Cloud pins it): [docs/
 ## Build, check, test
 - Locally build, check and lint only: `cargo build`, `cargo check`, `cargo clippy --workspace --all-targets -- -D
   warnings`, `cargo fmt --all`, `bash scripts/av-hygiene.sh`, `node scripts/check-docs.mjs`.
+- Go client (`client/`, base layers v1, #221): locally `go build ./...` and `go vet ./...` only; its tests run in
+  `.github/workflows/client.yml` (Linux, macOS, Windows). [client/README.md](client/README.md).
 - Tests run on GitHub-hosted runners only (`.github/workflows/ci.yml`: Linux, Windows, sandbox jobs on Linux, macOS and
   Windows; free for a public repository). Required checks and the after-merge `Sandbox (Windows)` rule: README.md
   "Development". A red `main` is re-run once, then reverted or reported (`main-red.yml`).

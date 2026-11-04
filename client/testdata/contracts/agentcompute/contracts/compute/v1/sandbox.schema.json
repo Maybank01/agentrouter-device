@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agentcompute:compute:v1:sandbox",
+  "title": "compute/v1 sandbox creation",
+  "description": "POST /v1/sandboxes body and its parts. The spec is what ECS compiled from a space's environment declaration (Cloud AGENT-FRAMEWORK §10.4: toolchains mise.toml / mise.lock, dependencies each language's lockfile, heavy bases an OCI image digest). It carries content, never a reference into a space: the compute layer does not know spaces. README.md: contracts/compute/v1/README.md.",
+  "type": "object",
+  "required": ["name", "spec", "resources", "lifespan"],
+  "properties": {
+    "name": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "spec": { "$ref": "#/$defs/spec" },
+    "resources": { "$ref": "#/$defs/resources" },
+    "lifespan": {
+      "enum": ["temporary", "long"],
+      "description": "temporary: removed 30 minutes after its last hold ended. long: kept until DELETE /v1/sandboxes/{id}."
+    },
+    "holder": {
+      "$ref": "#/$defs/holderId",
+      "description": "Optional first hold, as PUT /v1/sandboxes/{id}/holds/{holder} with the default ttl."
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "holderId": {
+      "type": "string",
+      "pattern": "^[0-9A-Za-z][0-9A-Za-z_.:-]{0,127}$",
+      "description": "Opaque to this layer: whoever holds the sandbox names itself (AgentHost uses the conversation id). This layer never interprets it."
+    },
+    "hold": {
+      "type": "object",
+      "required": ["holder", "expiresAt"],
+      "properties": {
+        "holder": { "$ref": "#/$defs/holderId" },
+        "expiresAt": { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": false
+    },
+    "holdRequest": {
+      "type": "object",
+      "properties": {
+        "ttlSeconds": { "type": "integer", "minimum": 60, "maximum": 3600, "default": 900, "description": "The hold lapses this long after the request unless renewed (the same PUT again)." }
+      },
+      "additionalProperties": false
+    },
+    "spec": {
+      "type": "object",
+      "description": "Every part is optional; an empty spec is the default environment image as it is. The whole request body is at most 8 MiB.",
+      "properties": {
+        "image": {
+          "type": "object",
+          "required": ["ref"],
+          "description": "A heavy base pinned by digest. Absent: AgentCompute's environment image (environment-image/).",
+          "properties": {
+            "ref": { "type": "string", "maxLength": 512, "pattern": "^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$", "description": "An OCI reference with its digest (registry/repository@sha256:…). A tag alone is refused." }
+          },
+          "additionalProperties": false
+        },
+        "toolchains": {
+          "type": "object",
+          "required": ["miseToml"],
+          "description": "Toolchains in mise's format (mise, MIT); installed into content-addressed layers keyed by these files.",
+          "properties": {
+            "miseToml": { "type": "string", "maxLength": 65536, "description": "The content of mise.toml." },
+            "miseLock": { "type": "string", "maxLength": 1048576, "description": "The content of mise.lock, when the declaration pins one." }
+          },
+          "additionalProperties": false
+        },
+        "dependencies": {
+          "type": "array",
+          "maxItems": 32,
+          "description": "Dependency sets, each installed by its manager from its manifest and lockfile into `root`, cached by the files' content.",
+          "items": {
+            "type": "object",
+            "required": ["manager", "root", "files"],
+            "properties": {
+              "manager": { "enum": ["npm", "pnpm", "yarn", "bun", "pip", "uv", "poetry", "cargo", "go", "bundler", "composer"] },
+              "root": { "type": "string", "maxLength": 512, "pattern": "^/", "description": "Absolute path in the sandbox the set is installed for (its files are written there first)." },
+              "files": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 16,
+                "description": "The manifest and lockfile the manager needs (package.json + package-lock.json, pyproject.toml + uv.lock, Cargo.toml + Cargo.lock, …).",
+                "items": {
+                  "type": "object",
+                  "required": ["path", "content"],
+                  "properties": {
+                    "path": { "type": "string", "maxLength": 256, "pattern": "^[^/].*$", "description": "Relative to `root`." },
+                    "content": { "type": "string", "maxLength": 4194304 }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "source": {
+          "type": "string",
+          "maxLength": 512,
+          "description": "Provenance only, never read by this layer: which declaration it was compiled from (e.g. \"spc_x:.ar/space.yaml#dev@<changeset>\"). Shown in logs and errors."
+        }
+      },
+      "additionalProperties": false
+    },
+    "resources": {
+      "type": "object",
+      "required": ["cpu", "memoryGb", "diskGb"],
+      "description": "Limits of the sandbox. A request the provider cannot place is refused with the facts that fail (COMPUTE_SANDBOX_CAPACITY), never silently shrunk.",
+      "properties": {
+        "cpu": { "type": "number", "minimum": 0.25, "maximum": 64, "description": "vCPUs." },
+        "memoryGb": { "type": "number", "minimum": 0.25, "maximum": 256 },
+        "diskGb": { "type": "number", "minimum": 1, "maximum": 2048 },
+        "gpu": {
+          "type": "object",
+          "required": ["count"],
+          "properties": {
+            "count": { "type": "integer", "minimum": 1, "maximum": 8 },
+            "model": { "type": "string", "maxLength": 64 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

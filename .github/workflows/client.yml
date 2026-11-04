@@ -1,0 +1,64 @@
+name: Client (Go)
+
+# The Go client in client/ (base layers v1, #221): NetBird client/embed for the network, its own SSH server. Its tests
+# run here only, on GitHub-hosted Linux, macOS and Windows runners (R47); locally only `go build` / `go vet`. The Rust
+# hostd keeps its own workflows until the Go client is verified on Dev.
+
+on:
+  push:
+    branches: [main]
+    paths: ["client/**", ".github/workflows/client.yml"]
+  pull_request:
+    paths: ["client/**", ".github/workflows/client.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: client-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  client:
+    name: Client (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Linux, os: ubuntu-latest, exe: agentdevice, ldflags: "" }
+          - { name: macOS, os: macos-latest, exe: agentdevice, ldflags: "" }
+          - { name: Windows, os: windows-latest, exe: agentdevice.exe, ldflags: "-H windowsgui" }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: client
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: client/go.mod
+          cache-dependency-path: client/go.sum
+      - name: gofmt
+        if: matrix.name == 'Linux'
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - name: go mod tidy is clean
+        if: matrix.name == 'Linux'
+        run: go mod tidy && git diff --exit-code go.mod go.sum
+      - run: go vet ./...
+      - run: go test -count=1 -timeout 10m ./...
+      - name: Build
+        run: go build -trimpath -ldflags "-s -w -X main.version=0.0.0-${GITHUB_SHA::7} ${{ matrix.ldflags }}" -o "dist/${{ matrix.exe }}" ./cmd/agentdevice
+      - name: SHA-256
+        run: |
+          cd dist
+          if command -v sha256sum >/dev/null; then sha256sum ${{ matrix.exe }}; else shasum -a 256 ${{ matrix.exe }}; fi
+      # A pre-release build for Dev testing (no release, no signing; docs/adr/0001-code-signing.md).
+      - uses: actions/upload-artifact@v7
+        if: github.event_name != 'pull_request'
+        with:
+          name: agentdevice-${{ matrix.name }}-${{ runner.arch }}
+          path: client/dist/${{ matrix.exe }}
+          retention-days: 14

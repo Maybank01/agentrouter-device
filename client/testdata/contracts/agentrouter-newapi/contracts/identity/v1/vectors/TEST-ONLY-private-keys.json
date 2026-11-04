@@ -1,0 +1,25 @@
+{
+  "$comment": "TEST ONLY. Published on purpose so every verifier can be tested. Never configure it in any environment; a token signed with it must be rejected everywhere outside tests.",
+  "keys": [
+    {
+      "kty": "EC",
+      "crv": "P-256",
+      "x": "F0EiLVUdrnzkQoOYoSngtDxKJ-pV_Zd3CKAAD-SVhMo",
+      "y": "Sc4hcyklglctNP_HHVXhICR1is9LTh58j2jua0YAYgA",
+      "kid": "test-2026-11-a",
+      "alg": "ES256",
+      "use": "sig",
+      "d": "qpabQmwj20HJp9YS1tWuRnbPw8OAw8RPbMn2eIxB_DM"
+    },
+    {
+      "kty": "EC",
+      "crv": "P-256",
+      "x": "yP8tofffmUcjSx21IuDtllPm08Bi6_2hulGMco5jljo",
+      "y": "xzCszWL8MVYp_DhhUp5j1iqczZwuNpW00B91Mw-NTD4",
+      "kid": "test-2026-11-b",
+      "alg": "ES256",
+      "use": "sig",
+      "d": "w0ZAIvRc7buqkYfYNfTsAYnYGE7YBqyxvxDxrQXvqy4"
+    }
+  ]
+}
