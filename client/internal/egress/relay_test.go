@@ -2,6 +2,7 @@ package egress
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"io"
@@ -130,5 +131,32 @@ func TestServerNameNeedsAName(t *testing.T) {
 	}()
 	if _, _, err := ServerName(a); err == nil {
 		t.Fatal("a hello without a server name was accepted")
+	}
+}
+
+// Dial (agentdevice connect, an SSH ProxyCommand) goes through the proxy the environment names. It is the only test
+// here that reads the proxy variables (net/http caches them once per process).
+func TestDialUsesTheEnvironmentsProxy(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "via proxy") }))
+	defer srv.Close()
+	proxyAddr, seen := fakeProxy(t, srv.Listener.Addr().String())
+	t.Setenv("HTTPS_PROXY", "http://"+proxyAddr)
+	t.Setenv("NO_PROXY", "")
+	conn, err := Dial(context.Background(), "example.com", 443)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	pool := x509.NewCertPool()
+	pool.AddCert(srv.Certificate())
+	tc := tls.Client(conn, &tls.Config{RootCAs: pool, ServerName: "example.com"})
+	io.WriteString(tc, "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
+	resp, err := http.ReadResponse(bufio.NewReader(tc), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "via proxy" || len(seen()) != 1 {
+		t.Fatalf("body %q, proxy saw %v", body, seen())
 	}
 }

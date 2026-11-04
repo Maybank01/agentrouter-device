@@ -15,7 +15,7 @@ then `POST /v1/identity/device/token` — the device code once, then `grant_type
 
 | Submodule | Current state |
 | --- | --- |
-| `cmd/agentdevice` | commands `run` (default), `login`, `status`, `autostart on\|off\|status`, `unbind`, `facts`, `sandbox`, `version`; `--home` |
+| `cmd/agentdevice` | commands `run` (default), `login`, `status`, `autostart on\|off\|status`, `unbind`, `facts`, `sandbox`, `connect` (ProxyCommand through the environment's proxy), `version`; `--home` |
 | `internal/app` | the flow: login → enrol → join → SSH + facts + tray state; `sandbox.go`: a sandbox, headless (below) |
 | `internal/egress` | relays NetBird's TLS by SNI through an HTTP CONNECT proxy ([ADR 0003](../docs/adr/0003-sandbox-egress-relay.md)) |
 | `internal/network` | embed v0.82.0, NetBird's SSH server off; skips NetBird's slow static-info probes (Windows 20 s) |
