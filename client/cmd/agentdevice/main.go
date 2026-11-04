@@ -152,6 +152,9 @@ func defaultName() string {
 	return "我的电脑"
 }
 
+// removedText is what the person sees when the device's login was removed or revoked (owner wording).
+const removedText = "此设备已被移除，请重新登录"
+
 // terminalUI prints to the terminal or the console window.
 type terminalUI struct{ w io.Writer }
 
@@ -272,6 +275,17 @@ func runCmd(args []string, console bool) error {
 	}
 	if *noTray || !tray.Available() {
 		err := work(terminalUI{w: consoleOut})
+		if errors.Is(err, identity.ErrDeviceRemoved) {
+			a.Log.Error("stopped", "error", err.Error())
+			if consoleOut != nil {
+				fmt.Fprintln(consoleOut, time.Now().Format("15:04:05")+"  "+removedText)
+			}
+			if runtime.GOOS == "windows" {
+				<-ctx.Done() // the message stays in the window until the person closes it
+				return nil
+			}
+			return errors.New(removedText)
+		}
 		if errors.Is(err, context.Canceled) {
 			return nil
 		}
@@ -287,7 +301,11 @@ func runCmd(args []string, console bool) error {
 			if err != nil && ctx.Err() == nil {
 				// Stay in the tray with the reason; the full error is in the log.
 				a.Log.Error("stopped", "error", err.Error())
-				ui.Status(tray.Offline, "停了："+short(err.Error()))
+				if errors.Is(err, identity.ErrDeviceRemoved) {
+					ui.Status(tray.Offline, removedText)
+				} else {
+					ui.Status(tray.Offline, "停了："+short(err.Error()))
+				}
 				if console {
 					fmt.Fprintln(os.Stderr, "agentdevice:", err)
 				}

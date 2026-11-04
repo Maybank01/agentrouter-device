@@ -1,7 +1,7 @@
 // Package state holds what the client keeps on disk, all in one folder of the person's own profile (no admin rights,
-// nothing outside it): the endpoints (config.json), the enrolment (device.json), the device credential, the SSH host
-// key and NetBird's own config. Secrets are files only this account can read (0600; on Windows the profile folder's
-// ACL), never command lines or environment variables (R21).
+// nothing outside it): the endpoints (config.json), the enrolment (device.json), the device login's newest refresh
+// token, the SSH host key and NetBird's own config. Secrets are files only this account can read (0600; on Windows
+// a protected DACL naming only this account), written atomically, never command lines or environment variables (R21).
 package state
 
 import (
@@ -63,9 +63,10 @@ type Config struct {
 	JWKSURL string `json:"jwksUrl,omitempty"`
 	// ComputeURL is AgentCompute's compute/v1 base URL.
 	ComputeURL string `json:"computeUrl,omitempty"`
-	// DeviceAuthURL and DeviceTokenURL override the device-code login endpoints.
+	// DeviceAuthURL, DeviceTokenURL and ClientID override the device login's endpoints and client id.
 	DeviceAuthURL  string `json:"deviceAuthUrl,omitempty"`
 	DeviceTokenURL string `json:"deviceTokenUrl,omitempty"`
+	ClientID       string `json:"clientId,omitempty"`
 	// SSHPort is where the SSH server listens on the device's NetBird address (default 22; compute/v1 access target).
 	SSHPort int `json:"sshPort,omitempty"`
 	// TokenMaxAgeSeconds is how old (now - iat) an SSH token may be when it authenticates (default 600, compute/v1
@@ -123,8 +124,12 @@ func (c Config) Validate(path string) error {
 
 // Device is device.json: the enrolment compute/v1 answered.
 type Device struct {
-	ComputerID    string    `json:"computerId"`
-	Own           string    `json:"own"`
+	ComputerID string `json:"computerId"`
+	Own        string `json:"own"`
+	// Ten is the tenant of the device's login (identity/v1: the client id's tenant); SSH tokens must carry it too.
+	Ten string `json:"ten,omitempty"`
+	// DeviceID is the login as the person's device list (我的设备) shows it.
+	DeviceID      string    `json:"deviceId,omitempty"`
 	Name          string    `json:"name"`
 	ManagementURL string    `json:"managementUrl"`
 	PeerName      string    `json:"peerName,omitempty"`
@@ -155,30 +160,30 @@ func (d Dir) SaveDevice(dev *Device) error {
 	return d.writePrivate("device.json", raw)
 }
 
-// Credential reads the device credential ("" when the person has not logged in).
-func (d Dir) Credential() (string, error) {
-	raw, err := os.ReadFile(d.Path("credential"))
+// LoadRefresh reads the newest refresh token of the device login ("" when the person has not logged in).
+func (d Dir) LoadRefresh() (string, error) {
+	raw, err := os.ReadFile(d.Path("refresh_token"))
 	if errors.Is(err, os.ErrNotExist) {
 		return "", nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("state: read the device credential %s: %w", d.Path("credential"), err)
+		return "", fmt.Errorf("state: read the refresh token %s: %w", d.Path("refresh_token"), err)
 	}
 	return strings.TrimSpace(string(raw)), nil
 }
 
-// SaveCredential writes the device credential (0600).
-func (d Dir) SaveCredential(cred string) error {
-	return d.writePrivate("credential", []byte(cred+"\n"))
+// SaveRefresh replaces the refresh token (owner-only file, atomically: only the newest one is kept).
+func (d Dir) SaveRefresh(token string) error {
+	return d.writePrivate("refresh_token", []byte(token+"\n"))
 }
 
 // NetBirdConfig is the path of NetBird's own config (WireGuard key, management URL).
 func (d Dir) NetBirdConfig() string { return d.Path("netbird.json") }
 
-// Forget removes the enrolment, the credential and NetBird's config; the host key and config.json stay.
+// Forget removes the enrolment, the refresh token and NetBird's config; the host key and config.json stay.
 func (d Dir) Forget() error {
 	var errs []error
-	for _, name := range []string{"device.json", "credential", "netbird.json", "idempotency-key"} {
+	for _, name := range []string{"device.json", "refresh_token", "netbird.json", "idempotency-key"} {
 		if err := os.Remove(d.Path(name)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			errs = append(errs, err)
 		}
@@ -257,6 +262,9 @@ func (d Dir) writePrivate(name string, data []byte) error {
 	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("state: write %s: %w", d.Path(name), err)
+	}
+	if err := ownerOnly(tmp.Name()); err != nil {
+		return fmt.Errorf("state: restrict %s to this account: %w", d.Path(name), err)
 	}
 	if err := os.Rename(tmp.Name(), d.Path(name)); err != nil {
 		return fmt.Errorf("state: replace %s: %w", d.Path(name), err)

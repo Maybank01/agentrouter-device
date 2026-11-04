@@ -39,6 +39,7 @@ type Claims struct {
 	Aud string   `json:"aud"`
 	Scp []string `json:"scp"`
 	Run string   `json:"run,omitempty"`
+	Grp string   `json:"grp,omitempty"`
 	Iat int64    `json:"iat"`
 	Exp int64    `json:"exp"`
 	Jti string   `json:"jti"`
@@ -167,7 +168,8 @@ var (
 	scopePattern   = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}:(\*|[0-9A-Za-z][0-9A-Za-z_.-]{0,127}):[a-z][a-z0-9-]{0,31}$`)
 	runPattern     = regexp.MustCompile(`^cnv_[0-9A-Za-z_-]{1,64}$`)
 	uuidPattern    = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
-	audiences      = map[string]bool{"agentspace": true, "agentevents": true, "agentcompute": true, "agenthost": true, "netbird": true}
+	grpPattern     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$`)
+	audiences      = map[string]bool{"agentspace": true, "agentevents": true, "agentcompute": true, "agenthost": true, "netbird": true, "newapi": true}
 )
 
 // parseClaims decodes the payload and checks it against the shape of claims.schema.json (required claims, types,
@@ -216,6 +218,8 @@ func parseClaims(seg string) (*Claims, error) {
 		return nil, reject("claims", "run %q is not cnv_<id>", c.Run)
 	case !uuidPattern.MatchString(c.Jti):
 		return nil, reject("claims", "jti %q is not a lowercase UUID", c.Jti)
+	case c.Grp != "" && (!grpPattern.MatchString(c.Grp) || c.Grp == "auto"):
+		return nil, reject("claims", "grp %q is not a token group name", c.Grp)
 	}
 	if _, ok := m["run"]; ok && c.Run == "" {
 		return nil, reject("claims", "run is present but empty")

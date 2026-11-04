@@ -9,13 +9,15 @@ import (
 )
 
 // Authorizer decides whether an SSH password (an identity/v1 token) may open a session on this device:
-// aud netbird, scp covering computer:<this id>:ssh, own equal to the device's owner, and issued at most MaxAge ago
+// aud netbird, scp covering computer:<this id>:ssh, own equal to the device's owner, ten equal to the tenant of the
+// device's login (when known; identity/v1: layers check owner and tenant), and issued at most MaxAge ago
 // (compute/v1 access tokenMaxAgeSeconds). AgentCompute's SSH gateway checks the same token before forwarding; the
 // device checks it again because it is the last hop.
 type Authorizer struct {
 	Verifier   *identity.Verifier
 	ComputerID string
 	Own        string
+	Ten        string
 	MaxAge     time.Duration
 }
 
@@ -31,6 +33,9 @@ func (a *Authorizer) Authorize(ctx context.Context, token string) (*identity.Cla
 	}
 	if c.Own != a.Own {
 		return nil, &identity.Error{Check: "own", Detail: fmt.Sprintf("own %s, this device belongs to %s", c.Own, a.Own)}
+	}
+	if a.Ten != "" && c.Ten != a.Ten {
+		return nil, &identity.Error{Check: "ten", Detail: fmt.Sprintf("ten %s, this device's login is for tenant %s", c.Ten, a.Ten)}
 	}
 	now := time.Now()
 	if a.Verifier.Now != nil {

@@ -3,12 +3,10 @@ package identity
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -134,67 +132,5 @@ func TestRemoteKeysCachesAndRefetchesOnUnknownKid(t *testing.T) {
 	}
 	if hits.Load() != 1 {
 		t.Fatalf("an unknown kid refetched within %s (%d fetches)", RefetchInterval, hits.Load())
-	}
-}
-
-func TestIssueSendsCredentialAndReportsOAuthErrors(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/identity/token" || r.Header.Get("Authorization") != "Bearer cred-1" {
-			w.WriteHeader(http.StatusUnauthorized)
-			fmt.Fprint(w, `{"error":"invalid_client","error_description":"identity token: credential unknown","retryable":false,"next":"log in again"}`)
-			return
-		}
-		var body struct {
-			Aud string   `json:"aud"`
-			Scp []string `json:"scp"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		fmt.Fprintf(w, `{"access_token":"tok-%s-%s","issued_token_type":"urn:ietf:params:oauth:token-type:jwt","token_type":"Bearer","expires_in":600,"scope":"%s"}`, body.Aud, body.Scp[0], body.Scp[0])
-	}))
-	defer srv.Close()
-	c := &Client{Issuer: srv.URL, Credential: "cred-1"}
-	tok, err := c.Issue(context.Background(), "agentcompute", []string{"device:*:enrol"}, 600)
-	if err != nil || tok != "tok-agentcompute-device:*:enrol" {
-		t.Fatalf("Issue = %q, %v", tok, err)
-	}
-	c.Credential = "wrong"
-	_, err = c.Issue(context.Background(), "agentcompute", []string{"device:*:enrol"}, 600)
-	if err == nil || !strings.Contains(err.Error(), "invalid_client") || !strings.Contains(err.Error(), "log in again") {
-		t.Fatalf("want the full OAuth error, got %v", err)
-	}
-}
-
-func TestDeviceLogin(t *testing.T) {
-	var polls atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/v1/identity/device/code":
-			fmt.Fprint(w, `{"device_code":"dc","user_code":"ABCD-EFGH","verification_uri":"https://newapi.test/device","verification_uri_complete":"https://newapi.test/device?code=ABCD-EFGH","expires_in":600,"interval":1}`)
-		case "/v1/identity/device/token":
-			_ = r.ParseForm()
-			if r.Form.Get("device_code") != "dc" {
-				w.WriteHeader(http.StatusBadRequest)
-				fmt.Fprint(w, `{"error":"invalid_grant"}`)
-				return
-			}
-			if polls.Add(1) == 1 {
-				w.WriteHeader(http.StatusBadRequest)
-				fmt.Fprint(w, `{"error":"authorization_pending"}`)
-				return
-			}
-			fmt.Fprint(w, `{"access_token":"device-credential","token_type":"Bearer"}`)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
-	var shown Prompt
-	cred, err := DeviceLoginFor(srv.URL).Login(context.Background(), func(p Prompt) { shown = p })
-	if err != nil || cred != "device-credential" {
-		t.Fatalf("Login = %q, %v", cred, err)
-	}
-	if shown.UserCode != "ABCD-EFGH" || shown.VerificationURIComplete == "" {
-		t.Fatalf("prompt %+v", shown)
 	}
 }

@@ -18,11 +18,11 @@
     },
     "ten": { "$ref": "#/$defs/account", "description": "Tenant: the account that buys the layer. In our own product the tenant is ECS's account and the product's users are owners inside it." },
     "own": { "$ref": "#/$defs/account", "description": "Owner: whose resources these are (devices, spaces, conversations)." },
-    "pay": { "$ref": "#/$defs/account", "description": "Payer: whose quota this usage is booked to (metering/v1 records carry it unchanged)." },
+    "pay": { "$ref": "#/$defs/account", "description": "Payer: whose quota this usage is booked to (metering/v1 records carry it unchanged; model calls with aud newapi are billed to it)." },
     "aud": {
       "type": "string",
-      "enum": ["agentspace", "agentevents", "agentcompute", "agenthost", "netbird"],
-      "description": "The one layer this token is for. A single string, never an array: a token for two layers is two tokens."
+      "enum": ["agentspace", "agentevents", "agentcompute", "agenthost", "netbird", "newapi"],
+      "description": "The one layer this token is for. A single string, never an array: a token for two layers is two tokens. newapi = NewAPI's own model API (README \"Model calls\"; additive 2026-11-04)."
     },
     "scp": {
       "type": "array",
@@ -36,6 +36,12 @@
       "type": "string",
       "pattern": "^cnv_[0-9A-Za-z_-]{1,64}$",
       "description": "Optional: the run (conversation id) this token acts for. Present = a run token, lifetime at most 900 s."
+    },
+    "grp": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$",
+      "not": { "const": "auto" },
+      "description": "Optional (additive 2026-11-04): the NewAPI token group a model call with this token is billed under (README \"Model calls\"); absent = the payer's own group. Set by POST /v1/identity/token or at exchange only for an act-for service key whose groups list it; a child keeps its parent's grp. Other layers ignore it."
     },
     "iat": { "type": "integer", "minimum": 0, "description": "Issued at, Unix seconds." },
     "exp": { "type": "integer", "minimum": 0, "description": "Expires at, Unix seconds. exp - iat <= 3600, and <= 900 when `run` is present." },
@@ -51,7 +57,7 @@
       "type": "string",
       "maxLength": 200,
       "pattern": "^[a-z][a-z0-9-]{0,31}:(\\*|[0-9A-Za-z][0-9A-Za-z_.-]{0,127}):[a-z][a-z0-9-]{0,31}$",
-      "description": "<kind>:<id>:<right>. v1 kinds and rights: space:<spc_id>:ro|rw (rw implies ro), space:new:create (create a space; its owner is the token's own), computer:<cmp_id>:ssh, conversation:<cnv_id>:send|read|children (children: a run managing its own sub-Agents), conversation:new:create (create a conversation; its owner is the token's own). A layer's contract may add kinds and rights (additive). id is a resource id, `new` for create, or * (every existing resource of that kind `own` may use; never `new`). The only implication between rights is rw -> ro."
+      "description": "<kind>:<id>:<right>. v1 kinds and rights: space:<spc_id>:ro|rw (rw implies ro), space:new:create (create a space; its owner is the token's own), computer:<cmp_id>:ssh, conversation:<cnv_id>:send|read|children (children: a run managing its own sub-Agents), conversation:new:create (create a conversation; its owner is the token's own), model:*:call (aud newapi: call NewAPI's model API, billed to the token's pay; v1 defines only the * id). A layer's contract may add kinds and rights (additive). id is a resource id, `new` for create, or * (every existing resource of that kind `own` may use; never `new`). The only implication between rights is rw -> ro."
     }
   }
 }

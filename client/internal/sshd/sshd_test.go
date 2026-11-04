@@ -125,7 +125,7 @@ func start(t *testing.T) *harness {
 		HostKey: signer,
 		Authorizer: &Authorizer{
 			Verifier:   &identity.Verifier{Issuer: testIssuer, Keys: keys},
-			ComputerID: testComputer, Own: testOwner, MaxAge: 600 * time.Second,
+			ComputerID: testComputer, Own: testOwner, Ten: "acc_1001", MaxAge: 600 * time.Second,
 		},
 		Shell:   facts.UserShell(),
 		Home:    home,
@@ -202,6 +202,7 @@ func TestAuthAcceptsOnlyThisDevicesOwnerWithTheSSHScope(t *testing.T) {
 	}
 	cases := map[string]func(claims){
 		"another owner":    func(c claims) { c["own"] = "acc_9999" },
+		"another tenant":   func(c claims) { c["ten"] = "acc_9998" },
 		"another computer": func(c claims) { c["scp"] = []string{"computer:cmp_other:ssh"} },
 		"another right":    func(c claims) { c["scp"] = []string{"computer:" + testComputer + ":read"} },
 		"another audience": func(c claims) { c["aud"] = "agentcompute" },

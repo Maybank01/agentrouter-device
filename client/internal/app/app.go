@@ -46,24 +46,34 @@ type App struct {
 	BaseEnv []string
 	// Console is the visible activity log (Windows: the one console window); nil = none.
 	Console io.Writer
-}
 
-func (a *App) identityClient(cred string) *identity.Client {
-	return &identity.Client{Issuer: a.Cfg.Issuer, Credential: cred}
+	sessOnce sync.Once
+	sess     *identity.Session
 }
 
 func (a *App) computeClient() *compute.Client { return &compute.Client{BaseURL: a.Cfg.ComputeURL} }
 
-// token asks for an identity/v1 token of the device's account.
-func (a *App) token(ctx context.Context, aud string, scp ...string) (string, error) {
-	cred, err := a.Dir.Credential()
-	if err != nil {
-		return "", err
-	}
-	if cred == "" {
-		return "", errors.New("this device is not logged in: run `agentdevice login`")
-	}
-	return a.identityClient(cred).Issue(ctx, aud, scp, 600)
+// session is the device login (identity/v1 "Device login"): one per process, so refreshes happen one at a time.
+func (a *App) session() *identity.Session {
+	a.sessOnce.Do(func() {
+		ep := identity.EndpointsFor(a.Cfg.Issuer)
+		if a.Cfg.DeviceAuthURL != "" {
+			ep.DeviceAuthURL = a.Cfg.DeviceAuthURL
+		}
+		if a.Cfg.DeviceTokenURL != "" {
+			ep.TokenURL = a.Cfg.DeviceTokenURL
+		}
+		if a.Cfg.ClientID != "" {
+			ep.ClientID = a.Cfg.ClientID
+		}
+		a.sess = &identity.Session{Endpoints: ep, Store: a.Dir}
+	})
+	return a.sess
+}
+
+// token is a short identity/v1 token for aud (agentcompute or netbird), from the refresh token.
+func (a *App) token(ctx context.Context, aud string) (string, error) {
+	return a.session().Token(ctx, aud)
 }
 
 // Login runs the device-code login and enrols the computer under name. It returns the one-use join credential
@@ -72,32 +82,26 @@ func (a *App) Login(ctx context.Context, name string, ui UI) (*compute.Join, err
 	if err := a.Cfg.Validate(a.Dir.Path("config.json")); err != nil {
 		return nil, err
 	}
-	dl := identity.DeviceLoginFor(a.Cfg.Issuer)
-	if a.Cfg.DeviceAuthURL != "" {
-		dl.DeviceAuthURL = a.Cfg.DeviceAuthURL
-	}
-	if a.Cfg.DeviceTokenURL != "" {
-		dl.TokenURL = a.Cfg.DeviceTokenURL
-	}
 	ui.Status(tray.Connecting, "等待登录")
-	cred, err := dl.Login(ctx, ui.Prompt)
+	g, err := a.session().Login(ctx, name, ui.Prompt)
 	if err != nil {
 		return nil, err
 	}
-	if err := a.Dir.SaveCredential(cred); err != nil {
-		return nil, err
+	ten := ""
+	if c, err := identity.UnverifiedClaims(g.AccessToken); err == nil {
+		ten = c.Ten
 	}
-	a.Log.Info("logged in", "issuer", a.Cfg.Issuer)
-	return a.Enrol(ctx, name)
+	a.Log.Info("logged in", "issuer", a.Cfg.Issuer, "device", g.DeviceID, "ten", ten)
+	return a.enrol(ctx, name, ten, g.DeviceID)
 }
 
-// Enrol is POST /v1/devices for this computer with its facts, host key and account.
-func (a *App) Enrol(ctx context.Context, name string) (*compute.Join, error) {
+// enrol is POST /v1/devices for this computer with its facts, host key and account.
+func (a *App) enrol(ctx context.Context, name, ten, deviceID string) (*compute.Join, error) {
 	signer, _, err := a.Dir.HostKey()
 	if err != nil {
 		return nil, err
 	}
-	tok, err := a.token(ctx, "agentcompute", "device:*:enrol")
+	tok, err := a.token(ctx, identity.AudienceCompute)
 	if err != nil {
 		return nil, fmt.Errorf("enrol: %w", err)
 	}
@@ -119,6 +123,8 @@ func (a *App) Enrol(ctx context.Context, name string) (*compute.Join, error) {
 	dev := &state.Device{
 		ComputerID:    en.Computer.ID,
 		Own:           en.Computer.Own,
+		Ten:           ten,
+		DeviceID:      deviceID,
 		Name:          en.Computer.Name,
 		ManagementURL: en.Network.ManagementURL,
 		PeerName:      en.Network.DeviceName,
@@ -159,7 +165,7 @@ func (a *App) Unbind(ctx context.Context) error {
 	if dev == nil {
 		return errors.New("this device is not enrolled")
 	}
-	tok, err := a.token(ctx, "agentcompute", "computer:"+dev.ComputerID+":manage")
+	tok, err := a.token(ctx, identity.AudienceCompute)
 	if err != nil {
 		return fmt.Errorf("unbind: %w", err)
 	}
@@ -183,7 +189,8 @@ func (a *App) joinOptions(ctx context.Context, dev *state.Device, join *compute.
 	}
 	if dev.Joined || join == nil {
 		if dev.JoinMethod == "jwt" && !dev.Joined {
-			tok, err := a.token(ctx, "netbird", "computer:"+dev.ComputerID+":ssh")
+			a.session().Fresh(identity.AudienceNetBird) // NetBird refuses a token older than 600 s
+			tok, err := a.token(ctx, identity.AudienceNetBird)
 			if err != nil {
 				return o, err
 			}
@@ -195,7 +202,8 @@ func (a *App) joinOptions(ctx context.Context, dev *state.Device, join *compute.
 	case "setup-key":
 		o.SetupKey = join.SetupKey
 	case "jwt":
-		tok, err := a.token(ctx, "netbird", "computer:"+dev.ComputerID+":ssh")
+		a.session().Fresh(identity.AudienceNetBird)
+		tok, err := a.token(ctx, identity.AudienceNetBird)
 		if err != nil {
 			return o, err
 		}
@@ -206,8 +214,27 @@ func (a *App) joinOptions(ctx context.Context, dev *state.Device, join *compute.
 	return o, nil
 }
 
-// Run keeps the device online until ctx ends: network, SSH server, facts, tray state.
-func (a *App) Run(ctx context.Context, join *compute.Join, ui UI) error {
+// Run keeps the device online until ctx ends: network, SSH server, facts, tray state. When the login is refused for
+// good (the person removed the device, or it was revoked) it forgets the enrolment here and returns an error that
+// wraps identity.ErrDeviceRemoved.
+func (a *App) Run(parent context.Context, join *compute.Join, ui UI) error {
+	ctx, stop := context.WithCancelCause(parent)
+	defer stop(nil)
+	err := a.run(ctx, stop, join, ui)
+	if cause := context.Cause(ctx); errors.Is(cause, identity.ErrDeviceRemoved) {
+		err = cause
+	}
+	if errors.Is(err, identity.ErrDeviceRemoved) {
+		a.Log.Error("device removed or login revoked; forgetting the enrolment", "error", err.Error())
+		if ferr := a.Dir.Forget(); ferr != nil {
+			a.Log.Warn("could not forget the enrolment", "error", ferr.Error())
+		}
+		return err
+	}
+	return err
+}
+
+func (a *App) run(ctx context.Context, stop context.CancelCauseFunc, join *compute.Join, ui UI) error {
 	dev, err := a.Dir.LoadDevice()
 	if err != nil {
 		return err
@@ -233,6 +260,7 @@ func (a *App) Run(ctx context.Context, join *compute.Join, ui UI) error {
 			Verifier:   verifier,
 			ComputerID: dev.ComputerID,
 			Own:        dev.Own,
+			Ten:        dev.Ten,
 			MaxAge:     time.Duration(a.Cfg.TokenMaxAgeSeconds) * time.Second,
 		},
 		Shell:   sh,
@@ -261,6 +289,13 @@ func (a *App) Run(ctx context.Context, join *compute.Join, ui UI) error {
 		if err == nil {
 			break
 		}
+		if errors.Is(err, identity.ErrDeviceRemoved) {
+			return err
+		}
+		// A peer that cannot join may have been removed: ask the issuer, which knows for sure.
+		if _, terr := a.token(ctx, identity.AudienceCompute); errors.Is(terr, identity.ErrDeviceRemoved) {
+			return terr
+		}
 		a.Log.Warn("network not up; retrying", "in", backoff.String(), "error", err.Error())
 		ui.Status(tray.Offline, "连不上网络，稍后重试")
 		select {
@@ -281,7 +316,7 @@ func (a *App) Run(ctx context.Context, join *compute.Join, ui UI) error {
 
 	var wg sync.WaitGroup
 	wg.Go(func() { a.serveSSH(ctx, nw, srv) })
-	wg.Go(func() { a.reportFacts(ctx, dev) })
+	wg.Go(func() { a.reportFacts(ctx, stop, dev) })
 	wg.Go(func() { a.watch(ctx, nw, ui) })
 	<-ctx.Done()
 	_ = srv.Close()
@@ -325,7 +360,7 @@ func errString(err error) string {
 }
 
 // reportFacts reports the facts at start and again whenever they change (checked hourly).
-func (a *App) reportFacts(ctx context.Context, dev *state.Device) {
+func (a *App) reportFacts(ctx context.Context, stop context.CancelCauseFunc, dev *state.Device) {
 	var last []byte
 	tick := time.NewTicker(time.Hour)
 	defer tick.Stop()
@@ -338,6 +373,9 @@ func (a *App) reportFacts(ctx context.Context, dev *state.Device) {
 			err := a.putFacts(ctx, dev, f)
 			if err == nil {
 				last = raw
+			} else if errors.Is(err, identity.ErrDeviceRemoved) {
+				stop(err)
+				return
 			} else {
 				a.Log.Warn("facts not reported; retrying within the hour", "error", err.Error())
 			}
@@ -351,7 +389,7 @@ func (a *App) reportFacts(ctx context.Context, dev *state.Device) {
 }
 
 func (a *App) putFacts(ctx context.Context, dev *state.Device, f facts.Facts) error {
-	tok, err := a.token(ctx, "agentcompute", "computer:"+dev.ComputerID+":report")
+	tok, err := a.token(ctx, identity.AudienceCompute)
 	if err != nil {
 		return err
 	}
