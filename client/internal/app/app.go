@@ -57,17 +57,23 @@ type App struct {
 func (a *App) computeClient() *compute.Client { return &compute.Client{BaseURL: a.Cfg.ComputeURL} }
 
 // session is the device login (identity/v1 "Device login"): one per process, so refreshes happen one at a time.
+// config.json's zitadel selects the login at ZITADEL with exchanges at the STS; without it, NewAPI's device login.
 func (a *App) session() *identity.Session {
 	a.sessOnce.Do(func() {
-		ep := identity.EndpointsFor(a.Cfg.Issuer)
+		var ep identity.Endpoints
+		if z := a.Cfg.Zitadel; z != nil {
+			ep = identity.ZitadelEndpoints(z.URL, z.ProjectID, z.ClientID, a.Cfg.ExchangeURL)
+		} else {
+			ep = identity.EndpointsFor(a.Cfg.Issuer)
+			if a.Cfg.ClientID != "" {
+				ep.ClientID = a.Cfg.ClientID
+			}
+		}
 		if a.Cfg.DeviceAuthURL != "" {
 			ep.DeviceAuthURL = a.Cfg.DeviceAuthURL
 		}
 		if a.Cfg.DeviceTokenURL != "" {
 			ep.TokenURL = a.Cfg.DeviceTokenURL
-		}
-		if a.Cfg.ClientID != "" {
-			ep.ClientID = a.Cfg.ClientID
 		}
 		a.sess = &identity.Session{Endpoints: ep, Store: a.Dir}
 	})
@@ -94,7 +100,7 @@ func (a *App) Login(ctx context.Context, name string, ui UI) (*compute.Join, err
 	if c, err := identity.UnverifiedClaims(g.AccessToken); err == nil {
 		ten = c.Ten
 	}
-	a.Log.Info("logged in", "issuer", a.Cfg.Issuer, "device", g.DeviceID, "ten", ten)
+	a.Log.Info("logged in", "issuer", a.Cfg.Issuer, "login", a.session().Endpoints.TokenURL, "device", g.DeviceID, "ten", ten)
 	return a.enrol(ctx, name, ten, g.DeviceID)
 }
 
@@ -159,7 +165,8 @@ func AccountName() string {
 	return name
 }
 
-// Unbind removes this computer at compute/v1 (its NetBird peer is deleted) and forgets the enrolment here.
+// Unbind removes this computer at compute/v1 (its NetBird peer is deleted), ends the login at ZITADEL (its refresh
+// token is revoked) and forgets the enrolment here.
 func (a *App) Unbind(ctx context.Context) error {
 	dev, err := a.Dir.LoadDevice()
 	if err != nil {
@@ -174,6 +181,10 @@ func (a *App) Unbind(ctx context.Context) error {
 	}
 	if err := a.computeClient().Unbind(ctx, tok, dev.ComputerID); err != nil {
 		return fmt.Errorf("unbind: %w", err)
+	}
+	if err := a.session().Revoke(ctx); err != nil {
+		// The computer is gone at compute/v1 already; the refresh token is forgotten below and ends at ZITADEL's expiry.
+		a.Log.Warn("unbind: the login could not be revoked at ZITADEL", "error", err.Error())
 	}
 	return a.Dir.Forget()
 }

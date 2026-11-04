@@ -1,20 +1,20 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:agentrouter-newapi:identity:v1:claims",
+  "$id": "urn:agentidentity:identity:v1:claims",
   "title": "identity/v1 JWT payload",
-  "description": "The claims of every token NewAPI's identity plugin issues (header: alg ES256, typ at+jwt, kid). The schema checks shape only; signature, iss, aud, time and lifetime rules are in README.md (\"Verifying\"). Unknown claims are allowed and must be ignored (C2: new optional claims are additive).",
+  "description": "The claims of every token AgentIdentity's token service (STS) issues (header: alg ES256, typ at+jwt, kid). The schema checks shape only; signature, iss, aud, time and lifetime rules are in README.md (\"Verifying\"). Unknown claims are allowed and must be ignored (C2: new optional claims are additive).",
   "type": "object",
   "required": ["iss", "sub", "ten", "own", "pay", "aud", "scp", "exp", "iat", "jti"],
   "properties": {
     "iss": {
       "type": "string",
       "format": "uri",
-      "description": "The issuer: the NewAPI base URL of the environment. Verifiers compare it exactly and fetch keys from <iss>/.well-known/jwks.json."
+      "description": "The issuer: the token service's (STS) base URL of the environment, never ZITADEL's. Verifiers compare it exactly and fetch keys from <iss>/.well-known/jwks.json."
     },
     "sub": {
       "type": "string",
       "pattern": "^(acc_[0-9A-Za-z]{1,64}|svc_[a-z][a-z0-9-]{1,31})$",
-      "description": "Who calls: a NewAPI account (acc_<id>) or a service token's service (svc_<layer>: svc_ecs, svc_agentspace, svc_agentevents, svc_agentcompute, svc_agenthost), issued to that layer for one tenant and owner; the layer exchanges it for narrowed child tokens per run or attempt (sub stays svc_<layer>)."
+      "description": "Who calls: an account (acc_<ZITADEL user id>) or a service token's service (svc_<layer>: svc_ecs, svc_agentspace, svc_agentevents, svc_agentcompute, svc_agenthost), issued to that layer for one tenant and owner; the layer exchanges it for narrowed child tokens per run or attempt (sub stays svc_<layer>)."
     },
     "ten": { "$ref": "#/$defs/account", "description": "Tenant: the account that buys the layer. In our own product the tenant is ECS's account and the product's users are owners inside it." },
     "own": { "$ref": "#/$defs/account", "description": "Owner: whose resources these are (devices, spaces, conversations)." },
@@ -51,13 +51,13 @@
     "account": {
       "type": "string",
       "pattern": "^acc_[0-9A-Za-z]{1,64}$",
-      "description": "A NewAPI account id, acc_<native user id>."
+      "description": "An account id, acc_<ZITADEL user id> (NewAPI finds its user by users.oidc_id = the ZITADEL sub). For ten: acc_<ZITADEL organisation id> or the account the STS configuration names for the organisation."
     },
     "scope": {
       "type": "string",
       "maxLength": 200,
       "pattern": "^[a-z][a-z0-9-]{0,31}:(\\*|[0-9A-Za-z][0-9A-Za-z_.-]{0,127}):[a-z][a-z0-9-]{0,31}$",
-      "description": "<kind>:<id>:<right>. v1 kinds and rights: space:<spc_id>:ro|rw (rw implies ro), space:new:create (create a space; its owner is the token's own), computer:<cmp_id>:ssh, conversation:<cnv_id>:send|read|children (children: a run managing its own sub-Agents), conversation:new:create (create a conversation; its owner is the token's own), model:*:call (aud newapi: call NewAPI's model API, billed to the token's pay; v1 defines only the * id). A layer's contract may add kinds and rights (additive). id is a resource id, `new` for create, or * (every existing resource of that kind `own` may use; never `new`). The only implication between rights is rw -> ro."
+      "description": "<kind>:<id>:<right>. v1 kinds and rights: space:<space_id>:ro|rw (rw implies ro; space_id is AgentSpace's id, e.g. wrk_<hex>), space:new:create (create a space; its owner is the token's own), computer:<cmp_id>:ssh, conversation:<cnv_id>:send|read|children (children: a run managing its own sub-Agents), conversation:new:create (create a conversation; its owner is the token's own), model:*:call (aud newapi: call NewAPI's model API, billed to the token's pay; v1 defines only the * id), metering:*:report (aud newapi, service tokens: report usage to NewAPI metering/v1 for the token's ten; v1 defines only the * id). A layer's contract may add kinds and rights (additive). id is a resource id, `new` for create, or * (every existing resource of that kind `own` may use; never `new`). The only implication between rights is rw -> ro."
     }
   }
 }

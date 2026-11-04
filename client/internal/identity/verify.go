@@ -1,5 +1,5 @@
-// Package identity verifies and requests identity/v1 tokens (agentrouter-newapi contracts/identity/v1): ES256 JWTs,
-// header typ at+jwt with a kid, verified locally against the issuer's cached key set, never by calling NewAPI.
+// Package identity verifies and requests identity/v1 tokens (AgentIdentity contracts/identity/v1): ES256 JWTs,
+// header typ at+jwt with a kid, verified locally against the issuer's cached key set, never by calling the issuer.
 //
 // The verifier follows the contract's "Verifying" section in this order: alg, typ, kid, signature, claims (the shape
 // of claims.schema.json), iss, aud, exp and iat (60 s leeway), the lifetime caps, then the scope. A failure is an

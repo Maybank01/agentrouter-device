@@ -1,5 +1,4 @@
-0d6851355b34cfcaf782854e85b6bb0a27cfadf20d2f8d441b68dd35cd5afaef  contracts/identity/v1/claims.schema.json
-fcfdbd1fa70ef853a7eaeff76908f0f42f578093195eb2f69a1220bc659eea5e  contracts/identity/v1/vectors/device.json
+6230a33bd8ceff7fd823c17e43919be03d2b174848a48248a2c2628ad5c83632  contracts/identity/v1/claims.schema.json
 f4ccc4223dde3e2a90bf8822cb53a49925b49c6db9e02c0e90424431bd207639  contracts/identity/v1/vectors/TEST-ONLY-jwks.json
 25116c4f82e1b03f35d7ef1b6145d44a9f7c980973ef0c0f42c9efb4e60020fd  contracts/identity/v1/vectors/TEST-ONLY-private-keys.json
 30015fa8fbaedd610cd203b99feda4746f0155272e68e7bd3e8e96ff94696d91  contracts/identity/v1/vectors/tokens.json

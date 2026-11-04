@@ -18,15 +18,15 @@ software) in AgentCompute's shape, with no flattening of OS differences.
 **Never here**: MCP, or any file, command, screen or other tool of its own: the device only executes what arrives over
 SSH. Per-folder sandboxes or access levels (the session runs as the user on that computer; folders only tell the Agent
 where to look, owner 2026-11-04). Placement, sandboxes, environments, spaces, Agents (AgentCompute, AgentHost,
-AgentSpace, ECS). Accounts, token issuance, prices (NewAPI). NetBird management, signal, relay and the SSH gateway
-(AgentCompute; NetBird's AGPL directories never enter this program). Patches to NetBird (pin a release, fix upstream).
+AgentSpace, ECS). Accounts, login, token issuance (AgentIdentity), prices (NewAPI). NetBird management, signal, relay
+and the SSH gateway (AgentCompute; NetBird's AGPL never enters this program). Patches to NetBird (fix upstream).
 The abandoned DSH-plugin / Desktop-adapter client (R46).
 
 **Contracts provided** (C1–C3): none; it provides a computer, an SSH endpoint in the owner's network. Until deleted, the
 `hostd` link protocol v2 (`crates/device-core/src/protocol.rs`, `docs/HOSTD-MCP.md`) is held by released `hostd`.
 
-**Consumes** (pinned, C4, C6): NewAPI `identity/v1` (EdDSA JWT, JWKS, device-code login, `aud: netbird` tokens);
-AgentCompute `compute/v1` conventions (`kind: device`, `name`, `facts`; `state` comes from the network, not from us);
+**Consumes** (pinned, C4, C6): AgentIdentity `identity/v1` (ES256 JWT, JWKS, device code at ZITADEL + STS exchange,
+`aud: netbird`; NewAPI's device login until the issuer switch); AgentCompute `compute/v1` (`kind: device`, `name`, `facts`);
 NetBird by `go.mod` version; our NetBird management by URL only. Until deleted, `hostd` implements AgentCompute
 `contracts/executor-protocol/v0` (copy in `vendor/agentcompute/`).
 

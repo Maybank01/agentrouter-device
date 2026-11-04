@@ -25,7 +25,7 @@ var contracts = filepath.Join("..", "..", "testdata", "contracts")
 
 // The vendored contract files are the providers' bytes: each matches its line in SHA256SUMS (C4).
 func TestVendoredContractsMatchTheirSums(t *testing.T) {
-	for _, provider := range []string{"agentcompute", "agentrouter-newapi"} {
+	for _, provider := range []string{"agentcompute", "agentidentity"} {
 		dir := filepath.Join(contracts, provider)
 		f, err := os.Open(filepath.Join(dir, "SHA256SUMS"))
 		if err != nil {

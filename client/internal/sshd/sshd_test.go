@@ -38,7 +38,7 @@ const (
 	testOwner    = "acc_2002"
 )
 
-var vectors = filepath.Join("..", "..", "testdata", "contracts", "agentrouter-newapi", "contracts", "identity", "v1", "vectors")
+var vectors = filepath.Join("..", "..", "testdata", "contracts", "agentidentity", "contracts", "identity", "v1", "vectors")
 
 func testKey(t *testing.T) (*ecdsa.PrivateKey, identity.StaticKeys) {
 	t.Helper()

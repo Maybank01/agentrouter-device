@@ -15,17 +15,22 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
 	"golang.org/x/crypto/ssh"
 )
 
-// Defaults set at release time (-ldflags "-X …state.DefaultIssuer=… -X …state.DefaultComputeURL=…"); empty in a
-// developer build, which then needs config.json.
+// Defaults set at release time (-ldflags "-X …state.DefaultIssuer=… -X …state.DefaultComputeURL=…", and for the
+// ZITADEL login DefaultZitadelURL, DefaultZitadelProjectID, DefaultZitadelClientID); empty in a developer build,
+// which then needs config.json.
 var (
-	DefaultIssuer     = ""
-	DefaultComputeURL = ""
+	DefaultIssuer           = ""
+	DefaultComputeURL       = ""
+	DefaultZitadelURL       = ""
+	DefaultZitadelProjectID = ""
+	DefaultZitadelClientID  = ""
 )
 
 // Dir is the client's folder.
@@ -58,13 +63,20 @@ func (d Dir) Ensure() error {
 
 // Config is config.json: where the services are. Every field may be left out and then has its default.
 type Config struct {
-	// Issuer is NewAPI's base URL, the tokens' iss.
+	// Issuer is the identity/v1 tokens' iss: AgentIdentity's STS with the ZITADEL login, NewAPI's base URL without.
 	Issuer string `json:"issuer,omitempty"`
+	// Zitadel selects the device login at ZITADEL (AgentIdentity): RFC 8628 there, then every short token is an
+	// exchange at ExchangeURL. Without it the device logs in at the issuer itself (NewAPI's device login, legacy until
+	// the issuer switch, agentrouter-newapi#168).
+	Zitadel *Zitadel `json:"zitadel,omitempty"`
+	// ExchangeURL is the STS's POST /v1/identity/exchange; default <issuer>/v1/identity/exchange (ZITADEL login only).
+	ExchangeURL string `json:"exchangeUrl,omitempty"`
 	// JWKSURL is the issuer's key set; default <issuer>/.well-known/jwks.json.
 	JWKSURL string `json:"jwksUrl,omitempty"`
 	// ComputeURL is AgentCompute's compute/v1 base URL.
 	ComputeURL string `json:"computeUrl,omitempty"`
-	// DeviceAuthURL, DeviceTokenURL and ClientID override the device login's endpoints and client id.
+	// DeviceAuthURL, DeviceTokenURL and ClientID override the device login's endpoints and the NewAPI login's client
+	// id (the ZITADEL login's client id is Zitadel.ClientID).
 	DeviceAuthURL  string `json:"deviceAuthUrl,omitempty"`
 	DeviceTokenURL string `json:"deviceTokenUrl,omitempty"`
 	ClientID       string `json:"clientId,omitempty"`
@@ -73,6 +85,16 @@ type Config struct {
 	// TokenMaxAgeSeconds is how old (now - iat) an SSH token may be when it authenticates (default 600, compute/v1
 	// access tokenMaxAgeSeconds).
 	TokenMaxAgeSeconds int `json:"tokenMaxAgeSeconds,omitempty"`
+}
+
+// Zitadel is the ZITADEL instance and the agentdevice application the person logs in with.
+type Zitadel struct {
+	// URL is ZITADEL's issuer (https://login-dev.agentrouter.page on Dev).
+	URL string `json:"url"`
+	// ProjectID is the project whose audience the access token carries (the STS checks it).
+	ProjectID string `json:"projectId"`
+	// ClientID is ZITADEL's generated client id of the agentdevice application (public, no secret).
+	ClientID string `json:"clientId"`
 }
 
 // LoadConfig reads config.json (missing = defaults) and fills in the defaults.
@@ -94,7 +116,16 @@ func (d Dir) LoadConfig() (Config, error) {
 	if c.ComputeURL == "" {
 		c.ComputeURL = DefaultComputeURL
 	}
+	if c.Zitadel == nil && DefaultZitadelURL != "" {
+		c.Zitadel = &Zitadel{URL: DefaultZitadelURL, ProjectID: DefaultZitadelProjectID, ClientID: DefaultZitadelClientID}
+	}
 	c.Issuer = strings.TrimSuffix(c.Issuer, "/")
+	if c.Zitadel != nil {
+		c.Zitadel.URL = strings.TrimSuffix(c.Zitadel.URL, "/")
+		if c.ExchangeURL == "" && c.Issuer != "" {
+			c.ExchangeURL = c.Issuer + "/v1/identity/exchange"
+		}
+	}
 	c.ComputeURL = strings.TrimSuffix(c.ComputeURL, "/")
 	if c.JWKSURL == "" && c.Issuer != "" {
 		c.JWKSURL = c.Issuer + "/.well-known/jwks.json"
@@ -120,6 +151,17 @@ func (c Config) Validate(path string) error {
 	if len(missing) > 0 {
 		return fmt.Errorf("state: this build has no default %s; write them into %s (JSON: {\"issuer\": \"https://…\", \"computeUrl\": \"https://…\"})", strings.Join(missing, " and "), path)
 	}
+	if z := c.Zitadel; z != nil {
+		for name, v := range map[string]string{"zitadel.url": z.URL, "zitadel.projectId": z.ProjectID, "zitadel.clientId": z.ClientID} {
+			if v == "" {
+				missing = append(missing, name)
+			}
+		}
+		if len(missing) > 0 {
+			sort.Strings(missing)
+			return fmt.Errorf("state: %s names a ZITADEL login without %s (AgentIdentity deploy/README.md lists the agentdevice application's ids)", path, strings.Join(missing, ", "))
+		}
+	}
 	return nil
 }
 
@@ -129,7 +171,7 @@ type Device struct {
 	Own        string `json:"own"`
 	// Ten is the tenant of the device's login (identity/v1: the client id's tenant); SSH tokens must carry it too.
 	Ten string `json:"ten,omitempty"`
-	// DeviceID is the login as the person's device list (我的设备) shows it.
+	// DeviceID is the login as NewAPI's device list showed it (NewAPI login only; the ZITADEL login has none).
 	DeviceID      string    `json:"deviceId,omitempty"`
 	Name          string    `json:"name"`
 	ManagementURL string    `json:"managementUrl"`
