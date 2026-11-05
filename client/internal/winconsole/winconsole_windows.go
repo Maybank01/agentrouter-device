@@ -40,7 +40,10 @@ func attach() bool {
 
 // reopen points stdin, stdout and stderr at the process's console.
 func reopen() {
-	if f, err := os.OpenFile("CONOUT$", os.O_WRONLY, 0); err == nil {
+	// Read and write: Go writes to a console with WriteConsoleW (UTF-16, any code page) only when GetConsoleMode works on
+	// the handle, which needs read access. A write-only CONOUT$ got raw UTF-8 bytes, which the window showed in its
+	// code page (437, 936): every Chinese line was garbled (#231, seen on a hosted Windows runner).
+	if f, err := os.OpenFile("CONOUT$", os.O_RDWR, 0); err == nil {
 		os.Stdout, os.Stderr = f, f
 		_ = windows.SetStdHandle(windows.STD_OUTPUT_HANDLE, windows.Handle(f.Fd()))
 		_ = windows.SetStdHandle(windows.STD_ERROR_HANDLE, windows.Handle(f.Fd()))

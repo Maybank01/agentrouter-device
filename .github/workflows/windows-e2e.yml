@@ -64,9 +64,10 @@ jobs:
           Get-LocalGroup | Where-Object { (Get-LocalGroupMember $_ -ErrorAction SilentlyContinue | Where-Object Name -like "*\$env:E2E_USER") } | ForEach-Object { "  $($_.Name)" }
           # The password goes to the later steps through a file only this job's account reads (never argv, never env).
           [IO.File]::WriteAllText("$env:RUNNER_TEMP\account.pw", $pw)
-          # Its profile (created at the first logon of the account, as on a person's PC).
+          # Its profile (created at the first logon of the account, as on a person's PC). Every process of the account starts
+          # with its own environment (-UseNewEnvironment): inheriting the runner's would point APPDATA at runneradmin's folder.
           $cred = [pscredential]::new($env:E2E_USER, $sec)
-          $p = Start-Process -FilePath cmd.exe -ArgumentList '/c', 'exit' -Credential $cred -LoadUserProfile -WorkingDirectory $env:SystemRoot -PassThru -Wait
+          $p = Start-Process -FilePath cmd.exe -ArgumentList '/c', 'exit' -Credential $cred -LoadUserProfile -UseNewEnvironment -WorkingDirectory $env:SystemRoot -PassThru -Wait
           "first logon exit $($p.ExitCode); profile: $((Get-CimInstance Win32_UserProfile | Where-Object LocalPath -like "*\$env:E2E_USER").LocalPath)"
 
       - name: Install the client's Windows pre-release for that account
@@ -101,9 +102,21 @@ jobs:
         run: |
           $pw = [IO.File]::ReadAllText("$env:RUNNER_TEMP\account.pw")
           $cred = [pscredential]::new($env:E2E_USER, (ConvertTo-SecureString $pw -AsPlainText -Force))
-          $p = Start-Process -FilePath $env:E2E_EXE -ArgumentList '--name', $env:E2E_NAME -Credential $cred -LoadUserProfile -WorkingDirectory (Split-Path $env:E2E_EXE) -PassThru
+          $me = Get-Process -Id $PID
+          "runner: $([Security.Principal.WindowsIdentity]::GetCurrent().Name), session $($me.SessionId), interactive $([Environment]::UserInteractive)"
+          $p = Start-Process -FilePath $env:E2E_EXE -ArgumentList '--name', $env:E2E_NAME -Credential $cred -LoadUserProfile -UseNewEnvironment -WorkingDirectory (Split-Path $env:E2E_EXE) -PassThru
           "E2E_PID=$($p.Id)" >> $env:GITHUB_ENV
-          Start-Sleep 3
+          if ($p.WaitForExit(5000)) {
+            '{0}: exit 0x{1:X8} within 5 s' -f $env:E2E_EXE, $p.ExitCode
+            # Once more with its output captured, to say why (a resident client never ends by itself).
+            $o = "$env:E2E_HOME\AppData\Local\Temp"
+            $q = Start-Process -FilePath $env:E2E_EXE -ArgumentList '--name', $env:E2E_NAME -Credential $cred -LoadUserProfile -UseNewEnvironment -WorkingDirectory (Split-Path $env:E2E_EXE) -RedirectStandardOutput "$o\v.out" -RedirectStandardError "$o\v.err" -PassThru
+            if (-not $q.WaitForExit(10000)) { Stop-Process -Id $q.Id -Force }
+            "the same start with its output captured: exit $($q.ExitCode): $(Get-Content "$o\v.out" -Raw) $(Get-Content "$o\v.err" -Raw)"
+            Get-WinEvent -FilterHashtable @{LogName='Application'; Level=2; StartTime=(Get-Date).AddMinutes(-3)} -ErrorAction SilentlyContinue | Select-Object -First 5 | ForEach-Object { "event: $($_.ProviderName): $($_.Message -replace '\s+',' ')" }
+            if (Test-Path $env:E2E_LOG) { Get-Content $env:E2E_LOG -Tail 20 }
+            throw 'the client ended right after it started'
+          }
           $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$($p.Id)"
           $owner = Invoke-CimMethod -InputObject $proc -MethodName GetOwner
           "client pid $($p.Id) runs as $($owner.Domain)\$($owner.User), session $($proc.SessionId)"
@@ -129,7 +142,14 @@ jobs:
             }
             if (-not $url) { Start-Sleep 2 }
           }
-          if (-not $url) { if (Test-Path $env:E2E_LOG) { Get-Content $env:E2E_LOG -Tail 30 }; throw 'the client never started its device login (no prompt in its log within 3 minutes)' }
+          if (-not $url) {
+            if (Test-Path $env:E2E_LOG) { Get-Content $env:E2E_LOG -Tail 30 }
+            & "$env:GITHUB_WORKSPACE\scripts\windows-e2e\screenshot.ps1" "$env:E2E_OUT\no-login.png"
+            Get-Process -Id $env:E2E_PID -ErrorAction SilentlyContinue | ForEach-Object { "client alive: threads $($_.Threads.Count), window '$($_.MainWindowTitle)'" }
+            Get-NetTCPConnection -OwningProcess $env:E2E_PID -ErrorAction SilentlyContinue | ForEach-Object { "tcp $($_.RemoteAddress):$($_.RemotePort) $($_.State)" }
+            Get-CimInstance Win32_Process -Filter "ParentProcessId=$env:E2E_PID" | ForEach-Object { "child $($_.ProcessId) $($_.Name)" }
+            throw 'the client never started its device login (no prompt in its log within 3 minutes)'
+          }
           npm install --prefix scripts/windows-e2e --no-save --silent playwright-core@1.64.1
           $env:PERSON_FILE = "$env:RUNNER_TEMP\person.env"
           $env:BROWSER = "C:\Program Files\Google\Chrome\Application\chrome.exe"
@@ -182,7 +202,7 @@ jobs:
             $pw = [IO.File]::ReadAllText("$env:RUNNER_TEMP\account.pw")
             $cred = [pscredential]::new($env:E2E_USER, (ConvertTo-SecureString $pw -AsPlainText -Force))
             if ($env:E2E_PID) { Stop-Process -Id $env:E2E_PID -Force -ErrorAction SilentlyContinue; Start-Sleep 2 }
-            $p = Start-Process -FilePath $env:E2E_EXE -ArgumentList 'unbind' -Credential $cred -LoadUserProfile -WorkingDirectory (Split-Path $env:E2E_EXE) -PassThru -Wait
+            $p = Start-Process -FilePath $env:E2E_EXE -ArgumentList 'unbind' -Credential $cred -LoadUserProfile -UseNewEnvironment -WorkingDirectory (Split-Path $env:E2E_EXE) -PassThru -Wait
             "unbind exit $($p.ExitCode)"
           }
           if ($env:E2E_PID) { Stop-Process -Id $env:E2E_PID -Force -ErrorAction SilentlyContinue }

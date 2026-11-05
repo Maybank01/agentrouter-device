@@ -23,6 +23,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -128,6 +129,8 @@ func common(fs *flag.FlagSet, args []string) (*app.App, func(), error) {
 		return nil, nil, err
 	}
 	logFile, closeLog := openLog(dir.Path("agentdevice.log"))
+	// Libraries that use the standard logger (the tray) write to the log file too: a GUI build has no stderr.
+	log.SetOutput(logFile)
 	self, _ := os.Executable()
 	a := &app.App{
 		Dir: dir, Cfg: cfg, Version: version, Self: self, BaseEnv: baseEnv, LogFile: logFile,
@@ -213,10 +216,25 @@ func (b bothUI) Status(s tray.State, text string) {
 	}
 }
 
-// trayUI shows everything in the tray.
+// trayUI shows everything in the tray once the tray is there. The tray is only a view: the device logs in and stays
+// online without it (a tray that cannot register, e.g. no taskbar yet at logon, left the client waiting for it
+// forever without a word, #231); what it missed is shown when it comes.
 type trayUI struct {
-	h    *tray.Handle
 	name string
+
+	mu    sync.Mutex
+	h     *tray.Handle
+	state tray.State
+	text  string
+}
+
+func (u *trayUI) ready(h *tray.Handle) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.h = h
+	if u.text != "" {
+		h.Set(u.state, u.name, u.text)
+	}
 }
 
 func (u *trayUI) Prompt(p identity.Prompt) {
@@ -224,11 +242,18 @@ func (u *trayUI) Prompt(p identity.Prompt) {
 	if addr == "" {
 		addr = p.VerificationURI
 	}
-	u.h.Set(tray.Connecting, u.name, "在浏览器里确认登录，代码 "+p.UserCode)
+	u.Status(tray.Connecting, "在浏览器里确认登录，代码 "+p.UserCode)
 	_ = open.Run(addr)
 }
 
-func (u *trayUI) Status(s tray.State, text string) { u.h.Set(s, u.name, text) }
+func (u *trayUI) Status(s tray.State, text string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.state, u.text = s, text
+	if u.h != nil {
+		u.h.Set(s, u.name, text)
+	}
+}
 
 func runCmd(args []string, console bool) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
@@ -304,27 +329,27 @@ func runCmd(args []string, console bool) error {
 	var once sync.Once
 	quit := func() { once.Do(func() { cancel(); tray.Quit() }) }
 	errc := make(chan error, 1)
-	tray.Run(func(h *tray.Handle) {
-		ui := bothUI{&trayUI{h: h, name: shown}, terminalUI{w: consoleOut}}
-		go func() {
-			err := work(ui)
-			if err != nil && ctx.Err() == nil {
-				// Stay in the tray with the reason; the full error is in the log.
-				a.Log.Error("stopped", "error", err.Error())
-				if errors.Is(err, identity.ErrDeviceRemoved) {
-					ui.Status(tray.Offline, removedText)
-				} else {
-					ui.Status(tray.Offline, "停了："+short(err.Error()))
-				}
-				if console {
-					fmt.Fprintln(os.Stderr, "agentdevice:", err)
-				}
-				<-ctx.Done()
+	tu := &trayUI{name: shown}
+	ui := bothUI{tu, terminalUI{w: consoleOut}}
+	go func() {
+		err := work(ui)
+		if err != nil && ctx.Err() == nil {
+			// Stay in the tray and the window with the reason; the full error is in the log.
+			a.Log.Error("stopped", "error", err.Error())
+			if errors.Is(err, identity.ErrDeviceRemoved) {
+				ui.Status(tray.Offline, removedText)
+			} else {
+				ui.Status(tray.Offline, "停了："+short(err.Error()))
 			}
-			errc <- err
-			quit()
-		}()
-	}, quit)
+			if console {
+				fmt.Fprintln(os.Stderr, "agentdevice:", err)
+			}
+			<-ctx.Done()
+		}
+		errc <- err
+		quit()
+	}()
+	tray.Run(tu.ready, quit)
 	cancel()
 	err = <-errc
 	if errors.Is(err, context.Canceled) {

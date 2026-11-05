@@ -28,10 +28,10 @@ revokes at ZITADEL); without it NewAPI's `/v1/identity/device/*` (legacy, delete
 | `internal/proc`, `internal/state` | child processes (no window, tree kill); the per-user folder and its files |
 
 **Checks**: locally `go build` / `go vet` only (also windows, darwin); tests on GitHub-hosted runners, `client.yml` (R47).
-
 **Sandboxes**: `agentdevice sandbox [--join <file>]` (compute/v1 §7.1): no login, enrolment call, facts or tray.
 Linux pre-releases `client-v0.0.0-<sha7>` (static amd64/arm64, `SHA256SUMS`) feed AgentCompute's environment image.
-**Removed device**: a refused refresh shows 「此设备已被移除，请重新登录」, forgets the enrolment and stops.
+**Removed device** (a refused refresh, or compute/v1 `COMPUTE_COMPUTER_NOT_FOUND` asked when the network drops, #231):
+「此设备已被移除，请重新登录」, SSH sessions closed, login ended at ZITADEL, enrolment forgotten, stopped.
 
 **Known gaps** (2026-11-04): Dev ran a Linux device and a sandbox (#223) on the NewAPI login only; the ZITADEL login is
 tested against fakes (the flow itself verified by AgentIdentity `deploy/dev/verify.py`), live with the issuer switch;
