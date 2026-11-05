@@ -72,8 +72,8 @@ jobs:
           envs='[]'
           for f in release/environments/*.json; do
             name=$(basename "$f" .json)
-            if jq -e '[.environment, .issuer, .computeUrl, .zitadel.url, .zitadel.projectId, .zitadel.clientId, .updateUrl, .downloadUrl]
-                      | all(type == "string" and length > 0) and (has("missing") | not)' "$f" >/dev/null; then
+            if jq -e '(has("missing") | not) and ([.environment, .issuer, .computeUrl, .zitadel.url, .zitadel.projectId, .zitadel.clientId, .updateUrl, .downloadUrl]
+                      | all(type == "string" and length > 0))' "$f" >/dev/null; then
               envs=$(jq -c --arg n "$name" '. + [$n]' <<<"$envs")
               echo "$name: complete"
             else
