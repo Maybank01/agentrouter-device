@@ -1,0 +1,198 @@
+name: Windows device end to end (Dev)
+
+# M2 acceptance (#231, Cloud #3976 §11–16) without a person's PC, on a GitHub-hosted Windows runner (R47): install the
+# client's Windows pre-release for a NON-ADMIN local account, start it as that account in its normal resident-window
+# mode, confirm its device-code login at Dev ZITADEL in a browser as the Dev test person `device-e2e`, and keep it
+# online while the Agent side runs from outside (scripts/windows-e2e/agent.py: 我的设备 list, ssh as that account,
+# SFTP, then removing the device during an open session). This job then waits for the client to notice the removal
+# and shows its window and log.
+#
+# On demand only (workflow_dispatch: write access); never on a push or a pull request. Secrets: the test person's
+# password lives in the environment `dev-device-e2e` (deployment branch `main` only), Dev only, no money. It reaches
+# the browser through a file in RUNNER_TEMP and is never printed; the Windows account's password is generated here and
+# masked; the login code is masked before anything could print it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Client pre-release tag (client-v0.0.0-<sha7>); empty = the newest with a Windows build
+        default: ""
+      hold_minutes:
+        description: How long the device stays online waiting for the Agent side to remove it
+        default: "30"
+
+permissions:
+  contents: read
+
+# One test person: one run at a time.
+concurrency:
+  group: windows-e2e
+  cancel-in-progress: false
+
+jobs:
+  device:
+    name: Windows device (non-admin, Dev)
+    if: github.repository == 'agentrouter-top/AgentDevice'
+    runs-on: windows-latest
+    environment: dev-device-e2e
+    timeout-minutes: 60
+    env:
+      E2E_NAME: gh-win-${{ github.run_id }}-${{ github.run_attempt }}
+      E2E_USER: agentdev
+      E2E_OUT: ${{ github.workspace }}\e2e-out
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: scripts/windows-e2e
+
+      - name: A local account without administrator rights
+        run: |
+          New-Item -ItemType Directory -Force $env:E2E_OUT | Out-Null
+          $bytes = [byte[]]::new(24); [Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+          $pw = [Convert]::ToBase64String($bytes) + 'aA1!'
+          "::add-mask::$pw"
+          $sec = ConvertTo-SecureString $pw -AsPlainText -Force
+          New-LocalUser -Name $env:E2E_USER -Password $sec -PasswordNeverExpires -AccountNeverExpires -Description 'AgentDevice e2e (#231)' | Out-Null
+          Add-LocalGroupMember -Group Users -Member $env:E2E_USER
+          $admins = Get-LocalGroupMember -Group Administrators | ForEach-Object { $_.Name }
+          if ($admins | Where-Object { $_ -like "*\$env:E2E_USER" }) { throw "$env:E2E_USER is an administrator" }
+          "groups of ${env:E2E_USER}:"
+          Get-LocalGroup | Where-Object { (Get-LocalGroupMember $_ -ErrorAction SilentlyContinue | Where-Object Name -like "*\$env:E2E_USER") } | ForEach-Object { "  $($_.Name)" }
+          # The password goes to the later steps through a file only this job's account reads (never argv, never env).
+          [IO.File]::WriteAllText("$env:RUNNER_TEMP\account.pw", $pw)
+          # Its profile (created at the first logon of the account, as on a person's PC).
+          $cred = [pscredential]::new($env:E2E_USER, $sec)
+          $p = Start-Process -FilePath cmd.exe -ArgumentList '/c', 'exit' -Credential $cred -LoadUserProfile -WorkingDirectory $env:SystemRoot -PassThru -Wait
+          "first logon exit $($p.ExitCode); profile: $((Get-CimInstance Win32_UserProfile | Where-Object LocalPath -like "*\$env:E2E_USER").LocalPath)"
+
+      - name: Install the client's Windows pre-release for that account
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          $tag = $env:TAG
+          if (-not $tag) {
+            $tag = gh release list --repo $env:GITHUB_REPOSITORY --limit 40 --json tagName,publishedAt --jq '[.[] | select(.tagName | startswith("client-v0.0.0-"))] | sort_by(.publishedAt) | reverse | .[].tagName' |
+              Where-Object { (gh release view $_ --repo $env:GITHUB_REPOSITORY --json assets --jq '.assets[].name') -contains 'agentdevice-windows-amd64.exe' } | Select-Object -First 1
+          }
+          if (-not $tag) { throw 'no client pre-release with agentdevice-windows-amd64.exe' }
+          $dl = "$env:RUNNER_TEMP\release"
+          gh release download $tag --repo $env:GITHUB_REPOSITORY --pattern agentdevice-windows-amd64.exe --pattern SHA256SUMS --dir $dl
+          $want = (Get-Content "$dl\SHA256SUMS" | Where-Object { $_ -match 'agentdevice-windows-amd64.exe$' }) -split '\s+' | Select-Object -First 1
+          $have = (Get-FileHash "$dl\agentdevice-windows-amd64.exe" -Algorithm SHA256).Hash.ToLower()
+          if ($want -ne $have) { throw "sha256 mismatch: SHA256SUMS $want, file $have" }
+          # Per-user install, no administrator rights needed: %LOCALAPPDATA%\Programs\AgentDevice of that account.
+          $home_ = (Get-CimInstance Win32_UserProfile | Where-Object LocalPath -like "*\$env:E2E_USER").LocalPath
+          $dir = "$home_\AppData\Local\Programs\AgentDevice"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Copy-Item "$dl\agentdevice-windows-amd64.exe" "$dir\agentdevice.exe"
+          icacls $dir /grant "${env:E2E_USER}:(OI)(CI)RX" /T | Out-Null
+          "release $tag, sha256 $have" | Tee-Object "$env:E2E_OUT\install.txt"
+          "E2E_EXE=$dir\agentdevice.exe" >> $env:GITHUB_ENV
+          "E2E_HOME=$home_" >> $env:GITHUB_ENV
+          "E2E_LOG=$home_\AppData\Roaming\AgentDevice\agentdevice.log" >> $env:GITHUB_ENV
+          "## Windows device end to end (Dev)`n`n- release ``$tag`` (sha256 ``$have``)`n- account ``$env:E2E_USER`` (member of Users only)`n- device name ``$env:E2E_NAME``" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Start the client as that account (resident window, as a double-click does)
+        run: |
+          $pw = [IO.File]::ReadAllText("$env:RUNNER_TEMP\account.pw")
+          $cred = [pscredential]::new($env:E2E_USER, (ConvertTo-SecureString $pw -AsPlainText -Force))
+          $p = Start-Process -FilePath $env:E2E_EXE -ArgumentList '--name', $env:E2E_NAME -Credential $cred -LoadUserProfile -WorkingDirectory (Split-Path $env:E2E_EXE) -PassThru
+          "E2E_PID=$($p.Id)" >> $env:GITHUB_ENV
+          Start-Sleep 3
+          $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$($p.Id)"
+          $owner = Invoke-CimMethod -InputObject $proc -MethodName GetOwner
+          "client pid $($p.Id) runs as $($owner.Domain)\$($owner.User), session $($proc.SessionId)"
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Confirm the device login in a browser as the Dev test person
+        env:
+          PERSON_LOGIN: device-e2e
+          PERSON_PASSWORD: ${{ secrets.DEVICE_E2E_PASSWORD }}
+        run: |
+          [IO.File]::WriteAllText("$env:RUNNER_TEMP\person.env", "username=$env:PERSON_LOGIN`npassword=$env:PERSON_PASSWORD`n")
+          Remove-Item Env:PERSON_PASSWORD
+          $deadline = (Get-Date).AddMinutes(3); $url = $null
+          while (-not $url -and (Get-Date) -lt $deadline) {
+            if (Test-Path $env:E2E_LOG) {
+              $line = Get-Content $env:E2E_LOG | Where-Object { $_ -match 'device login: waiting for the confirmation' } | Select-Object -Last 1
+              # slog quotes a value with '=' in it: url="https://…?user_code=…"
+              if ($line -match 'code="?([A-Z0-9-]+)"?') { "::add-mask::$($Matches[1])" }
+              if ($line -match 'url="?([^"\s]+)"?') { $url = $Matches[1] }
+            }
+            if (-not $url) { Start-Sleep 2 }
+          }
+          if (-not $url) { if (Test-Path $env:E2E_LOG) { Get-Content $env:E2E_LOG -Tail 30 }; throw 'the client never started its device login (no prompt in its log within 3 minutes)' }
+          npm install --prefix scripts/windows-e2e --no-save --silent playwright-core@1.64.1
+          $env:PERSON_FILE = "$env:RUNNER_TEMP\person.env"
+          $env:BROWSER = "C:\Program Files\Google\Chrome\Application\chrome.exe"
+          $env:SHOT = "$env:E2E_OUT\login-confirmed.png"
+          [IO.File]::WriteAllText("$env:RUNNER_TEMP\login-url", $url)
+          node scripts/windows-e2e/approve.mjs "$env:RUNNER_TEMP\login-url"
+          if ($LASTEXITCODE -ne 0) { throw "approve.mjs exit $LASTEXITCODE" }
+          Remove-Item "$env:RUNNER_TEMP\person.env"
+
+      - name: Online (enrolled at Dev compute/v1, joined NetBird, SSH listening)
+        run: |
+          $deadline = (Get-Date).AddMinutes(4)
+          while ((Get-Date) -lt $deadline) {
+            $log = Get-Content $env:E2E_LOG -Raw
+            if ($log -match 'msg="ssh listening"') { break }
+            if ($log -match 'level=ERROR') { break }
+            Start-Sleep 2
+          }
+          Get-Content $env:E2E_LOG | Select-String -Pattern 'logged in|enrolled|joined|ssh listening|state|level=WARN|level=ERROR' | ForEach-Object { $_.Line }
+          if (-not ((Get-Content $env:E2E_LOG -Raw) -match 'msg="ssh listening"')) { throw 'the client did not come online within 4 minutes' }
+          $cmp = ((Get-Content $env:E2E_LOG | Select-String 'msg=enrolled' | Select-Object -Last 1).Line | Select-String 'computer=(\S+)').Matches[0].Groups[1].Value
+          "E2E_COMPUTER=$cmp" >> $env:GITHUB_ENV
+          "- computer ``$cmp`` online; run ``python3 scripts/windows-e2e/agent.py --name $env:E2E_NAME`` from the workstation" >> $env:GITHUB_STEP_SUMMARY
+          & "$env:GITHUB_WORKSPACE\scripts\windows-e2e\screenshot.ps1" "$env:E2E_OUT\online.png"
+
+      - name: Wait for the Agent side to remove the device; the client must notice it
+        env:
+          HOLD: ${{ inputs.hold_minutes }}
+        run: |
+          $deadline = (Get-Date).AddMinutes([int]$env:HOLD); $seen = $null
+          while ((Get-Date) -lt $deadline) {
+            $hit = Get-Content $env:E2E_LOG | Select-String 'device removed or login revoked' | Select-Object -First 1
+            if ($hit) { $seen = $hit.Line; break }
+            Start-Sleep 2
+          }
+          Get-Content $env:E2E_LOG | Select-String -Pattern 'ssh auth|ssh session|ssh exec|sftp|state|removed|level=WARN|level=ERROR' | ForEach-Object { $_.Line }
+          if (-not $seen) { throw "the client did not notice a removal within $env:HOLD minutes" }
+          "removal seen by the client: $seen"
+          Start-Sleep 3
+          & "$env:GITHUB_WORKSPACE\scripts\windows-e2e\screenshot.ps1" "$env:E2E_OUT\removed.png"
+          $alive = Get-Process -Id $env:E2E_PID -ErrorAction SilentlyContinue
+          "client process still open (its window keeps the message until the person closes it): $([bool]$alive)"
+          "- the client noticed the removal: ``$seen``" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Clean up (unbind when still enrolled, stop the client by PID)
+        if: always()
+        run: |
+          if ($env:E2E_HOME -and (Test-Path "$env:E2E_HOME\AppData\Roaming\AgentDevice\device.json")) {
+            "still enrolled: unbind"
+            $pw = [IO.File]::ReadAllText("$env:RUNNER_TEMP\account.pw")
+            $cred = [pscredential]::new($env:E2E_USER, (ConvertTo-SecureString $pw -AsPlainText -Force))
+            if ($env:E2E_PID) { Stop-Process -Id $env:E2E_PID -Force -ErrorAction SilentlyContinue; Start-Sleep 2 }
+            $p = Start-Process -FilePath $env:E2E_EXE -ArgumentList 'unbind' -Credential $cred -LoadUserProfile -WorkingDirectory (Split-Path $env:E2E_EXE) -PassThru -Wait
+            "unbind exit $($p.ExitCode)"
+          }
+          if ($env:E2E_PID) { Stop-Process -Id $env:E2E_PID -Force -ErrorAction SilentlyContinue }
+          if ($env:E2E_LOG -and (Test-Path $env:E2E_LOG)) { Copy-Item $env:E2E_LOG "$env:E2E_OUT\agentdevice.log" }
+          Remove-Item "$env:RUNNER_TEMP\account.pw", "$env:RUNNER_TEMP\person.env" -ErrorAction SilentlyContinue
+
+      # The client's log (no tokens: the client never logs one), the install record and the screenshots.
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: windows-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+          path: e2e-out
+          retention-days: 30
