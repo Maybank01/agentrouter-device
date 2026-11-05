@@ -113,7 +113,7 @@ jobs:
           Pop-Location
           Copy-Item release\environments\dev.json payload\environment.json
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          "Inno Setup: $((Get-Item $iscc).VersionInfo.ProductVersion)"
+          "Inno Setup: $((Get-Item $iscc).VersionInfo.FileVersion)"
           & $iscc /Q /DAppVersion=0.0.0 /DSetupName=agentdevice-setup-dev "/DPayload=$PWD\payload" "/DOutputDir=$PWD\out" release\windows\agentdevice.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC exit $LASTEXITCODE" }
       - name: Install silently, check, uninstall silently, check nothing is left
