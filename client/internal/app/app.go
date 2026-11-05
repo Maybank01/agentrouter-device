@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"os/user"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -118,12 +119,17 @@ func (a *App) enrol(ctx context.Context, name, ten, deviceID string) (*compute.J
 	if err != nil {
 		return nil, err
 	}
+	account := AccountName()
+	if account == "" {
+		// compute/v1 would enrol a computer nobody can reach (every /access refused: no SSH user, AgentDevice#229).
+		return nil, errors.New("enrol: this computer's account has no name (no user entry, USER and LOGNAME unset, no uid); nothing was enrolled. Run the client as a named account, or set USER, then log in again")
+	}
 	req := compute.EnrolRequest{
 		Name:          name,
 		Facts:         facts.Collect(ctx),
 		ClientVersion: a.Version,
 		HostKey:       state.AuthorizedKey(signer),
-		User:          AccountName(),
+		User:          account,
 	}
 	en, err := a.computeClient().Enrol(ctx, tok, key, req)
 	if err != nil {
@@ -154,15 +160,30 @@ func (a *App) enrol(ctx context.Context, name, ten, deviceID string) (*compute.J
 // AccountName is the account the client runs as, as SSH and compute/v1 access name it (on Windows without the
 // computer prefix).
 func AccountName() string {
-	u, err := user.Current()
-	if err != nil {
-		return os.Getenv("USER")
+	return accountName(user.Current, os.Getenv, os.Getuid)
+}
+
+// accountName is the OS account the client runs as, the `user` every SSH session runs as (compute/v1 device.schema.json):
+// the account's name; without a passwd entry (a container's bare uid, AgentDevice#229) $USER, then $LOGNAME, then the
+// numeric uid (this client's SSH server runs every session as its own account whatever name the caller sends, so the
+// uid reaches it as well as a name). Empty only when none of them exists (Windows without a current user).
+func accountName(current func() (*user.User, error), getenv func(string) string, getuid func() int) string {
+	if u, err := current(); err == nil && u.Username != "" {
+		name := u.Username
+		if i := strings.LastIndexByte(name, '\\'); i >= 0 {
+			name = name[i+1:]
+		}
+		return name
 	}
-	name := u.Username
-	if i := strings.LastIndexByte(name, '\\'); i >= 0 {
-		name = name[i+1:]
+	for _, key := range []string{"USER", "LOGNAME"} {
+		if v := strings.TrimSpace(getenv(key)); v != "" {
+			return v
+		}
 	}
-	return name
+	if uid := getuid(); uid >= 0 {
+		return strconv.Itoa(uid)
+	}
+	return ""
 }
 
 // Unbind removes this computer at compute/v1 (its NetBird peer is deleted), ends the login at ZITADEL (its refresh
