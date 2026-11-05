@@ -86,8 +86,9 @@ class Tunnel:
     """ssh -L to the gateway's in-network address on the Dev host; stopped by PID."""
 
     def __init__(self):
-        out = subprocess.run(["ssh", HOST, "docker", "inspect", GATEWAY_CONTAINER, "--format",
-                              '{{(index .NetworkSettings.Networks "coolify").IPAddress}}'], capture_output=True, text=True, timeout=60)
+        # ssh hands the remote side one shell string: quote each word.
+        remote = shlex.join(["docker", "inspect", GATEWAY_CONTAINER, "--format", '{{(index .NetworkSettings.Networks "coolify").IPAddress}}'])
+        out = subprocess.run(["ssh", HOST, remote], capture_output=True, text=True, timeout=60)
         ip = out.stdout.strip()
         if out.returncode != 0 or not ip:
             fail("gateway address on the Dev host", stderr=out.stderr.strip()[:300])
@@ -148,10 +149,8 @@ class SSH:
         return subprocess.Popen(["ssh", "-F", self.config, "win", command], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self.env)
 
     def sftp(self, batch):
-        b = os.path.join(self.work, "sftp.batch")
-        with open(b, "w") as f:
-            f.write(batch)
-        p = subprocess.run(["sftp", "-F", self.config, "-b", b, "win"], capture_output=True, timeout=120, env=self.env)
+        # Commands on stdin, not `-b`: `-b` implies BatchMode, which turns the password (askpass) off.
+        p = subprocess.run(["sftp", "-F", self.config, "win"], input=batch.encode(), capture_output=True, timeout=120, env=self.env)
         return p.returncode, p.stdout.decode("utf-8", "replace"), p.stderr.decode("utf-8", "replace")
 
 
