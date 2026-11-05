@@ -11,7 +11,7 @@
     "resources": { "$ref": "#/$defs/resources" },
     "lifespan": {
       "enum": ["temporary", "long"],
-      "description": "temporary: removed 30 minutes after its last hold ended. long: kept until DELETE /v1/sandboxes/{id}."
+      "description": "How long the sandbox outlives its last hold. temporary: removed 30 minutes after its last hold ended (or after creation, when never held). long: removed 6 hours after its last hold ended; a long sandbox never held is its owner's own and kept until DELETE /v1/sandboxes/{id}. A failed sandbox is removed 30 minutes after it failed."
     },
     "holder": {
       "$ref": "#/$defs/holderId",
