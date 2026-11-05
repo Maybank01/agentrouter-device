@@ -33,7 +33,7 @@ Linux pre-releases `client-v0.0.0-<sha7>` (static amd64/arm64, `SHA256SUMS`) fee
 **Removed device** (a refused refresh, or compute/v1 `COMPUTE_COMPUTER_NOT_FOUND` asked when the network drops, #231):
 「此设备已被移除，请重新登录」, SSH sessions closed, login ended at ZITADEL, enrolment forgotten, stopped.
 
-**Known gaps** (2026-11-04): Dev ran a Linux device and a sandbox (#223) on the NewAPI login only; the ZITADEL login is
-tested against fakes (the flow itself verified by AgentIdentity `deploy/dev/verify.py`), live with the issuer switch;
-ZITADEL rotates refresh tokens without grace (a lost refresh answer = log in again); no Windows PC end to end; no release
+**Known gaps** (2026-11-05): Windows end to end only on a hosted runner (#231, `windows-e2e.yml`: non-admin account,
+ZITADEL device login, SSH/SFTP, removal) where the tray cannot register (elevated Explorer), so the tray is untested on
+a real Windows desktop; ZITADEL rotates refresh tokens without grace (a lost refresh answer = log in again); no release
 flow for people; no Windows version resource or icon (AV-HYGIENE.md "Go 客户端"); a sandbox reports no facts.
