@@ -13,7 +13,7 @@
     },
     "sub": {
       "type": "string",
-      "pattern": "^(acc_[0-9A-Za-z]{1,64}|svc_[a-z][a-z0-9-]{1,31})$",
+      "pattern": "^(acc_[0-9A-Za-z_-]{1,64}|svc_[a-z][a-z0-9-]{1,31})$",
       "description": "Who calls: an account (acc_<ZITADEL user id>) or a service token's service (svc_<layer>: svc_ecs, svc_agentspace, svc_agentevents, svc_agentcompute, svc_agenthost), issued to that layer for one tenant and owner; the layer exchanges it for narrowed child tokens per run or attempt (sub stays svc_<layer>)."
     },
     "ten": { "$ref": "#/$defs/account", "description": "Tenant: the account that buys the layer. In our own product the tenant is ECS's account and the product's users are owners inside it." },
@@ -50,8 +50,8 @@
   "$defs": {
     "account": {
       "type": "string",
-      "pattern": "^acc_[0-9A-Za-z]{1,64}$",
-      "description": "An account id, acc_<ZITADEL user id> (NewAPI finds its user by users.oidc_id = the ZITADEL sub). For ten: acc_<ZITADEL organisation id> or the account the STS configuration names for the organisation."
+      "pattern": "^acc_[0-9A-Za-z_-]{1,64}$",
+      "description": "An account id, acc_<ZITADEL user id> (NewAPI finds its user by users.oidc_id = the ZITADEL sub). For ten: acc_<ZITADEL organisation id> or the account the STS configuration names for the organisation. The id is 1 to 64 of 0-9 A-Z a-z _ - (README \"Account ids\"): ZITADEL's generated ids (decimal) and the custom ids the migrations gave people (ar3-legacy-user-<n>, account-browser-<hex>); widened additively 2026-11-05 from [0-9A-Za-z] (AgentIdentity#42). This is the one account pattern: every verifier and every contract that names an account uses it."
     },
     "scope": {
       "type": "string",

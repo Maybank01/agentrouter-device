@@ -134,3 +134,40 @@ func TestRemoteKeysCachesAndRefetchesOnUnknownKid(t *testing.T) {
 		t.Fatalf("an unknown kid refetched within %s (%d fetches)", RefetchInterval, hits.Load())
 	}
 }
+
+// The account pattern is the contract's (identity/v1 1.1.0, AgentIdentity#42): the regexes equal the vendored
+// claims.schema.json, and the custom ZITADEL ids of the September migration are accounts.
+func TestAccountPatternIsTheContracts(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join(vectorDir, "..", "claims.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema struct {
+		Properties struct {
+			Sub struct {
+				Pattern string `json:"pattern"`
+			} `json:"sub"`
+		} `json:"properties"`
+		Defs struct {
+			Account struct {
+				Pattern string `json:"pattern"`
+			} `json:"account"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	if got := accountPattern.String(); got != schema.Defs.Account.Pattern {
+		t.Fatalf("accountPattern %s, the contract's $defs/account is %s", got, schema.Defs.Account.Pattern)
+	}
+	if got := subPattern.String(); got != schema.Properties.Sub.Pattern {
+		t.Fatalf("subPattern %s, the contract's sub is %s", got, schema.Properties.Sub.Pattern)
+	}
+	for id, ok := range map[string]bool{"acc_398174613395214436": true, "acc_ar3-legacy-user-1042": true,
+		"acc_account-browser-0123456789abcdef0123456789abcdef": true, "acc_a_b": true,
+		"acc_ar3:legacy": false, "acc_a/b": false, "acc_a.b": false, "acc_a b": false, "acc_": false} {
+		if accountPattern.MatchString(id) != ok || subPattern.MatchString(id) != ok {
+			t.Errorf("%q: want account %v", id, ok)
+		}
+	}
+}
