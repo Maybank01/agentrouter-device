@@ -181,7 +181,7 @@ def main():
         cmp = c["id"]
         f = c.get("facts") or {}
         log("我的设备 lists the device (GET /v1/computers)", id=cmp, name=c["name"], kind=c.get("kind"), state=c["state"],
-            os=f.get("os"), arch=f.get("arch"), shell=f.get("shell"), clientVersion=c.get("clientVersion"))
+            os=f.get("os"), arch=f.get("arch"), shell=f.get("shell"), clientVersion=(c.get("client") or {}).get("version"))
 
         # 2. access, as AgentHost asks for it
         st, acc = http("POST", f"{COMPUTE}/v1/computers/{cmp}/access", tok.mint("agenthost", "agentcompute", [f"computer:{cmp}:ssh"]), {})
