@@ -1,0 +1,246 @@
+name: Release
+
+# A release of the client for people (release/README.md), separate from ci.yml's pre-releases (`client-v0.0.0-<sha7>`,
+# Dev testing and compute/v1 sandboxes). On demand with the version (R14: the version is chosen at release time):
+#   gh workflow run release.yml -f version=0.1.0            (main's head; -f ref=<sha> for an older main commit)
+# It refuses a version that is not X.Y.Z, not newer than the latest release, or a commit whose required checks are not
+# green on main. One build of each program serves every environment (no endpoints built in); each environment whose
+# file in release/environments/ is complete gets its own installer (Windows) and archive (Linux) carrying that file.
+# An incomplete one (production until runbook P5 names its endpoints) is listed in the notes as missing, never built.
+# Assets: agentdevice-setup[-<env>].exe, agentdevice-windows-amd64.exe, agentdevice-linux-{amd64,arm64} (static),
+# agentdevice-linux-{amd64,arm64}[-<env>].tar.gz, environment-<env>.json, SHA256SUMS. Unsigned (docs/adr/0001-code-signing.md).
+# The tag `client-vX.Y.Z` is the newest release ("latest"), so releases/latest/download/<asset> is a stable link.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version X.Y.Z (tag client-vX.Y.Z)
+        required: true
+      ref:
+        description: Commit of main to release (empty = main's head)
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Version, commit and environments
+    if: github.repository == 'agentrouter-top/AgentDevice'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      tag: ${{ steps.check.outputs.tag }}
+      sha: ${{ steps.check.outputs.sha }}
+      envs: ${{ steps.envs.outputs.envs }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          REF: ${{ inputs.ref }}
+        run: |
+          [[ "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "::error::version '$VERSION' is not X.Y.Z"; exit 1; }
+          tag="client-v$VERSION"
+          sha=$(git rev-parse --verify "${REF:-origin/main}^{commit}")
+          git merge-base --is-ancestor "$sha" origin/main || { echo "::error::$sha is not on main"; exit 1; }
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then echo "::error::tag $tag exists already"; exit 1; fi
+          latest=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName 2>/dev/null || true)
+          if [ -n "$latest" ]; then
+            newest=$(printf '%s\n%s\n' "${latest#client-v}" "$VERSION" | sort -V | tail -1)
+            if [ "$newest" != "$VERSION" ] || [ "${latest#client-v}" = "$VERSION" ]; then echo "::error::$VERSION is not newer than the latest release $latest"; exit 1; fi
+          fi
+          # The commit's required checks (merge-on-green.yml REQUIRED) passed on main: the release adds no tests of its own.
+          for check in "Repository checks" "Client (Linux)" "Client (macOS)" "Client (Windows)"; do
+            state=$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha/check-runs?per_page=100" --jq "[.check_runs[] | select(.name == \"$check\")] | sort_by(.completed_at) | last | .conclusion // \"missing\"")
+            [ "$state" = success ] || { echo "::error::check '$check' on $sha is $state, not success"; exit 1; }
+          done
+          { echo "version=$VERSION"; echo "tag=$tag"; echo "sha=$sha"; } | tee -a "$GITHUB_OUTPUT"
+      # Complete = every endpoint set (the client's state.Config; TestShippedEnvironments keeps the two in step).
+      - id: envs
+        run: |
+          git checkout -q "${{ steps.check.outputs.sha }}" -- release/environments
+          envs='[]'
+          for f in release/environments/*.json; do
+            name=$(basename "$f" .json)
+            if jq -e '[.environment, .issuer, .computeUrl, .zitadel.url, .zitadel.projectId, .zitadel.clientId, .updateUrl, .downloadUrl]
+                      | all(type == "string" and length > 0) and (has("missing") | not)' "$f" >/dev/null; then
+              envs=$(jq -c --arg n "$name" '. + [$n]' <<<"$envs")
+              echo "$name: complete"
+            else
+              echo "$name: incomplete, not built: $(jq -r '.missing // "values missing"' "$f")"
+            fi
+          done
+          [ "$envs" != '[]' ] || { echo "::error::no complete environment in release/environments"; exit 1; }
+          echo "envs=$envs" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build (${{ matrix.goos }} ${{ matrix.goarch }})
+    needs: prepare
+    strategy:
+      matrix:
+        include:
+          - { goos: windows, goarch: amd64, out: agentdevice-windows-amd64.exe, ldflags: "-H windowsgui" }
+          - { goos: linux, goarch: amd64, out: agentdevice-linux-amd64, ldflags: "" }
+          - { goos: linux, goarch: arm64, out: agentdevice-linux-arm64, ldflags: "" }
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: client/go.mod
+          cache-dependency-path: client/go.sum
+      # No endpoints built in (state.Default* stay empty): the environment comes from environment.json beside the program.
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          go build -trimpath -ldflags "-s -w -X main.version=$VERSION ${{ matrix.ldflags }}" -o "dist/${{ matrix.out }}" ./cmd/agentdevice
+          cd dist && sha256sum "${{ matrix.out }}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: program-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: client/dist/${{ matrix.out }}
+          retention-days: 7
+
+  installer:
+    name: Windows installer (${{ matrix.env }})
+    needs: [prepare, build]
+    strategy:
+      matrix:
+        env: ${{ fromJSON(needs.prepare.outputs.envs) }}
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          sparse-checkout: release
+      - uses: actions/download-artifact@v7
+        with:
+          name: program-windows-amd64
+          path: payload
+      - name: Compile (Inno Setup, per user)
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          ENV_NAME: ${{ matrix.env }}
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "Inno Setup 6 is not on this runner image ($iscc); release/README.md names the fallback" }
+          "Inno Setup: $((Get-Item $iscc).VersionInfo.ProductVersion)"
+          Move-Item payload\agentdevice-windows-amd64.exe payload\agentdevice.exe
+          Copy-Item "release\environments\$env:ENV_NAME.json" payload\environment.json
+          # Production's installer is the plain name; another environment's carries its name.
+          $name = if ($env:ENV_NAME -eq 'production') { 'agentdevice-setup' } else { "agentdevice-setup-$env:ENV_NAME" }
+          & $iscc /Q "/DAppVersion=$env:VERSION" "/DSetupName=$name" "/DPayload=$PWD\payload" "/DOutputDir=$PWD\out" release\windows\agentdevice.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC exit $LASTEXITCODE" }
+          Get-ChildItem out | ForEach-Object { "$($_.Name) $((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()) $($_.Length) bytes" }
+      - uses: actions/upload-artifact@v7
+        with:
+          name: installer-${{ matrix.env }}
+          path: out/*.exe
+          retention-days: 7
+
+  publish:
+    name: Publish client-v${{ needs.prepare.outputs.version }}
+    needs: [prepare, build, installer]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          sparse-checkout: release
+      - uses: actions/download-artifact@v7
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Archives, sums and notes
+        env:
+          ENVS: ${{ needs.prepare.outputs.envs }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          SHA: ${{ needs.prepare.outputs.sha }}
+        run: |
+          cd assets
+          chmod +x agentdevice-linux-*
+          for env in $(jq -r '.[]' <<<"$ENVS"); do
+            suffix=$([ "$env" = production ] && echo "" || echo "-$env")
+            cp "../release/environments/$env.json" "environment-$env.json"
+            for arch in amd64 arm64; do
+              dir=$(mktemp -d)/agentdevice && mkdir -p "$dir"
+              cp "agentdevice-linux-$arch" "$dir/agentdevice" && cp "environment-$env.json" "$dir/environment.json"
+              tar -C "$(dirname "$dir")" --owner=0 --group=0 -czf "agentdevice-linux-$arch$suffix.tar.gz" agentdevice
+            done
+          done
+          sha256sum -- * > ../SHA256SUMS && mv ../SHA256SUMS . && cat SHA256SUMS
+          missing=""
+          for f in ../release/environments/*.json; do
+            name=$(basename "$f" .json)
+            jq -e --arg n "$name" 'index($n)' <<<"$ENVS" >/dev/null || missing="$missing- **$name**: not built. $(jq -r '.missing // "values missing"' "$f")"$'\n'
+          done
+          {
+            echo "AgentRouter 设备客户端 $VERSION。Windows：下载 \`agentdevice-setup-dev.exe\`（Dev），双击安装（不需要管理员），浏览器里确认登录即可。没有代码签名：SmartScreen 提示时点「更多信息」→「仍要运行」。"
+            echo
+            echo "Commit \`$SHA\`. Built on GitHub-hosted runners, unsigned (docs/adr/0001-code-signing.md). One program per platform for every environment; the environment is the \`environment.json\` beside it (release/README.md)."
+            echo
+            echo "| Environment | Windows installer | Linux archives |"
+            echo "| --- | --- | --- |"
+            for env in $(jq -r '.[]' <<<"$ENVS"); do
+              suffix=$([ "$env" = production ] && echo "" || echo "-$env")
+              echo "| $env | \`agentdevice-setup$suffix.exe\` | \`agentdevice-linux-{amd64,arm64}$suffix.tar.gz\` |"
+            done
+            echo
+            [ -z "$missing" ] || { echo "Missing environments:"; echo; printf '%s' "$missing"; echo; }
+            echo "Plain programs without an environment: \`agentdevice-windows-amd64.exe\`, \`agentdevice-linux-{amd64,arm64}\` (static; compute/v1 sandboxes)."
+            echo
+            echo '```'; cat SHA256SUMS; echo '```'
+          } > ../notes.md
+      - name: Changes since the previous release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          SHA: ${{ needs.prepare.outputs.sha }}
+        run: |
+          previous=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName 2>/dev/null || true)
+          {
+            echo; echo "## Changes"; echo
+            if [ -n "$previous" ]; then
+              gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" -f tag_name="$TAG" -f target_commitish="$SHA" -f previous_tag_name="$previous" --jq .body
+            else
+              echo "First release for people: the Go client on NetBird with its own SSH server (#221), device login at AgentIdentity (#225), the per-user Windows installer and the update notice (#243)."
+            fi
+          } >> notes.md
+          cat notes.md
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          SHA: ${{ needs.prepare.outputs.sha }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          gh release create "$TAG" assets/* --repo "$GITHUB_REPOSITORY" --target "$SHA" --latest \
+            --title "AgentDevice $VERSION" --notes-file notes.md
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url,assets --jq '.url, (.assets[] | "  \(.name) \(.size)")'

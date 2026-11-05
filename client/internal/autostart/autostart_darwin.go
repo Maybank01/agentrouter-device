@@ -20,7 +20,7 @@ func plistPath() (string, error) {
 func domain() string { return "gui/" + strconv.Itoa(os.Getuid()) }
 
 // On writes and loads the LaunchAgent; log is where its output goes.
-func On(exe, log string) (string, error) {
+func On(exe, log string, _ bool) (string, error) {
 	path, err := plistPath()
 	if err != nil {
 		return "", fmt.Errorf("autostart: no home folder: %w", err)

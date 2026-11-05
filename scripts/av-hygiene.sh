@@ -2,7 +2,7 @@
 # Fails the build when the source drifts from docs/development/AV-HYGIENE.md. Run from the repository root.
 set -u
 fail=0
-src=(client .github)
+src=(client .github release)
 # client/testdata and go.sum: vendored contract vectors and module hashes (base64 can spell anything).
 exclude=(--exclude-dir=testdata --exclude=go.sum --exclude=av-hygiene.sh)
 

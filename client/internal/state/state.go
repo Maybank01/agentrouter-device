@@ -1,6 +1,6 @@
 // Package state holds what the client keeps on disk, all in one folder of the person's own profile (no admin rights,
-// nothing outside it): the endpoints (config.json), the enrolment (device.json), the device login's newest refresh
-// token, the SSH host key and NetBird's own config. Secrets are files only this account can read (0600; on Windows
+// nothing outside it): the endpoints (config.json, over the installed environment.json beside the program), the
+// enrolment (device.json), the device login's newest refresh token, the SSH host key and NetBird's own config. Secrets are files only this account can read (0600; on Windows
 // a protected DACL naming only this account), written atomically, never command lines or environment variables (R21).
 package state
 
@@ -22,9 +22,10 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// Defaults set at release time (-ldflags "-X …state.DefaultIssuer=… -X …state.DefaultComputeURL=…", and for the
-// ZITADEL login DefaultZitadelURL, DefaultZitadelProjectID, DefaultZitadelClientID); empty in a developer build,
-// which then needs config.json.
+// Defaults built in (-ldflags "-X …state.DefaultIssuer=… -X …state.DefaultComputeURL=…", and for the ZITADEL login
+// DefaultZitadelURL, DefaultZitadelProjectID, DefaultZitadelClientID): only the Dev pre-release sets them (ci.yml, from
+// release/environments/dev.json). A release has none: its installer puts the environment's file beside the program
+// (EnvironmentFile), so one build serves every environment.
 var (
 	DefaultIssuer           = ""
 	DefaultComputeURL       = ""
@@ -61,8 +62,27 @@ func (d Dir) Ensure() error {
 	return nil
 }
 
-// Config is config.json: where the services are. Every field may be left out and then has its default.
+// EnvironmentFile is the environment the installer chose: environment.json beside the program (release/environments/,
+// release/README.md). Fields of config.json win over it; the built-in defaults fill what both leave out.
+var EnvironmentFile = func() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(exe), "environment.json")
+}
+
+// Config is config.json (and environment.json): where the services are. Every field may be left out and then has its
+// default.
 type Config struct {
+	// Environment names the environment the endpoints belong to ("dev", "production"); shown by `status`.
+	Environment string `json:"environment,omitempty"`
+	// UpdateURL is where the client asks for the newest release (GitHub's releases/latest API or a mirror of it);
+	// empty = no update check.
+	UpdateURL string `json:"updateUrl,omitempty"`
+	// DownloadURL is what the client tells the person to install when a newer release exists (this environment's
+	// installer of the latest release).
+	DownloadURL string `json:"downloadUrl,omitempty"`
 	// Issuer is the identity/v1 tokens' iss: AgentIdentity's STS with the ZITADEL login, NewAPI's base URL without.
 	Issuer string `json:"issuer,omitempty"`
 	// Zitadel selects the device login at ZITADEL (AgentIdentity): RFC 8628 there, then every short token is an
@@ -97,17 +117,25 @@ type Zitadel struct {
 	ClientID string `json:"clientId"`
 }
 
-// LoadConfig reads config.json (missing = defaults) and fills in the defaults.
+// LoadConfig reads the installed environment.json, then config.json over it (each missing = nothing), and fills in the
+// built-in defaults.
 func (d Dir) LoadConfig() (Config, error) {
 	var c Config
-	raw, err := os.ReadFile(d.Path("config.json"))
-	switch {
-	case errors.Is(err, os.ErrNotExist):
-	case err != nil:
-		return c, fmt.Errorf("state: read %s: %w", d.Path("config.json"), err)
-	default:
-		if err := json.Unmarshal(raw, &c); err != nil {
-			return c, fmt.Errorf("state: %s is not valid JSON: %w", d.Path("config.json"), err)
+	files := []string{d.Path("config.json")}
+	if env := EnvironmentFile(); env != "" {
+		files = []string{env, d.Path("config.json")}
+	}
+	for _, path := range files {
+		raw, err := os.ReadFile(path)
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+		case err != nil:
+			return c, fmt.Errorf("state: read %s: %w", path, err)
+		default:
+			// Unmarshal into the same value: a key config.json names replaces the environment's, others stay.
+			if err := json.Unmarshal(raw, &c); err != nil {
+				return c, fmt.Errorf("state: %s is not valid JSON: %w", path, err)
+			}
 		}
 	}
 	if c.Issuer == "" {
@@ -149,7 +177,7 @@ func (c Config) Validate(path string) error {
 		missing = append(missing, "computeUrl")
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("state: this build has no default %s; write them into %s (JSON: {\"issuer\": \"https://…\", \"computeUrl\": \"https://…\"})", strings.Join(missing, " and "), path)
+		return fmt.Errorf("state: no %s for this program: install it with an environment's installer (it puts environment.json beside the program), or write them into %s (JSON: {\"issuer\": \"https://…\", \"computeUrl\": \"https://…\"})", strings.Join(missing, " and "), path)
 	}
 	if z := c.Zitadel; z != nil {
 		for name, v := range map[string]string{"zitadel.url": z.URL, "zitadel.projectId": z.ProjectID, "zitadel.clientId": z.ClientID} {
@@ -232,6 +260,17 @@ func (d Dir) Forget() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// RemoveAll deletes the whole folder (uninstall): enrolment, login, host key, NetBird's config, logs, config.json.
+func (d Dir) RemoveAll() error {
+	if d == "" || filepath.Dir(string(d)) == string(d) {
+		return fmt.Errorf("state: refusing to remove %q", d)
+	}
+	if err := os.RemoveAll(string(d)); err != nil {
+		return fmt.Errorf("state: remove %s: %w", d, err)
+	}
+	return nil
 }
 
 // IdempotencyKey returns the key of the pending enrolment, creating one; it is removed after the enrolment so a

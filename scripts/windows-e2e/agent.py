@@ -10,11 +10,16 @@ has no public SSH name yet, AgentCompute docs/operations/compute-dev.md). Every 
      token aud netbird for the SSH password (askpass from a file, never argv), OpenSSH through the gateway with both
      host keys pinned (the same ssh config AgentHost's dsh-runtime writes).
   3. On the device: whoami, whoami /groups (must not be an administrator), an SFTP write and read-back.
-  4. Revoke: DELETE /v1/devices/{id} (the owner's removal, computer:{id}:manage) while a session is open. The open
-     session must end at once, a new access must be refused, a new ssh must be refused, the list must not show it.
+  4. --then remove (pre-release run): DELETE /v1/devices/{id} (the owner's removal, computer:{id}:manage) while a
+     session is open. The open session must end at once, a new access must be refused, a new ssh must be refused, the
+     list must not show it.
+     --then uninstall (release run, #243): SFTP drops the marker `e2e-uninstall-now` into the account's home; the
+     workflow then runs the uninstaller as the account, which unbinds the computer. The list must stop showing it and
+     a new access must be refused.
 
 Usage (stdlib only):
   python3 scripts/windows-e2e/agent.py --name gh-win-<run id>-<attempt> [--keys DIR] [--own acc_…] [--out DIR]
+  python3 scripts/windows-e2e/agent.py --computer cmp_… --then uninstall   (the release run's device has the runner's name)
 Service keys are read from --keys (agenthost.key, ecs.key; default the workstation's .secrets copy); no token or key
 is printed or put on a command line.
 """
@@ -156,14 +161,18 @@ class SSH:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--name", required=True, help="the device name the workflow enrolled (gh-win-<run id>-<attempt>)")
+    who = ap.add_mutually_exclusive_group(required=True)
+    who.add_argument("--name", help="the device name the workflow enrolled (gh-win-<run id>-<attempt>)")
+    who.add_argument("--computer", help="the computer id the workflow's summary names (cmp_…)")
+    ap.add_argument("--then", choices=["remove", "uninstall"], default="remove", help="remove the device, or let the workflow uninstall the client")
     ap.add_argument("--own", default=OWN)
     ap.add_argument("--keys", default=KEYS)
     ap.add_argument("--wait", type=int, default=600, help="seconds to wait for the device to be online")
     ap.add_argument("--out", default=None, help="write the evidence lines here (JSON)")
     a = ap.parse_args()
     tok = Tokens(a.keys, a.own)
-    run = "cnv_wine2e" + a.name.replace("gh-win-", "").replace("-", "_")
+    label = a.name or a.computer
+    run = "cnv_wine2e" + "".join(ch if ch.isalnum() else "_" for ch in label.replace("gh-win-", ""))[:40]
     work = tempfile.mkdtemp(prefix="win-e2e-")
     os.chmod(work, 0o700)
     tunnel = None
@@ -171,7 +180,7 @@ def main():
         # 1. 我的设备
         deadline = time.time() + a.wait
         while True:
-            mine = [c for c in list_computers(tok) if c.get("name") == a.name]
+            mine = [c for c in list_computers(tok) if (c.get("id") == a.computer if a.computer else c.get("name") == a.name)]
             if mine and mine[0].get("state") == "online":
                 break
             if time.time() > deadline:
@@ -208,11 +217,11 @@ def main():
         rc, priv, _ = ssh.run("whoami /priv")
         log("ssh whoami /priv", privileges=[l.split()[0] for l in priv.splitlines() if l.startswith("Se")])
 
-        body = f"AgentDevice #231 e2e {a.name} {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n中文：设备端只做执行\n"
+        body = f"AgentDevice #231 e2e {label} {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n中文：设备端只做执行\n"
         local = os.path.join(work, "up.txt"); back = os.path.join(work, "down.txt")
         with open(local, "w", encoding="utf-8") as fh:
             fh.write(body)
-        remote = f"e2e-{a.name}.txt"
+        remote = f"e2e-{label}.txt"
         rc, out, err = ssh.sftp(f"put {local} {remote}\nls -l {remote}\nget {remote} {back}\n")
         if rc != 0:
             fail("sftp put/get", rc=rc, stdout=out[-500:], stderr=err.strip()[-500:])
@@ -222,6 +231,32 @@ def main():
             fail("sftp read-back differs")
         rc, out, err = ssh.run(f"type {remote}")
         log("ssh type <file> (the shell reads what SFTP wrote)", rc=rc, first_line=out.splitlines()[0] if out else "", stderr=err.strip()[-200:])
+
+        if a.then == "uninstall":
+            # 4'. the workflow uninstalls; the uninstaller unbinds the computer
+            marker = os.path.join(work, "marker")
+            with open(marker, "w") as fh:
+                fh.write("uninstall\n")
+            ssh.credential(tok, run)
+            rc, out, err = ssh.sftp(f"put {marker} e2e-uninstall-now\n")
+            if rc != 0:
+                fail("sftp put of the uninstall marker", rc=rc, stderr=err.strip()[-300:])
+            t_marker = time.time()
+            log("uninstall marker dropped by SFTP; the workflow runs the uninstaller as the account")
+            deadline = time.time() + 600
+            while [x for x in list_computers(tok) if x.get("id") == cmp]:
+                if time.time() > deadline:
+                    fail("the computer is still in 我的设备 10 min after the uninstall marker")
+                time.sleep(5)
+            gone = round(time.time() - t_marker, 1)
+            log("我的设备 no longer lists the computer (the uninstaller unbound it)", seconds_after_marker=gone)
+            st, res = http("POST", f"{COMPUTE}/v1/computers/{cmp}/access", tok.mint("agenthost", "agentcompute", [f"computer:{cmp}:ssh"]), {})
+            log("POST /access after the uninstall", status=st, code=(res or {}).get("code") if isinstance(res, dict) else res)
+            ok = st == 404
+            log("RESULT", passed=ok, gone_from_list=True, access_refused=ok)
+            if not ok:
+                raise SystemExit(1)
+            return
 
         # 4. remove the device while a session is open
         ssh.credential(tok, run)

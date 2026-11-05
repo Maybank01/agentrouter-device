@@ -1,0 +1,13 @@
+{
+  "environment": "production",
+  "missing": "The production names are not decided: agentteam-deployments docs/operations/base-v1-production-cutover.md P5 (public names of the production STS and compute/v1) and step 2d (the agentdevice application's ids at production ZITADEL). Every empty value below blocks the production installer; the release lane builds none until they are set.",
+  "issuer": "",
+  "computeUrl": "",
+  "zitadel": {
+    "url": "https://auth.agentrouter.top",
+    "projectId": "",
+    "clientId": ""
+  },
+  "updateUrl": "https://api.github.com/repos/agentrouter-top/AgentDevice/releases/latest",
+  "downloadUrl": "https://github.com/agentrouter-top/AgentDevice/releases/latest/download/agentdevice-setup.exe"
+}
