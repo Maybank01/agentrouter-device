@@ -4,8 +4,8 @@ Our client: a branded Go program a person installs so that their computer become
 reachable by SSH inside the owner's own private network and nothing else. Owner 2026-11-04: 「装上客户端，云端就有一个按照SSH
 协议的执行设备」, 「设备端只做执行」 (base layers v1 design §4.3, Cloud #3976). AgentCompute's cloud sandboxes run the same
 program, so a sandbox and a person's computer are reached the same way. Layer: the device side of the compute layer.
-**Transition**: the Rust `hostd` / `agentrouter link` here today keeps releasing until the Go client is verified on Dev,
-then it is deleted (C3: released copies on people's computers hold it).
+The Rust `hostd` / `agentrouter link` was deleted on 2026-11-05 (#236); released copies keep working against production
+until the base cutover, which retires them.
 
 **Belongs here**: embedding NetBird `client/embed` (BSD-3, pinned release): userspace networking, no admin rights, no
 driver; it joins the owner's NetBird network on our self-hosted management. NetBird's SSH server (`client/ssh/server`:
@@ -22,18 +22,17 @@ AgentSpace, ECS). Accounts, login, token issuance (AgentIdentity), prices (NewAP
 and the SSH gateway (AgentCompute; NetBird's AGPL never enters this program). Patches to NetBird (fix upstream).
 The abandoned DSH-plugin / Desktop-adapter client (R46).
 
-**Contracts provided** (C1–C3): none; it provides a computer, an SSH endpoint in the owner's network. Until deleted, the
-`hostd` link protocol v2 (`crates/device-core/src/protocol.rs`, `docs/HOSTD-MCP.md`) is held by released `hostd`.
+**Contracts provided** (C1–C3): none; it provides a computer, an SSH endpoint in the owner's network.
 
 **Consumes** (pinned, C4, C6): AgentIdentity `identity/v1` (ES256 JWT, JWKS, device code at ZITADEL + STS exchange,
 `aud: netbird`; NewAPI's device login until the issuer switch); AgentCompute `compute/v1` (`kind: device`, `name`, `facts`);
-NetBird by `go.mod` version; our NetBird management by URL only. Until deleted, `hostd` implements AgentCompute
-`contracts/executor-protocol/v0` (copy in `vendor/agentcompute/`).
+NetBird by `go.mod` version; our NetBird management by URL only (contract copies: `client/testdata/contracts/`).
 
-**How it is pinned**: per-OS release binaries with `SHA256SUMS`; a consumer pins asset + `sha256` (today Cloud
-`deploy/versions.json` `components.agentDevice` pins `hostd`; AgentCompute's sandbox image will pin the Go client).
+**How it is pinned**: per-OS release binaries (`client-v0.0.0-<sha7>`) with `SHA256SUMS`; a consumer pins asset +
+`sha256` (AgentCompute's environment image pins the static Linux build).
 **Dependencies** (C5): only those two contracts and NetBird; nothing upward (online / offline is what NetBird reports).
-**Checks on the PR path** (GitHub-hosted, R47): `check-docs.mjs`, `check-repo-imports.mjs` (C6), build, lint, tests.
+**Checks on the PR path** (GitHub-hosted, R47): `check-docs.mjs`, `check-repo-imports.mjs` (C6), AV hygiene, gofmt,
+vet, tests and build on Linux, macOS and Windows (`ci.yml`).
 
-**Owner rules** (`workspace/RULES.md`): R45 R53 (the client; superseded 2026-11-04 by this model), R46 R54 (DSH plugin
+**Owner rules** (`workspace/RULES.md`): R45 R53 (the client), R58 (no access levels), R46 R54 (DSH plugin
 client abandoned), R47 (tests on GitHub-hosted runners only), R48, R14 (own release flow), R17, R21, R38.

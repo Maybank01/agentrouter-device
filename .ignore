@@ -3,14 +3,7 @@
 # Workspace baseline (agentteam-deployments docs/reference/REPO-BASELINE.md).
 
 # Lock files
-Cargo.lock
-package-lock.json
+client/go.sum
 
-# Copy of Cloud's error catalog (source of truth: agentrouter-cloud; its "source" field names the commit)
-crates/device-core/src/error-catalog.json
-
-# Lock fixtures of the aggregator tests
-crates/aggregator/tests/fixtures/locks/
-
-# Copy of AgentCompute's executor protocol contract (source of truth: agentrouter-top/AgentCompute; SOURCE.json names the ref)
-vendor/agentcompute/
+# Copies of AgentCompute's and AgentIdentity's contracts (source of truth: those repositories; SOURCE.json names the ref)
+client/testdata/contracts/

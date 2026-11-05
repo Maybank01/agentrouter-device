@@ -2,8 +2,8 @@
 // A red `main` is never silent (issue #125). Run by .github/workflows/main-red.yml when a CI run of a push to main
 // completes. Reads only the GitHub API: it never checks out or runs pull request code.
 //
-//   red, first attempt (an infrastructure failure: up to 3)  re-run the failed jobs once (flake check: srt's own
-//                                                            `wfp verify` timed out once on a hosted Windows runner)
+//   red, first attempt (an infrastructure failure: up to 3)  re-run the failed jobs once (flake check: hosted runners
+//                                                            and release uploads fail now and then)
 //   red again, and a failed job was green on the parent      revert the merged PR: GitHub's own revert PR
 //                                                            (GraphQL revertPullRequest, made with the App token so its
 //                                                            checks run) with auto-merge, so the revert is tested on its

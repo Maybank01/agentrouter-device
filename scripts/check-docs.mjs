@@ -28,11 +28,7 @@ import { lycheeBinary } from "./lychee.mjs";
 /** Root files of type `entry`. */
 const ENTRY_FILES = ["README.md", "AGENTS.md", "SECURITY.md"];
 /** Types this repository adds to the shared ones: { name: { where, ok(path) } }. */
-const EXTRA_TYPES = {
-  // The link protocol and hostd design. It stays at its old path: Cloud code, docs and the vendored runner
-  // (deploy/coolify/runtime/vendor/) cite `docs/HOSTD-MCP.md` and its section numbers over a hundred times.
-  protocol: { where: "docs/HOSTD-MCP.md (cited by path from Cloud code and the vendored runner)", ok: (p) => p === "docs/HOSTD-MCP.md" },
-};
+const EXTRA_TYPES = {};
 /** Module ids the Module cell must use, or null when the cell is free text (it must not be empty). */
 const MODULE_IDS = null;
 // ---- End of repository settings -----------------------------------------------------------------------------------

@@ -2,7 +2,7 @@
 // system's own per-user mechanism and no administrator rights: a systemd user unit (Linux), a LaunchAgent (macOS),
 // a Task Scheduler logon task at the least privilege level with no stored password (Windows). No Run key, no
 // startup folder (docs/development/AV-HYGIENE.md). Off by default; only `agentdevice autostart on` turns it on.
-// The definitions are the Rust hostd's (crates/connector-cli/src/service.rs), proven on all three systems; the
+// The definitions are the former Rust hostd's (tag hostd-final, service.rs), proven on all three systems; the
 // program they start is `<agentdevice> run`.
 package autostart
 

@@ -1,7 +1,0 @@
-{
-  "name": "agentrouter-catalog-files",
-  "private": true,
-  "dependencies": {
-    "@modelcontextprotocol/server-filesystem": "1.0.0"
-  }
-}

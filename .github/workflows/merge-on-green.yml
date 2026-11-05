@@ -4,15 +4,15 @@
 # with the shared file when it changes.
 #
 # Land a change: open the PR into main with the label `merge-on-green` and stop. It is merged once every required check
-# of the branch protection succeeded on the PR's current head commit. `Sandbox (Windows)` gates after the merge
-# (main-red.yml), as before.
+# of the branch protection succeeded on the PR's current head commit. A red main after the merge is handled by
+# main-red.yml.
 # - Never checks out PR code: it runs from main on workflow_run / pull_request_target / schedule; PRs from forks are
 #   never merged (isCrossRepository). Only people who can label a PR can start a merge.
 # - The label is the stop button: it is re-read live right before each merge. Off switch: remove the label, or
 #   `gh workflow disable merge-on-green`.
 # - `--match-head-commit`: a push after the checks ran is never merged on the older green.
 # - Merge token: the merge bot App (repository secrets MERGE_BOT_APP_ID, MERGE_BOT_APP_PRIVATE_KEY, App
-#   agentrouter-cloud-agent-dev), so the merge's push starts CI, hostd and the main-red guard on main. Without it the job
+#   agentrouter-cloud-agent-dev), so the merge's push starts CI (and so the client pre-release) and the main-red guard on main. Without it the job
 #   fails instead of merging with GITHUB_TOKEN (whose push starts no workflow: main would go untested).
 # - A PR that changes .github/workflows cannot be merged by the App (no `workflows` permission): merge it by hand once
 #   the same checks are green. Gate red or a conflict: one comment per head commit; the label stays.
@@ -63,7 +63,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           BASE: main
           # The branch protection's required checks (README.md "Development").
-          REQUIRED: "Linux (core + command line), Windows (command line + unsigned build), Sandbox (Linux), Sandbox (macOS)"
+          REQUIRED: "Repository checks, Client (Linux), Client (macOS), Client (Windows)"
           METHOD: squash
         run: |
           set -euo pipefail

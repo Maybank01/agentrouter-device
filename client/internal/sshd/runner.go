@@ -15,7 +15,7 @@ import (
 // is visible to every process, cut at 128 KiB on Linux and 32 767 characters on Windows, and an Agent's heredoc that
 // writes a file is one command. The text goes into a file only this account can open in <temp>/agentdevice-run/;
 // the shell runs a fixed runner that reads it, deletes it and runs it. stdin stays the session's. The runners are
-// the ones the Rust hostd proved (crates/device-core/src/command_text.rs): plain text, no encoded command, no
+// the ones the former Rust hostd proved (tag hostd-final, command_text.rs): plain text, no encoded command, no
 // execution-policy change, no script run with -File (docs/development/AV-HYGIENE.md).
 
 // unixFileRunner runs the text in "$1" in the account's (POSIX) shell: read, delete, eval.

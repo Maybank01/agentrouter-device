@@ -1,15 +1,19 @@
 name: CI
 
+# Every check of this repository, on GitHub-hosted runners only (R47; locally only `go build` / `go vet`):
+# - Repository checks: docs map and links, no path into another repository, AV hygiene, the main-red guard's decisions.
+# - Client (Linux / macOS / Windows): the Go device client in client/ (NetBird client/embed for the network, its own
+#   SSH server; base layers v1, #221): gofmt, go mod tidy, vet, tests, build.
+# - After a push to main: the static Linux builds (compute/v1 sandboxes) and the Windows Dev build, published as the
+#   pre-release `client-v0.0.0-<sha7>`.
+# Required checks of the branch protection, also in merge-on-green.yml REQUIRED: `Repository checks`, `Client (Linux)`,
+# `Client (macOS)`, `Client (Windows)` (each 1–2 min). A red main is re-run once, then reverted or reported (main-red.yml).
+
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
-    inputs:
-      mirror_timing:
-        description: Also time first installs of the catalog locks with the mirrors first (Cloud #2740)
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -20,22 +24,13 @@ concurrency:
   group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-env:
-  CARGO_TERM_COLOR: always
-  RUSTFLAGS: -D warnings
-
 jobs:
-  linux:
-    name: Linux (core + command line)
+  repository:
+    name: Repository checks
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all --check
       - name: AV hygiene (docs/development/AV-HYGIENE.md)
         run: bash scripts/av-hygiene.sh
       # The pinned lychee (scripts/lychee.mjs) is downloaded once and kept here, so the doc check stays seconds.
@@ -49,252 +44,176 @@ jobs:
         run: node scripts/check-repo-imports.mjs
       - name: main-red guard decisions (scripts/main-red.mjs, #125)
         run: node --test scripts/*.test.mjs
-      # The desktop shell (app/) is frozen: outside the workspace, not built (docs/HOSTD-MCP.md §0).
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
 
-  # Merge-path budget (Cloud #2479, owner 2026-10-21 「几分钟我都嫌久了」): a PR runs fmt, clippy and tests on the Rust
-  # cache (p90 ~2.5 min); the release build, version resource check, npm packages and the artifact (~2 min more) run
-  # after the merge, on the push to main. The job name stays: it is the required check.
-  windows:
-    name: Windows (command line + unsigned build)
-    runs-on: windows-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
-      - name: Release build
-        if: github.event_name != 'pull_request'
-        run: cargo build --release --locked -p agentrouter-device-cli
-      - name: Version resource present (docs/development/AV-HYGIENE.md)
-        if: github.event_name != 'pull_request'
-        shell: pwsh
-        run: |
-          foreach ($exe in @('target/release/agentrouter.exe')) {
-            $v = (Get-Item $exe).VersionInfo
-            "$exe | $($v.CompanyName) | $($v.ProductName) | $($v.FileVersion) | $($v.FileDescription)"
-            if (-not $v.CompanyName -or -not $v.ProductName -or -not $v.FileVersion -or -not $v.FileDescription) { throw "$exe has no complete version resource" }
-          }
-      # A pull request has only the test build (no release build there, #108).
-      - name: No arguments from a terminal prints the usage (the double-click start is only for a console of its own)
-        shell: pwsh
-        run: |
-          $exe = if ('${{ github.event_name }}' -eq 'pull_request') { 'target/debug/agentrouter.exe' } else { 'target/release/agentrouter.exe' }
-          $out = & $exe | Out-String
-          if ($LASTEXITCODE -ne 0 -or $out -notmatch 'agentrouter start') { throw "agentrouter.exe without arguments did not print the usage: $out" }
-      - name: npm packages (built and installed from local tarballs; publishing is M2)
-        if: github.event_name != 'pull_request'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          node npm/pack.mjs --version 0.0.0 --binary win32-x64=target/release/agentrouter.exe
-          $t = Join-Path $env:RUNNER_TEMP 'npm-smoke'
-          New-Item -ItemType Directory -Force $t | Out-Null
-          npm pack ./npm/out/cli-win32-x64 ./npm/out/agentrouter --pack-destination $t
-          Push-Location $t
-          npm init -y | Out-Null
-          npm install --no-audit --no-fund ./agentrouter-top-cli-win32-x64-0.0.0.tgz ./agentrouter-top-cli-0.0.0.tgz
-          $v = npx --no-install agentrouter version
-          Pop-Location
-          "npx agentrouter version -> $v"
-          if ($v -notmatch '^agentrouter \d+\.\d+\.\d+') { throw 'the npm wrapper did not run the binary' }
-      - name: Collect
-        if: github.event_name != 'pull_request'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item target/release/agentrouter.exe dist/
-          @"
-          The command-line helper (agentrouter.exe). Run `agentrouter link` in a folder.
-          Built by GitHub Actions from commit $env:GITHUB_SHA.
-          NOT code-signed: Windows SmartScreen and some antivirus tools may warn. See docs/adr/0001-code-signing.md.
-          "@ | Set-Content -Encoding utf8 dist/README.txt
-          Get-ChildItem dist | Format-Table Name, Length
-          Get-FileHash dist/*.exe -Algorithm SHA256 | Format-Table Hash, Path
-      - uses: actions/upload-artifact@v7
-        if: github.event_name != 'pull_request'
-        with:
-          name: agentrouter-windows-x64-unsigned
-          path: dist/
-          retention-days: 14
-
-  # Required checks (#125): Sandbox (Linux) and Sandbox (macOS) — 1–2 min, done before the Windows job above. Sandbox
-  # (Windows) takes 4–7 min (srt's confined launches cost 12–35 s each there), past the merge-path budget: it runs on the
-  # PR without blocking and gates after the merge (.github/workflows/main-red.yml: re-run, then revert or report).
-  # The OS boundary every local MCP server runs in (issue #42, docs/HOSTD-MCP.md §6): installs the pinned srt,
-  # provisions the Windows sandbox account, and proves that writes, deletes, hook plants, ~/.ssh reads and direct
-  # connections from a confined process (and its child shell) fail. Only here: it changes the runner machine.
-  sandbox:
-    name: Sandbox (${{ matrix.name }})
+  client:
+    name: Client (${{ matrix.name }})
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { name: Linux, os: ubuntu-latest }
-          - { name: macOS, os: macos-latest }
-          - { name: Windows, os: windows-latest }
+          - { name: Linux, os: ubuntu-latest, exe: agentdevice, ldflags: "" }
+          - { name: macOS, os: macos-latest, exe: agentdevice, ldflags: "" }
+          - { name: Windows, os: windows-latest, exe: agentdevice.exe, ldflags: "-H windowsgui" }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    # Windows (#66): `computer setup` gives the sandbox account srt's profile read grant and read+execute on the runtime
-    # (before: "Access is denied", then EPERM on every path under the profile). The boundary test blocks like on the
-    # other two.
-    env:
-      AGENTROUTER_SANDBOX_TESTS: "1"
-      AGENTROUTER_MIRROR_TIMING: ${{ inputs.mirror_timing && '1' || '' }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: client
+        shell: bash
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      # #116: the person installs nothing. `computer setup` provisions the device's own pinned Node.js and uv; the
-      # runner's are hidden so nothing here can fall back to them (srt, npm ci, the test servers all run on the
-      # device's Node).
-      - name: Hide the runner's Node.js and uv (Linux, macOS)
-        if: runner.os != 'Windows'
-        shell: bash
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: client/go.mod
+          cache-dependency-path: client/go.sum
+      - name: gofmt
+        if: matrix.name == 'Linux'
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - name: go mod tidy is clean
+        if: matrix.name == 'Linux'
+        run: go mod tidy && git diff --exit-code go.mod go.sum
+      - run: go vet ./...
+      - run: go test -count=1 -timeout 10m ./...
+      - name: Build
+        run: go build -trimpath -ldflags "-s -w -X main.version=0.0.0-${GITHUB_SHA::7} ${{ matrix.ldflags }}" -o "dist/${{ matrix.exe }}" ./cmd/agentdevice
+      - name: SHA-256
         run: |
-          for tool in node npm npx corepack uv uvx; do
-            { which -a "$tool" 2>/dev/null || true; } | sort -u | while read -r p; do
-              # /bin and /usr/bin can be one folder: the second name is gone once the first is moved.
-              if [ -e "$p" ] || [ -L "$p" ]; then sudo mv "$p" "$p.hidden-by-ci"; fi
-            done
-          done
-          hash -r
-          for tool in node npx uvx; do
-            if command -v "$tool"; then echo "$tool is still on PATH"; exit 1; fi
-          done
-      - name: Hide the runner's Node.js and uv (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          foreach ($t in 'node', 'npm', 'npx', 'corepack', 'uv', 'uvx') {
-            Get-Command $t -All -ErrorAction SilentlyContinue | Where-Object Source | Sort-Object Source -Unique | ForEach-Object {
-              Rename-Item -LiteralPath $_.Source -NewName "$(Split-Path -Leaf $_.Source).hidden-by-ci"
-            }
-          }
-          foreach ($t in 'node', 'npx', 'uvx') {
-            if (Get-Command $t -ErrorAction SilentlyContinue) { throw "$t is still on PATH" }
-          }
-      # #119, #122: bubblewrap, ripgrep and socat are the device's own (`computer setup` provisions them); any on the
-      # runner are hidden, so nothing here can fall back to them. Ubuntu's AppArmor user-namespace restriction stays on,
-      # as on people's Ubuntu PCs: the tests below run through the one admin line (`computer userns install`).
-      - name: Linux sandbox dependencies (none from the distribution; user-namespace restriction on)
-        if: runner.os == 'Linux'
-        run: |
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1
-          for tool in bwrap socat rg; do
-            { which -a "$tool" 2>/dev/null || true; } | sort -u | while read -r p; do
-              if [ -e "$p" ] || [ -L "$p" ]; then sudo mv "$p" "$p.hidden-by-ci"; fi
-            done
-          done
-          hash -r
-          for tool in bwrap socat rg; do
-            if command -v "$tool"; then echo "$tool is still on PATH"; exit 1; fi
-          done
-      # #122: the status names the one admin line; that line gives one root-owned copy of the device's bubblewrap an
-      # AppArmor `userns` profile (idempotent), and the device's own user-writable copy still gets nothing.
-      - name: The user-namespace restriction asks for one admin line, and that line lifts it for the device's bubblewrap only (Linux)
-        if: runner.os == 'Linux'
+          cd dist
+          if command -v sha256sum >/dev/null; then sha256sum ${{ matrix.exe }}; else shasum -a 256 ${{ matrix.exe }}; fi
+      # A pre-release build for Dev testing (no release, no signing; docs/adr/0001-code-signing.md).
+      - uses: actions/upload-artifact@v7
+        if: github.event_name != 'pull_request'
+        with:
+          name: agentdevice-${{ matrix.name }}-${{ runner.arch }}
+          path: client/dist/${{ matrix.exe }}
+          retention-days: 14
+
+  # A pre-release only when the program changed: a push to main (or a dispatch) that touches client/.
+  changes:
+    name: Client changed?
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      client: ${{ steps.diff.outputs.client }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: diff
         env:
-          AGENTROUTER_DEVICE_HOME: ${{ runner.temp }}/userns/data
+          BEFORE: ${{ github.event.before }}
         run: |
-          cargo build -q -p agentrouter-device-cli --bin agentrouter
-          bin="$PWD/target/debug/agentrouter"
-          "$bin" computer setup | tee setup.txt
-          grep -q "准备好了 bubblewrap" setup.txt && grep -q "准备好了 socat" setup.txt && grep -q "准备好了 ripgrep" setup.txt
-          set +e; "$bin" computer status > status.txt; code=$?; set -e
-          cat status.txt
-          test "$code" = 1
-          grep -qF "sudo $bin computer userns install" status.txt
-          sudo "$bin" computer userns install | tee install.txt
-          grep -q "AppArmor 已加载规则 agentrouter-bwrap" install.txt
-          sudo "$bin" computer userns install | tee again.txt
-          if grep -q "装好了\|写好了" again.txt; then echo "the second run changed something"; exit 1; fi
-          ls -l /usr/local/libexec/agentrouter/*/bwrap
-          test "$(stat -c %u:%a /usr/local/libexec/agentrouter/bwrap-*/bwrap)" = "0:755"
-          cat /etc/apparmor.d/agentrouter-bwrap
-          "$bin" computer status
-          own=$(ls "$AGENTROUTER_DEVICE_HOME"-shared/runtimes/bwrap-*/bwrap)
-          if "$own" --ro-bind / / --unshare-user --unshare-pid --proc /proc --dev /dev true 2>/dev/null; then
-            echo "the user-writable copy made a user namespace with the restriction on"; exit 1
+          if [ "$GITHUB_EVENT_NAME" != push ] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then echo client=true >> "$GITHUB_OUTPUT"; exit 0; fi
+          if git diff --quiet "$BEFORE" "$GITHUB_SHA" -- client .github/workflows/ci.yml; then echo client=false; else echo client=true; fi >> "$GITHUB_OUTPUT"
+          cat "$GITHUB_OUTPUT"
+
+  # Static Linux builds for compute/v1 sandboxes (AgentCompute's environment image pins one by tag + sha256,
+  # #223): every push to main that changes client/ (job `changes`) publishes `client-v0.0.0-<sha7>`.
+  # Not a person's release (no signing, no npm; docs/adr/0001-code-signing.md).
+  linux:
+    name: Client (Linux ${{ matrix.arch }}, static)
+    if: needs.changes.outputs.client == 'true'
+    needs: [client, changes]
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: client
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: client/go.mod
+          cache-dependency-path: client/go.sum
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          go build -trimpath -ldflags "-s -w -X main.version=0.0.0-${GITHUB_SHA::7}" -o "dist/agentdevice-linux-${{ matrix.arch }}" ./cmd/agentdevice
+          cd dist && sha256sum "agentdevice-linux-${{ matrix.arch }}" > "agentdevice-linux-${{ matrix.arch }}.sha256" && cat ./*.sha256
+      - uses: actions/upload-artifact@v7
+        with:
+          name: client-linux-${{ matrix.arch }}
+          path: client/dist/agentdevice-linux-*
+          retention-days: 14
+
+  # The Windows build for Dev devices (#231): the person's computer, with Dev's endpoints built in (state.Default*:
+  # AgentIdentity's STS and ZITADEL, compute/v1), so installing it and starting it is all a person does. Dev only:
+  # no signing, no release for people (docs/adr/0001-code-signing.md). The hosted-runner end-to-end check
+  # (windows-e2e.yml) installs it from the pre-release.
+  windows:
+    name: Client (Windows amd64, Dev)
+    if: needs.changes.outputs.client == 'true'
+    needs: [client, changes]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: client
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: client/go.mod
+          cache-dependency-path: client/go.sum
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+          GOOS: windows
+          GOARCH: amd64
+        run: |
+          st=github.com/agentrouter-top/AgentDevice/client/internal/state
+          dev="-X $st.DefaultIssuer=https://identity-dev.agentrouter.page -X $st.DefaultComputeURL=https://compute-dev.agentrouter.page"
+          dev="$dev -X $st.DefaultZitadelURL=https://login-dev.agentrouter.page -X $st.DefaultZitadelProjectID=398174617035870308"
+          dev="$dev -X $st.DefaultZitadelClientID=398174617103044708"
+          go build -trimpath -ldflags "-s -w -H windowsgui -X main.version=0.0.0-${GITHUB_SHA::7} $dev" -o dist/agentdevice-windows-amd64.exe ./cmd/agentdevice
+          cd dist && sha256sum agentdevice-windows-amd64.exe > agentdevice-windows-amd64.exe.sha256 && cat ./*.sha256
+      - uses: actions/upload-artifact@v7
+        with:
+          name: client-windows-amd64
+          path: client/dist/agentdevice-windows-amd64*
+          retention-days: 14
+
+  publish:
+    name: Publish client pre-release
+    needs: [linux, windows]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+          pattern: client-*
+          merge-multiple: true
+      - name: Release client-v0.0.0-<sha7>
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd artifacts
+          tag="client-v0.0.0-${GITHUB_SHA::7}"
+          cat agentdevice-*.sha256 > SHA256SUMS
+          cat SHA256SUMS
+          assets=(agentdevice-linux-amd64 agentdevice-linux-arm64 agentdevice-windows-amd64.exe SHA256SUMS)
+          notes=$(printf '%s\n' \
+            "Go client (agentdevice), commit ${GITHUB_SHA}. Not a release for people (no signing)." \
+            "- Static Linux builds for compute/v1 sandboxes: a sandbox runs \`agentdevice sandbox --join /etc/agentcompute/network.json\` (compute/v1 README §7.1). Pin by tag + SHA256SUMS." \
+            "- \`agentdevice-windows-amd64.exe\`: a Windows device on **Dev** (Dev's login and compute/v1 built in); start it, confirm the login in the browser." \
+            "" '```' "$(cat SHA256SUMS)" '```')
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" "${assets[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$tag" "${assets[@]}" \
+              --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false \
+              --title "client ${GITHUB_SHA::7} (Linux sandboxes, Windows Dev)" --notes "$notes"
           fi
-          /usr/local/libexec/agentrouter/bwrap-*/bwrap --ro-bind / / --unshare-user --unshare-pid --proc /proc --dev /dev \
-            cat /proc/self/attr/current | tee label.txt
-          grep -q "^agentrouter-bwrap" label.txt
-      # srt-win starts the sandbox account's processes with CreateProcessWithLogonW, which needs Secondary Logon
-      # (stopped on the hosted image; on people's PCs it starts on demand).
-      - name: Windows Secondary Logon service
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          Set-Service -Name seclogon -StartupType Manual
-          Start-Service -Name seclogon
-          Get-Service -Name seclogon
-      # #127: on people's Linux desktops a user systemd runs, and limits go in a systemd scope per server (cgroup v2).
-      # A hosted runner has none until lingering starts one.
-      - name: User systemd for the runner (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo loginctl enable-linger "$(id -un)"
-          uid=$(id -u)
-          for i in $(seq 1 50); do [ -S "/run/user/$uid/bus" ] && break; sleep 0.2; done
-          echo "XDG_RUNTIME_DIR=/run/user/$uid" >> "$GITHUB_ENV"
-          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus" >> "$GITHUB_ENV"
-          cat "/sys/fs/cgroup/user.slice/user-$uid.slice/user@$uid.service/cgroup.controllers"
-      # #138: the person's git identity in their own global config, which git inside the sandbox must see (read-only).
-      - name: The person's git identity
-        run: git config --global user.email sandbox-person@ci.invalid
-      # Cloud #2246: Ubuntu desktops' im-config logs through systemd-cat from /etc/profile.d; inside the sandbox seccomp
-      # refuses the journal socket and systemd-cat prints "Failed to create stream fd". Commands must not run start-up
-      # files (link_e2e checks a command's own error comes first), so the runner gets such a profile too.
-      - name: A login profile that logs to the journal, as Ubuntu's im-config does (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          test -x /usr/bin/systemd-cat
-          echo '/usr/bin/systemd-cat -t agentrouter-ci echo "login profile ran"' | sudo tee /etc/profile.d/zz-agentrouter-ci-journal.sh
-      - run: cargo test -p agentrouter-sandbox -- --nocapture
-      # #129: on Windows the sandbox entry joins the limits' Job object with the device program; the limits and
-      # aggregator tests below name it (built once here; link_e2e reuses it).
-      - name: The device program (sandbox job-join)
-        shell: bash
-        run: |
-          cargo build -p agentrouter-device-cli
-          exe="$PWD/target/debug/agentrouter"
-          if [ "$RUNNER_OS" = Windows ]; then exe=$(cygpath -w "$exe.exe"); fi
-          echo "AGENTROUTER_DEVICE_EXE=$exe" >> "$GITHUB_ENV"
-      - name: Resource limits hold on a confined tree (#127)
-        run: cargo test -p agentrouter-device-core --test limits -- --nocapture
-      # Windows: srt-win gives a sandboxed child an empty stdin (by design, upstream R14); a server's stdin and stdout
-      # travel over a named pipe the sandbox entry connects to (#112). Both steps block on every OS.
-      - name: The aggregator runs a real MCP server confined (issue #46)
-        run: cargo test -p agentrouter-aggregator -- --nocapture
-      # Also on macOS (the Linux and Windows jobs run the whole workspace): the on-disk outbox (SQLite) and its flush.
-      - name: The host's outbox survives restarts and leaves only after the ack (Cloud #2739)
-        run: cargo test -p agentrouter-hostd-link -- --nocapture
-      - name: The whole chain through the real CLI, and the escape cases (issue #50)
-        run: cargo test -p agentrouter-device-cli --test link_e2e -- --nocapture
-      # The task step on every OS (macOS has no other job that runs hostd's unit tests).
-      - name: hostd's task step stages, collects and picks on this OS (Cloud #2836)
-        run: cargo test -p agentrouter-device-cli --bin agentrouter host::task -- --nocapture
-      # #122: remove undoes it and the status asks again; without the restriction (Debian, Fedora, Arch…) the device's
-      # own copy needs no admin step.
-      - name: Remove undoes it; without the restriction nothing needs an admin (Linux)
-        if: runner.os == 'Linux'
-        env:
-          AGENTROUTER_DEVICE_HOME: ${{ runner.temp }}/userns/data
-        run: |
-          bin="$PWD/target/debug/agentrouter"
-          # The old name stays a hidden alias until Cloud's minimum device version has `computer` (Cloud #2825).
-          sudo "$bin" sandbox userns remove
-          test ! -e /etc/apparmor.d/agentrouter-bwrap && test ! -e /usr/local/libexec/agentrouter
-          set +e; "$bin" computer status > status.txt; code=$?; set -e
-          cat status.txt
-          test "$code" = 1
-          grep -qF "computer userns install" status.txt
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          "$bin" computer status

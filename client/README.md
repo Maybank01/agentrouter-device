@@ -1,7 +1,7 @@
 # client: the Go device client (base layers v1)
 
 **Purpose**: `agentdevice` makes a computer an execution device the cloud reaches by SSH over its owner's private
-NetBird network (R45, Cloud #3976). It replaces the Rust `hostd` once verified on Dev; until then both live here.
+NetBird network (R45, Cloud #3976). It replaced the Rust `hostd` (deleted 2026-11-05, #236).
 **Boundary**: network (NetBird `client/embed`, userspace), our own SSH server, login, enrolment, facts, tray,
 autostart, device name. Never here: MCP, tools of its own, admin rights, an inbound port on the computer's own network,
 placement or environments (AgentCompute, AgentHost). Why our own SSH server: [ADR 0002](../docs/adr/0002-own-ssh-server.md).
