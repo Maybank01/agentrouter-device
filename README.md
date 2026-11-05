@@ -6,9 +6,11 @@
 
 ## 怎么用
 
-启动 `agentdevice`（Windows 上双击 `agentdevice-windows-amd64.exe`）：浏览器打开登录页并填好设备码，用你的账号确认，窗口里显示在线；
-以后再启动直接连上。Windows 上常驻一个「AgentRouter 设备」窗口，每件 Agent 做的事一行；关掉窗口就断开。在「我的设备」里移除这台
-电脑，客户端就断开并忘掉登录。
+Windows：在「我的设备」下载安装程序（现在只有 Dev 的 `agentdevice-setup-dev.exe`，[发布页](https://github.com/agentrouter-top/AgentDevice/releases/latest)），
+双击安装，不需要管理员。程序没有代码签名，SmartScreen 提示时点「更多信息」→「仍要运行」。装好后浏览器打开登录页并填好设备码，用你的账号
+确认，窗口里显示在线；默认登录电脑后自动启动。常驻一个「AgentRouter 设备」窗口，每件 Agent 做的事一行；关掉窗口就断开。有新版本时
+窗口里会说，下载新的安装程序装上即可（登录保留）。在「我的设备」里移除这台电脑，客户端就断开并忘掉登录；在「设置 › 应用」里卸载，会
+一并把这台电脑从账号里移除并删掉它的文件。Linux：下载 `agentdevice-linux-<amd64|arm64>-dev.tar.gz`，解压后运行 `agentdevice`。
 
 | 命令 | 作用 |
 | --- | --- |
@@ -17,10 +19,12 @@
 | `agentdevice status` / `facts` | 这台电脑的状态 / 上报的电脑信息 |
 | `agentdevice autostart on\|off\|status` | 登录电脑后自动启动（默认关） |
 | `agentdevice unbind` | 从账号里移除这台电脑 |
+| `agentdevice stop` / `uninstall` | 关掉正在运行的客户端 / 卸载（安装程序用：关自动启动、关客户端、移除这台电脑、删文件夹） |
 | `agentdevice sandbox [--join 文件]` | 云电脑（算力层的沙箱）按算力层给的文件加入网络 |
 | `agentdevice connect <主机> <端口>` | 给 ssh 的 `ProxyCommand` 用 |
 
-现在只有给 Dev 用的预发布构建（`client-v0.0.0-<sha7>`：Linux 静态构建给云电脑，Windows 构建内置 Dev 地址），还没有给大家的正式发布。
+正式发布是 `client-vX.Y.Z`（安装程序、Linux 压缩包、`SHA256SUMS`）；生产环境的地址还没定，所以现在只有 Dev 的安装程序。另有给 Dev
+测试用的预发布构建 `client-v0.0.0-<sha7>`（Linux 静态构建给云电脑，Windows 构建内置 Dev 地址）。
 
 ## Development
 
@@ -30,8 +34,9 @@ Charter (what belongs here, contracts consumed, how it is pinned): [docs/CHARTER
 | Module | Current state |
 | --- | --- |
 | [`client/`](client/README.md) | the Go program `agentdevice`: NetBird `client/embed` (userspace), our own SSH server ([ADR 0002](docs/adr/0002-own-ssh-server.md)), device-code login, enrolment and facts (AgentCompute `compute/v1`), tray, autostart |
+| [`release/`](release/README.md) | releases for people: `release.yml`, the environments (`environment.json` beside the program), the per-user Windows installer (Inno Setup), SmartScreen, the update notice |
 | `scripts/` | repository checks (`check-docs.mjs`, `check-repo-imports.mjs`, `av-hygiene.sh`), the main-red guard (`main-red.mjs`), the Windows end-to-end harness (`windows-e2e/`) |
-| `.github/workflows/` | `ci.yml` (checks, client tests, client pre-release), `merge-on-green.yml`, `main-red.yml`, `windows-e2e.yml` |
+| `.github/workflows/` | `ci.yml` (checks, client tests, client pre-release), `release.yml` (releases for people), `merge-on-green.yml`, `main-red.yml`, `windows-e2e.yml` |
 | `skills/agentrouter-client/` | the coding-agent skill for this repository |
 
 Tests run on GitHub-hosted runners only (R47; `.github/workflows/ci.yml`). Required checks of the branch protection, also
@@ -42,7 +47,9 @@ run is re-run once, then reverted or reported in a `main-red` issue (`main-red.y
 scripts/av-hygiene.sh`, `node scripts/check-docs.mjs`, `node scripts/check-repo-imports.mjs`. Build rules against
 antivirus false positives: [docs/development/AV-HYGIENE.md](docs/development/AV-HYGIENE.md).
 
-Pre-releases: every push to `main` that changes `client/` publishes `client-v0.0.0-<sha7>` (static Linux amd64/arm64
+Releases for people: `gh workflow run release.yml -f version=X.Y.Z` ([release/README.md](release/README.md)); the end-to-end
+check of a release's installer is `gh workflow run windows-e2e.yml -f install=release` (Agent side `agent.py --computer
+<id> --then uninstall`). Pre-releases: every push to `main` that changes `client/` publishes `client-v0.0.0-<sha7>` (static Linux amd64/arm64
 for compute/v1 sandboxes, Windows amd64 with Dev's endpoints, `SHA256SUMS`); AgentCompute's environment image pins one
 by tag + sha256. The Windows device end-to-end check (M2 acceptance, #231) runs on demand on a hosted Windows runner:
 `gh workflow run windows-e2e.yml`, Agent side `python3 scripts/windows-e2e/agent.py --name gh-win-<run id>-<attempt>`

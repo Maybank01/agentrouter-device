@@ -24,6 +24,7 @@ import (
 	"github.com/agentrouter-top/AgentDevice/client/internal/sshd"
 	"github.com/agentrouter-top/AgentDevice/client/internal/state"
 	"github.com/agentrouter-top/AgentDevice/client/internal/tray"
+	"github.com/agentrouter-top/AgentDevice/client/internal/update"
 )
 
 // UI is where the client shows the person what happens (the tray, or the terminal).
@@ -370,10 +371,24 @@ func (a *App) run(ctx context.Context, stop context.CancelCauseFunc, join *compu
 		wg.Go(func() { a.reportFacts(ctx, stop, dev) })
 	}
 	wg.Go(func() { a.watch(ctx, stop, nw, dev, ui) })
+	if !a.Headless {
+		wg.Go(func() { a.watchUpdates(ctx) })
+	}
 	<-ctx.Done()
 	_ = srv.Close()
 	wg.Wait()
 	return nil
+}
+
+// watchUpdates tells the person, in the window and the log, when a newer release exists (release/README.md
+// "Updates": tell, never replace). A minute after the device is online, then daily.
+func (a *App) watchUpdates(ctx context.Context) {
+	update.Watch(ctx, a.Cfg.UpdateURL, a.Version, time.Minute, 24*time.Hour, func(r *update.Release) {
+		a.Log.Info("update available", "version", r.Version, "release", r.Page, "download", a.Cfg.DownloadURL)
+		say(a.Console, time.Now().Format("15:04:05")+"  "+update.Notice(r, a.Cfg.DownloadURL))
+	}, func(err error) {
+		a.Log.Info("update check failed (the device is unaffected)", "error", err.Error())
+	})
 }
 
 // serveSSH listens on the NetBird address and listens again when the listener ends (the engine restarted).

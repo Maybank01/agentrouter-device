@@ -36,9 +36,11 @@ AgentCompute's cloud sandboxes run the same program (`agentdevice sandbox`).
   `node scripts/check-docs.mjs`, `node scripts/check-repo-imports.mjs`.
 - Never add MCP, file / command / screen tools, per-folder sandboxes or access levels to the device. Never restore the
   Rust `hostd` / `agentrouter link` (source: tag `hostd-final`).
-- Delivery: pre-releases `client-v0.0.0-<sha7>` from `main` (static Linux for sandboxes, Windows with Dev endpoints).
-  There is no release for people yet; npm `@agentrouter-top/cli` was `hostd`'s channel and is deprecated at the base
-  cutover. Do not bump, publish or build installers per task; release authority is separate (R14).
+- Delivery: pre-releases `client-v0.0.0-<sha7>` from `main` (static Linux for sandboxes, Windows with Dev endpoints);
+  releases for people `client-vX.Y.Z` by `release.yml` (per-user Windows installer and Linux archive per complete
+  `release/environments/*.json`; production incomplete until the cutover's P5; `release/README.md`). npm
+  `@agentrouter-top/cli` was `hostd`'s channel and is deprecated at the base cutover. Do not bump or cut a release per
+  task; release authority is separate (R14).
 - The DSH plugin / Desktop-adapter line (`agentrouter-dsh-plugins`, `plugins/dsh-codex`, `agentrouter-desktop-releases`)
   is history only (R46): never develop, publish or document it as the client.
 - Model login, LLM keys and model requests are not client features.

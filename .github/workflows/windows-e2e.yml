@@ -1,11 +1,15 @@
 name: Windows device end to end (Dev)
 
 # M2 acceptance (#231, Cloud #3976 §11–16) without a person's PC, on a GitHub-hosted Windows runner (R47): install the
-# client's Windows pre-release for a NON-ADMIN local account, start it as that account in its normal resident-window
-# mode, confirm its device-code login at Dev ZITADEL in a browser as the Dev test person `device-e2e`, and keep it
-# online while the Agent side runs from outside (scripts/windows-e2e/agent.py: 我的设备 list, ssh as that account,
-# SFTP, then removing the device during an open session). This job then waits for the client to notice the removal
-# and shows its window and log.
+# client for a NON-ADMIN local account, start it as that account in its normal resident-window mode, confirm its
+# device-code login at Dev ZITADEL in a browser as the Dev test person `device-e2e`, and keep it online while the Agent
+# side runs from outside (scripts/windows-e2e/agent.py: 我的设备 list, ssh as that account, SFTP). Two ways in:
+#   - install=prerelease: copy a pre-release's exe into the account's profile; the Agent side then removes the device
+#     during an open session and this job waits for the client to notice (agent.py, default --then remove).
+#   - install=release (#243): the release's installer, run silently AS that account (no administrator), which turns on
+#     autostart and starts the client; checked from inside the account (scripts/windows-e2e/inspect.ps1). The Agent
+#     side then drops a marker by SFTP (agent.py --then uninstall); this job runs the uninstaller as the account and
+#     checks that nothing is left; the Agent side sees the computer gone from 我的设备 (the uninstaller unbinds it).
 #
 # On demand only (workflow_dispatch: write access); never on a push or a pull request. Secrets: the test person's
 # password lives in the environment `dev-device-e2e` (deployment branch `main` only), Dev only, no money. It reaches
@@ -15,11 +19,16 @@ name: Windows device end to end (Dev)
 on:
   workflow_dispatch:
     inputs:
+      install:
+        description: prerelease (copy the pre-release exe) or release (the release's installer, then uninstall)
+        type: choice
+        options: [prerelease, release]
+        default: prerelease
       tag:
-        description: Client pre-release tag (client-v0.0.0-<sha7>); empty = the newest with a Windows build
+        description: Tag (pre-release client-v0.0.0-<sha7>, release client-vX.Y.Z); empty = the newest of that kind
         default: ""
       hold_minutes:
-        description: How long the device stays online waiting for the Agent side to remove it
+        description: How long the device stays online waiting for the Agent side (removal, or the uninstall marker)
         default: "30"
 
 permissions:
@@ -71,6 +80,7 @@ jobs:
           "first logon exit $($p.ExitCode); profile: $((Get-CimInstance Win32_UserProfile | Where-Object LocalPath -like "*\$env:E2E_USER").LocalPath)"
 
       - name: Install the client's Windows pre-release for that account
+        if: inputs.install == 'prerelease'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
@@ -98,7 +108,56 @@ jobs:
           "E2E_LOG=$home_\AppData\Roaming\AgentDevice\agentdevice.log" >> $env:GITHUB_ENV
           "## Windows device end to end (Dev)`n`n- release ``$tag`` (sha256 ``$have``)`n- account ``$env:E2E_USER`` (member of Users only)`n- device name ``$env:E2E_NAME``" >> $env:GITHUB_STEP_SUMMARY
 
+      - name: Install from the release with its installer, as that account (no administrator)
+        if: inputs.install == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          $tag = $env:TAG
+          if (-not $tag) { $tag = gh release view --repo $env:GITHUB_REPOSITORY --json tagName --jq .tagName }
+          if ($tag -notmatch '^client-v\d+\.\d+\.\d+$') { throw "'$tag' is not a release tag (client-vX.Y.Z)" }
+          $home_ = (Get-CimInstance Win32_UserProfile | Where-Object LocalPath -like "*\$env:E2E_USER").LocalPath
+          # The download lands where the account can read it, as a browser download would (its own Downloads folder).
+          $dl = "$home_\Downloads"
+          New-Item -ItemType Directory -Force $dl | Out-Null
+          gh release download $tag --repo $env:GITHUB_REPOSITORY --pattern agentdevice-setup-dev.exe --pattern SHA256SUMS --dir $dl --clobber
+          $want = (Get-Content "$dl\SHA256SUMS" | Where-Object { $_ -match 'agentdevice-setup-dev.exe$' }) -split '\s+' | Select-Object -First 1
+          $have = (Get-FileHash "$dl\agentdevice-setup-dev.exe" -Algorithm SHA256).Hash.ToLower()
+          if ($want -ne $have) { throw "sha256 mismatch: SHA256SUMS $want, file $have" }
+          Copy-Item "$env:GITHUB_WORKSPACE\scripts\windows-e2e\inspect.ps1" "$home_\inspect.ps1"
+          icacls $dl /grant "${env:E2E_USER}:(OI)(CI)M" /T | Out-Null
+          icacls "$home_\inspect.ps1" /grant "${env:E2E_USER}:RX" | Out-Null
+          $pw = [IO.File]::ReadAllText("$env:RUNNER_TEMP\account.pw")
+          $cred = [pscredential]::new($env:E2E_USER, (ConvertTo-SecureString $pw -AsPlainText -Force))
+          # Silent, as that account. Not Start-Process -Wait: it waits for every descendant, and the installer leaves the
+          # client running. The installer's own process ends when the install is done.
+          $p = Start-Process -FilePath "$dl\agentdevice-setup-dev.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$home_\Downloads\setup.log" -Credential $cred -LoadUserProfile -UseNewEnvironment -WorkingDirectory $dl -PassThru
+          if (-not $p.WaitForExit(300000)) { throw 'the installer did not finish within 5 minutes' }
+          "installer exit $($p.ExitCode)"
+          Copy-Item "$dl\setup.log" "$env:E2E_OUT\setup.log" -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) { Get-Content "$dl\setup.log" -Tail 30; throw "installer exit $($p.ExitCode)" }
+          $q = Start-Process -FilePath pwsh.exe -ArgumentList '-NoProfile', '-File', "$home_\inspect.ps1", "$home_\installed.json" -Credential $cred -LoadUserProfile -UseNewEnvironment -WorkingDirectory $home_ -PassThru
+          if (-not $q.WaitForExit(120000)) { throw 'inspect.ps1 did not finish' }
+          $i = Get-Content "$home_\installed.json" -Raw | ConvertFrom-Json
+          Copy-Item "$home_\installed.json" "$env:E2E_OUT\installed.json"
+          $i | Format-List | Out-String
+          $bad = @()
+          foreach ($k in 'program', 'uninstaller', 'startMenuShortcut', 'uninstallEntry', 'logonTask') { if (-not $i.$k) { $bad += $k } }
+          if ($i.environment -ne 'dev') { $bad += "environment=$($i.environment)" }
+          if ("client-v$($i.displayVersion)" -ne $tag) { $bad += "displayVersion=$($i.displayVersion)" }
+          if (@($i.clientProcesses).Count -ne 1) { $bad += "clientProcesses=$(@($i.clientProcesses).Count)" }
+          if ($bad) { throw "installed state wrong: $($bad -join ', ')" }
+          $exe = "$home_\AppData\Local\Programs\AgentDevice\agentdevice.exe"
+          "E2E_EXE=$exe" >> $env:GITHUB_ENV
+          "E2E_HOME=$home_" >> $env:GITHUB_ENV
+          "E2E_PID=$(@($i.clientProcesses)[0])" >> $env:GITHUB_ENV
+          "E2E_LOG=$home_\AppData\Roaming\AgentDevice\agentdevice.log" >> $env:GITHUB_ENV
+          "release $tag, installer sha256 $have" | Tee-Object "$env:E2E_OUT\install.txt"
+          "## Windows device end to end (Dev, release installer)`n`n- release ``$tag`` (``agentdevice-setup-dev.exe`` sha256 ``$have``)`n- installed silently as ``$env:E2E_USER`` (member of Users only): program, uninstall entry $($i.displayVersion), Start menu shortcut, logon task, client running (pid $(@($i.clientProcesses)[0]))`n- device name: the computer's name (the installer starts the client without ``--name``)" >> $env:GITHUB_STEP_SUMMARY
+
       - name: Start the client as that account (resident window, as a double-click does)
+        if: inputs.install == 'prerelease'
         run: |
           $pw = [IO.File]::ReadAllText("$env:RUNNER_TEMP\account.pw")
           $cred = [pscredential]::new($env:E2E_USER, (ConvertTo-SecureString $pw -AsPlainText -Force))
@@ -160,6 +219,8 @@ jobs:
           Remove-Item "$env:RUNNER_TEMP\person.env"
 
       - name: Online (enrolled at Dev compute/v1, joined NetBird, SSH listening)
+        env:
+          INSTALL: ${{ inputs.install }}
         run: |
           $deadline = (Get-Date).AddMinutes(4)
           while ((Get-Date) -lt $deadline) {
@@ -172,12 +233,14 @@ jobs:
           if (-not ((Get-Content $env:E2E_LOG -Raw) -match 'msg="ssh listening"')) { throw 'the client did not come online within 4 minutes' }
           $cmp = ((Get-Content $env:E2E_LOG | Select-String 'msg=enrolled' | Select-Object -Last 1).Line | Select-String 'computer=(\S+)').Matches[0].Groups[1].Value
           "E2E_COMPUTER=$cmp" >> $env:GITHUB_ENV
-          "- computer ``$cmp`` online; run ``python3 scripts/windows-e2e/agent.py --name $env:E2E_NAME`` from the workstation" >> $env:GITHUB_STEP_SUMMARY
+          $agent = if ($env:INSTALL -eq 'release') { "--computer $cmp --then uninstall" } else { "--name $env:E2E_NAME" }
+          "- computer ``$cmp`` online; run ``python3 scripts/windows-e2e/agent.py $agent`` from the workstation" >> $env:GITHUB_STEP_SUMMARY
           # The person closes the browser the client opened for the login (it would cover the client's window).
           Get-Process msedge, chrome -IncludeUserName -ErrorAction SilentlyContinue | Where-Object UserName -like "*\$env:E2E_USER" | Stop-Process -Force -ErrorAction SilentlyContinue
           & "$env:GITHUB_WORKSPACE\scripts\windows-e2e\screenshot.ps1" "$env:E2E_OUT\online.png"
 
       - name: Wait for the Agent side to remove the device; the client must notice it
+        if: inputs.install == 'prerelease'
         env:
           HOLD: ${{ inputs.hold_minutes }}
         run: |
@@ -196,6 +259,43 @@ jobs:
           "client process still open (its window keeps the message until the person closes it): $([bool]$alive)"
           "- the client noticed the removal: ``$seen``" >> $env:GITHUB_STEP_SUMMARY
 
+      - name: Wait for the Agent side's marker, then uninstall as that account; nothing may be left
+        if: inputs.install == 'release'
+        env:
+          HOLD: ${{ inputs.hold_minutes }}
+        run: |
+          $marker = "$env:E2E_HOME\e2e-uninstall-now"
+          $deadline = (Get-Date).AddMinutes([int]$env:HOLD)
+          while (-not (Test-Path $marker) -and (Get-Date) -lt $deadline) { Start-Sleep 2 }
+          if (-not (Test-Path $marker)) { throw "no uninstall marker from the Agent side (agent.py --then uninstall) within $env:HOLD minutes" }
+          "marker seen: the Agent side finished its SSH and SFTP steps"
+          # The client's log goes with its folder: keep a copy first.
+          Copy-Item $env:E2E_LOG "$env:E2E_OUT\agentdevice.log"
+          $pw = [IO.File]::ReadAllText("$env:RUNNER_TEMP\account.pw")
+          $cred = [pscredential]::new($env:E2E_USER, (ConvertTo-SecureString $pw -AsPlainText -Force))
+          $app = Split-Path $env:E2E_EXE
+          $p = Start-Process -FilePath "$app\unins000.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Credential $cred -LoadUserProfile -UseNewEnvironment -WorkingDirectory $env:E2E_HOME -PassThru
+          if (-not $p.WaitForExit(300000)) { throw 'the uninstaller did not finish within 5 minutes' }
+          "uninstaller exit $($p.ExitCode)"
+          # The uninstaller finishes from a copy of itself in %TEMP%: wait until the program folder is gone.
+          $deadline = (Get-Date).AddMinutes(3)
+          while ((Test-Path "$app\unins000.exe") -and (Get-Date) -lt $deadline) { Start-Sleep 2 }
+          Start-Sleep 3
+          $q = Start-Process -FilePath pwsh.exe -ArgumentList '-NoProfile', '-File', "$env:E2E_HOME\inspect.ps1", "$env:E2E_HOME\uninstalled.json" -Credential $cred -LoadUserProfile -UseNewEnvironment -WorkingDirectory $env:E2E_HOME -PassThru
+          if (-not $q.WaitForExit(120000)) { throw 'inspect.ps1 did not finish' }
+          $i = Get-Content "$env:E2E_HOME\uninstalled.json" -Raw | ConvertFrom-Json
+          Copy-Item "$env:E2E_HOME\uninstalled.json" "$env:E2E_OUT\uninstalled.json"
+          $i | Format-List | Out-String
+          $left = @()
+          foreach ($k in 'appFolder', 'program', 'uninstaller', 'startMenuShortcut', 'uninstallEntry', 'logonTask', 'stateFolder') { if ($i.$k) { $left += $k } }
+          if (@($i.clientProcesses).Count) { $left += "clientProcesses=$(@($i.clientProcesses) -join ',')" }
+          if ($i.uninstallResult -notmatch '已从账号里移除这台电脑') { $left += 'the uninstall did not unbind the computer' }
+          if ($left) { throw "left after uninstall: $($left -join ', ')" }
+          if (Get-Process -Id $env:E2E_PID -ErrorAction SilentlyContinue) { throw "the client (pid $env:E2E_PID) still runs" }
+          "E2E_UNINSTALLED=1" >> $env:GITHUB_ENV
+          "- uninstalled as ``$env:E2E_USER``: program folder, uninstall entry, shortcut, logon task, client folder and process all gone; the uninstaller said: $($i.uninstallResult -replace '\r?\n', ' / ')" >> $env:GITHUB_STEP_SUMMARY
+          & "$env:GITHUB_WORKSPACE\scripts\windows-e2e\screenshot.ps1" "$env:E2E_OUT\uninstalled.png"
+
       - name: Clean up (unbind when still enrolled, stop the client by PID)
         if: always()
         run: |
@@ -209,6 +309,13 @@ jobs:
           }
           if ($env:E2E_PID) { Stop-Process -Id $env:E2E_PID -Force -ErrorAction SilentlyContinue }
           if ($env:E2E_LOG -and (Test-Path $env:E2E_LOG)) { Copy-Item $env:E2E_LOG "$env:E2E_OUT\agentdevice.log" }
+          # A release install the job did not get to uninstall: remove it the person's way.
+          if (-not $env:E2E_UNINSTALLED -and $env:E2E_EXE -and (Test-Path (Join-Path (Split-Path $env:E2E_EXE) 'unins000.exe'))) {
+            $pw = [IO.File]::ReadAllText("$env:RUNNER_TEMP\account.pw")
+            $cred = [pscredential]::new($env:E2E_USER, (ConvertTo-SecureString $pw -AsPlainText -Force))
+            $u = Start-Process -FilePath (Join-Path (Split-Path $env:E2E_EXE) 'unins000.exe') -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Credential $cred -LoadUserProfile -UseNewEnvironment -WorkingDirectory $env:E2E_HOME -PassThru
+            [void]$u.WaitForExit(300000); "uninstaller (clean-up) exit $($u.ExitCode)"
+          }
           Remove-Item "$env:RUNNER_TEMP\account.pw", "$env:RUNNER_TEMP\person.env" -ErrorAction SilentlyContinue
 
       # The client's log (no tokens: the client never logs one), the install record and the screenshots.

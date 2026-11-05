@@ -30,6 +30,7 @@ of a directory, at most 40 lines).
 | [docs/adr/0002-own-ssh-server.md](adr/0002-own-ssh-server.md) | adr | client | the Go client serves SSH itself on the NetBird address; NetBird is the network only (P3 evidence, #221) | 2026-11-04 |
 | [docs/adr/0003-sandbox-egress-relay.md](adr/0003-sandbox-egress-relay.md) | adr | client | a sandbox's client relays NetBird's TLS by SNI through the node's HTTP proxy; AgentCompute maps NetBird's names to 127.0.0.1 (P5, #223) | 2026-11-04 |
 | [client/README.md](../client/README.md) | module | client | the Go device client: purpose, boundary, interfaces, submodule index, known gaps | 2026-11-05 |
+| [release/README.md](../release/README.md) | module | release | releases for people: the release lane, environments, the per-user Windows installer, SmartScreen, updates | 2026-11-05 |
 
 ## Not documentation
 

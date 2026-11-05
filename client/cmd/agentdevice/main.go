@@ -5,8 +5,10 @@
 //	agentdevice [run] [--name 台式机] [--no-tray]   log in and enrol when needed, then stay online
 //	agentdevice login [--name 台式机]               log in, enrol and join once (computers without a desktop)
 //	agentdevice status                              enrolment, endpoints, autostart
-//	agentdevice autostart on|off|status             start at login (per user, no admin)
+//	agentdevice autostart on|off|status [--no-start] start at login (per user, no admin)
 //	agentdevice unbind                              remove this computer from the account
+//	agentdevice stop                                end the running client (the installer, before it replaces the program)
+//	agentdevice uninstall                           autostart off, stop, unbind, delete the client's folder (the uninstaller)
 //	agentdevice facts                               print the facts compute/v1 gets
 //	agentdevice sandbox [--join <file>]             a compute/v1 sandbox: join from AgentCompute's file, stay online
 //	agentdevice connect <host> <port>               stdin/stdout to host:port through the environment's proxy (ssh ProxyCommand)
@@ -25,8 +27,10 @@ import (
 	"io"
 	"log"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -42,9 +46,11 @@ import (
 	"github.com/agentrouter-top/AgentDevice/client/internal/egress"
 	"github.com/agentrouter-top/AgentDevice/client/internal/facts"
 	"github.com/agentrouter-top/AgentDevice/client/internal/identity"
+	"github.com/agentrouter-top/AgentDevice/client/internal/instance"
 	"github.com/agentrouter-top/AgentDevice/client/internal/sshd"
 	"github.com/agentrouter-top/AgentDevice/client/internal/state"
 	"github.com/agentrouter-top/AgentDevice/client/internal/tray"
+	"github.com/agentrouter-top/AgentDevice/client/internal/update"
 	"github.com/agentrouter-top/AgentDevice/client/internal/winconsole"
 )
 
@@ -75,6 +81,10 @@ func main() {
 		err = autostartCmd(args)
 	case "unbind":
 		err = unbindCmd(args)
+	case "stop":
+		err = stopCmd(args)
+	case "uninstall":
+		err = uninstallCmd(args)
 	case "facts":
 		err = factsCmd(args)
 	case "sandbox":
@@ -98,8 +108,10 @@ const usage = `用法：
   agentdevice [run] [--name 名字] [--no-tray]   登录（第一次）并保持在线
   agentdevice login [--name 名字]               只登录并加入网络（没有桌面的电脑）
   agentdevice status                            看这台电脑的状态
-  agentdevice autostart on|off|status           登录电脑后自动启动
+  agentdevice autostart on|off|status           登录电脑后自动启动（on --no-start：只登记，不马上启动）
   agentdevice unbind                            从账号里移除这台电脑
+  agentdevice stop                              关掉正在运行的客户端
+  agentdevice uninstall                         卸载：关掉自动启动和客户端，从账号里移除这台电脑，删掉它的文件夹
   agentdevice facts                             看上报的电脑信息
   agentdevice sandbox [--join 文件]             云电脑（算力层的沙箱）：按算力层给的文件加入网络并保持在线
   agentdevice connect <主机> <端口>             经本机的代理连到主机端口（给 ssh 的 ProxyCommand 用）
@@ -271,6 +283,20 @@ func runCmd(args []string, console bool) error {
 		a.Log.Warn("no console window", "error", consoleErr.Error())
 	}
 	a.Console = consoleOut
+	// One client per folder: a second start (the Start menu while the logon task runs it) says so and ends.
+	release, err := instance.Lock(string(a.Dir))
+	if errors.Is(err, instance.ErrRunning) {
+		a.Log.Info("already running for this folder; this start ends", "folder", string(a.Dir))
+		if consoleOut != nil {
+			fmt.Fprintln(consoleOut, "AgentRouter 设备已经在运行，看任务栏里的「AgentRouter 设备」窗口。")
+			time.Sleep(5 * time.Second)
+		}
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer release()
 	if err := a.Cfg.Validate(a.Dir.Path("config.json")); err != nil {
 		return err
 	}
@@ -405,6 +431,10 @@ func statusCmd(args []string) error {
 	if err != nil {
 		return err
 	}
+	fmt.Println("版本        ", version)
+	if a.Cfg.Environment != "" {
+		fmt.Println("环境        ", a.Cfg.Environment)
+	}
 	fmt.Println("文件夹      ", a.Dir)
 	fmt.Println("身份        ", orNone(a.Cfg.Issuer))
 	if a.Cfg.Zitadel != nil {
@@ -419,6 +449,21 @@ func statusCmd(args []string) error {
 	}
 	if signer, _, err := a.Dir.HostKey(); err == nil {
 		fmt.Println("SSH 主机密钥", state.AuthorizedKey(signer))
+	}
+	if a.Cfg.UpdateURL != "" {
+		if _, ok := update.Version(version); ok {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			r, err := update.Check(ctx, http.DefaultClient, a.Cfg.UpdateURL, version)
+			cancel()
+			switch {
+			case err != nil:
+				fmt.Println("新版本       查不到（" + short(err.Error()) + "）")
+			case r != nil:
+				fmt.Println("新版本      ", update.Notice(r, a.Cfg.DownloadURL))
+			default:
+				fmt.Println("新版本       已经是最新")
+			}
+		}
 	}
 	st := autostart.Get()
 	switch {
@@ -445,6 +490,7 @@ func autostartCmd(args []string) error {
 		sub, args = args[0], args[1:]
 	}
 	fs := flag.NewFlagSet("autostart", flag.ContinueOnError)
+	noStart := fs.Bool("no-start", false, "on: only register it (the installer starts the client itself)")
 	a, closeLog, err := common(fs, args)
 	if err != nil {
 		return err
@@ -452,9 +498,7 @@ func autostartCmd(args []string) error {
 	defer closeLog()
 	switch sub {
 	case "on":
-		if dev, _ := a.Dir.LoadDevice(); dev == nil {
-			return errors.New("this computer is not enrolled yet: run `agentdevice login` first")
-		}
+		// Not enrolled yet is fine: `run` at logon logs in first (the installer turns this on before the login).
 		if fs.Lookup("home").Value.String() != "" {
 			return errors.New("autostart uses the default folder only: run it without --home")
 		}
@@ -462,11 +506,15 @@ func autostartCmd(args []string) error {
 		if err != nil {
 			return fmt.Errorf("autostart: where is this program? %w", err)
 		}
-		where, err := autostart.On(exe, string(a.Dir))
+		where, err := autostart.On(exe, string(a.Dir), !*noStart)
 		if err != nil {
 			return err
 		}
-		fmt.Println("已打开：登录这台电脑后自动启动（" + where + "），现在已经在运行。关掉：agentdevice autostart off")
+		if *noStart {
+			fmt.Println("已打开：登录这台电脑后自动启动（" + where + "）。关掉：agentdevice autostart off")
+		} else {
+			fmt.Println("已打开：登录这台电脑后自动启动（" + where + "），现在已经在运行。关掉：agentdevice autostart off")
+		}
 	case "off":
 		removed, err := autostart.Off()
 		if err != nil {
@@ -501,6 +549,72 @@ func unbindCmd(args []string) error {
 	_, _ = autostart.Off()
 	fmt.Println("已从账号里移除这台电脑，自动启动也关掉了。")
 	return nil
+}
+
+// stopCmd ends the running client of this program file (the installer runs it before it replaces the program).
+func stopCmd(args []string) error {
+	fs := flag.NewFlagSet("stop", flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("stop: where is this program? %w", err)
+	}
+	n, err := instance.StopOthers(self)
+	fmt.Printf("关掉了 %d 个正在运行的客户端。\n", n)
+	return err
+}
+
+// uninstallCmd is what the uninstaller runs before it deletes the program: autostart off, the running client stopped,
+// the computer removed from the account (when it can reach compute/v1), the client's folder deleted. Every step runs
+// even when one before it failed; the result is printed and kept in %TEMP%\agentdevice-uninstall.txt (the
+// uninstaller shows no output).
+func uninstallCmd(args []string) error {
+	fs := flag.NewFlagSet("uninstall", flag.ContinueOnError)
+	a, closeLog, err := common(fs, args)
+	if err != nil {
+		return err
+	}
+	var lines []string
+	var failed []error
+	note := func(line string) { lines = append(lines, line); a.Log.Info("uninstall: " + line) }
+	fail := func(line string, err error) { failed = append(failed, err); note(line + "：" + err.Error()) }
+
+	if removed, err := autostart.Off(); err != nil {
+		fail("没能关掉自动启动", err)
+	} else if removed {
+		note("已关掉自动启动")
+	}
+	if self, err := os.Executable(); err != nil {
+		fail("找不到这个程序", err)
+	} else if n, err := instance.StopOthers(self); err != nil {
+		fail("没能关掉正在运行的客户端", err)
+	} else if n > 0 {
+		note(fmt.Sprintf("已关掉正在运行的客户端（%d 个）", n))
+	}
+	if dev, err := a.Dir.LoadDevice(); err != nil {
+		fail("读不出这台电脑的登记", err)
+	} else if dev != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		if err := a.Unbind(ctx); err != nil {
+			fail("没能从账号里移除这台电脑，请在「我的设备」里移除它", err)
+		} else {
+			note("已从账号里移除这台电脑（" + dev.Name + "，" + dev.ComputerID + "）")
+		}
+		cancel()
+	}
+	closeLog()
+	if err := a.Dir.RemoveAll(); err != nil {
+		failed = append(failed, err)
+		lines = append(lines, "没能删掉客户端的文件夹："+err.Error())
+	} else {
+		lines = append(lines, "已删掉客户端的文件夹 "+string(a.Dir))
+	}
+	text := strings.Join(lines, "\n") + "\n"
+	fmt.Print(text)
+	_ = os.WriteFile(filepath.Join(os.TempDir(), "agentdevice-uninstall.txt"), []byte(text), 0o600)
+	return errors.Join(failed...)
 }
 
 func factsCmd(args []string) error {

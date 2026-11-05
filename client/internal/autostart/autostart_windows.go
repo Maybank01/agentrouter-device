@@ -19,9 +19,9 @@ func userSID() (string, error) {
 	return u.User.Sid.String(), nil
 }
 
-// On registers and starts the logon task. dir is the client's folder; the definition goes through a file there,
-// not the command line.
-func On(exe, dir string) (string, error) {
+// On registers the logon task and, with start, starts it now. dir is the client's folder; the definition goes
+// through a file there, not the command line.
+func On(exe, dir string, start bool) (string, error) {
 	sid, err := userSID()
 	if err != nil {
 		return "", err
@@ -34,6 +34,9 @@ func On(exe, dir string) (string, error) {
 	_ = os.Remove(file)
 	if err != nil {
 		return "", fmt.Errorf("autostart: %w", err)
+	}
+	if !start {
+		return "Task Scheduler task " + taskName + " (at logon)", nil
 	}
 	_, _ = tool("schtasks", "/End", "/TN", taskName)
 	if _, err := tool("schtasks", "/Run", "/TN", taskName); err != nil {

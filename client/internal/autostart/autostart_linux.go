@@ -19,8 +19,8 @@ func unitPath() (string, error) {
 	return filepath.Join(base, "systemd", "user", unitName), nil
 }
 
-// On writes and starts the systemd user unit.
-func On(exe, _ string) (string, error) {
+// On writes and enables the systemd user unit and, with start, (re)starts it now.
+func On(exe, _ string, start bool) (string, error) {
 	path, err := unitPath()
 	if err != nil {
 		return "", fmt.Errorf("autostart: no home folder: %w", err)
@@ -31,7 +31,11 @@ func On(exe, _ string) (string, error) {
 	if err := os.WriteFile(path, []byte(SystemdUnit(exe)), 0o644); err != nil {
 		return "", fmt.Errorf("autostart: write %s: %w", path, err)
 	}
-	for _, args := range [][]string{{"--user", "daemon-reload"}, {"--user", "enable", unitName}, {"--user", "restart", unitName}} {
+	steps := [][]string{{"--user", "daemon-reload"}, {"--user", "enable", unitName}}
+	if start {
+		steps = append(steps, []string{"--user", "restart", unitName})
+	}
+	for _, args := range steps {
 		if _, err := tool("systemctl", args...); err != nil {
 			return "", fmt.Errorf("autostart: %w (is a systemd user session running? `loginctl enable-linger` keeps it after logout)", err)
 		}

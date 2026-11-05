@@ -36,9 +36,14 @@ Charter (what belongs here, contracts consumed, how it is pinned): [docs/CHARTER
 - The PR body names the root cause / structure, not only the symptom.
 
 ## Release
+- Releases for people: `gh workflow run release.yml -f version=X.Y.Z` ([release/README.md](release/README.md)): tag
+  `client-vX.Y.Z` (latest), one program per platform for every environment, a per-user Windows installer (Inno Setup)
+  and Linux archive per complete `release/environments/*.json`, `SHA256SUMS`, notes. Production's file stays incomplete
+  until the cutover runbook's P5 names the endpoints: never fill it with guesses, never publish for production (R05).
+  Proof of a release: `windows-e2e.yml` with `install=release`.
 - Every push to `main` that changes `client/` publishes a GitHub pre-release `client-v0.0.0-<sha7>` (`ci.yml`, with
   `SHA256SUMS`): static Linux builds for compute/v1 sandboxes (AgentCompute's environment image pins one) and a Windows
-  build with Dev's endpoints. No release for people yet (no signing, no installer, no channel): it is a known gap.
+  build with Dev's endpoints (from `release/environments/dev.json`).
 - Code signing is deferred (owner 2026-10-08, `docs/adr/0001-code-signing.md`). Version bumps only at release time (R14).
 - npm `@agentrouter-top/cli` was `hostd`'s channel; nothing here packs it any more. Its published versions stay until
   the base cutover deprecates them (agentteam-deployments `docs/operations/base-v1-production-cutover.md` 5.8).

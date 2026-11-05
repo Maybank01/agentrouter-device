@@ -5,7 +5,7 @@ name: CI
 # - Client (Linux / macOS / Windows): the Go device client in client/ (NetBird client/embed for the network, its own
 #   SSH server; base layers v1, #221): gofmt, go mod tidy, vet, tests, build.
 # - After a push to main: the static Linux builds (compute/v1 sandboxes) and the Windows Dev build, published as the
-#   pre-release `client-v0.0.0-<sha7>`.
+#   pre-release `client-v0.0.0-<sha7>`. Releases for people are release.yml's (release/README.md).
 # Required checks of the branch protection, also in merge-on-green.yml REQUIRED: `Repository checks`, `Client (Linux)`,
 # `Client (macOS)`, `Client (Windows)` (each 1–2 min). A red main is re-run once, then reverted or reported (main-red.yml).
 
@@ -88,6 +88,71 @@ jobs:
           path: client/dist/${{ matrix.exe }}
           retention-days: 14
 
+  # The per-user Windows installer (release/README.md) compiles, installs, and uninstalls without a trace, as the
+  # runner's own account and without a login (windows-e2e.yml install=release does it as a non-admin account, with the
+  # Dev login, online in compute/v1 and the unbind). Not a required check: the release lane (release.yml) compiles the
+  # same script again from main.
+  installer:
+    name: Installer (Windows, per user)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: client/go.mod
+          cache-dependency-path: client/go.sum
+      - name: Build the program and the Dev installer
+        run: |
+          Push-Location client
+          go build -trimpath -ldflags "-s -w -X main.version=0.0.0 -H windowsgui" -o ..\payload\agentdevice.exe .\cmd\agentdevice
+          if ($LASTEXITCODE -ne 0) { throw "go build exit $LASTEXITCODE" }
+          Pop-Location
+          Copy-Item release\environments\dev.json payload\environment.json
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          "Inno Setup: $((Get-Item $iscc).VersionInfo.ProductVersion)"
+          & $iscc /Q /DAppVersion=0.0.0 /DSetupName=agentdevice-setup-dev "/DPayload=$PWD\payload" "/DOutputDir=$PWD\out" release\windows\agentdevice.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC exit $LASTEXITCODE" }
+      - name: Install silently, check, uninstall silently, check nothing is left
+        run: |
+          $app = "$env:LOCALAPPDATA\Programs\AgentDevice"
+          $p = Start-Process out\agentdevice-setup-dev.exe -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$PWD\out\setup.log" -PassThru
+          if (-not $p.WaitForExit(300000)) { throw 'the installer did not finish within 5 minutes' }
+          if ($p.ExitCode -ne 0) { Get-Content out\setup.log -Tail 30; throw "installer exit $($p.ExitCode)" }
+          Start-Sleep 5
+          pwsh -NoProfile -File scripts\windows-e2e\inspect.ps1 out\installed.json
+          $i = Get-Content out\installed.json -Raw | ConvertFrom-Json
+          $i | Format-List | Out-String
+          $bad = @()
+          foreach ($k in 'program', 'uninstaller', 'startMenuShortcut', 'uninstallEntry', 'logonTask') { if (-not $i.$k) { $bad += $k } }
+          if ($i.environment -ne 'dev') { $bad += "environment=$($i.environment)" }
+          if (@($i.clientProcesses).Count -ne 1) { $bad += "clientProcesses=$(@($i.clientProcesses).Count)" }
+          if ($bad) { throw "installed state wrong: $($bad -join ', ')" }
+          # A second start (the Start menu while it runs) ends by itself: one client per folder.
+          $second = Start-Process "$app\agentdevice.exe" -PassThru
+          if (-not $second.WaitForExit(30000)) { Stop-Process -Id $second.Id -Force; throw 'a second start kept running next to the first' }
+          $u = Start-Process "$app\unins000.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -PassThru
+          if (-not $u.WaitForExit(300000)) { throw 'the uninstaller did not finish within 5 minutes' }
+          $deadline = (Get-Date).AddMinutes(3)
+          while ((Test-Path "$app\unins000.exe") -and (Get-Date) -lt $deadline) { Start-Sleep 2 }
+          Start-Sleep 3
+          pwsh -NoProfile -File scripts\windows-e2e\inspect.ps1 out\uninstalled.json
+          $i = Get-Content out\uninstalled.json -Raw | ConvertFrom-Json
+          $i | Format-List | Out-String
+          $left = @()
+          foreach ($k in 'appFolder', 'program', 'uninstaller', 'startMenuShortcut', 'uninstallEntry', 'logonTask', 'stateFolder') { if ($i.$k) { $left += $k } }
+          if (@($i.clientProcesses).Count) { $left += 'clientProcesses' }
+          if ($left) { throw "left after uninstall: $($left -join ', ')" }
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: installer-check
+          path: out
+          retention-days: 7
+
   # A pre-release only when the program changed: a push to main (or a dispatch) that touches client/.
   changes:
     name: Client changed?
@@ -105,7 +170,7 @@ jobs:
           BEFORE: ${{ github.event.before }}
         run: |
           if [ "$GITHUB_EVENT_NAME" != push ] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then echo client=true >> "$GITHUB_OUTPUT"; exit 0; fi
-          if git diff --quiet "$BEFORE" "$GITHUB_SHA" -- client .github/workflows/ci.yml; then echo client=false; else echo client=true; fi >> "$GITHUB_OUTPUT"
+          if git diff --quiet "$BEFORE" "$GITHUB_SHA" -- client release/environments/dev.json .github/workflows/ci.yml; then echo client=false; else echo client=true; fi >> "$GITHUB_OUTPUT"
           cat "$GITHUB_OUTPUT"
 
   # Static Linux builds for compute/v1 sandboxes (AgentCompute's environment image pins one by tag + sha256,
@@ -145,9 +210,10 @@ jobs:
           retention-days: 14
 
   # The Windows build for Dev devices (#231): the person's computer, with Dev's endpoints built in (state.Default*:
-  # AgentIdentity's STS and ZITADEL, compute/v1), so installing it and starting it is all a person does. Dev only:
-  # no signing, no release for people (docs/adr/0001-code-signing.md). The hosted-runner end-to-end check
-  # (windows-e2e.yml) installs it from the pre-release.
+  # AgentIdentity's STS and ZITADEL, compute/v1, read from release/environments/dev.json, the one copy of Dev's
+  # values), so copying it and starting it is all a tester does. Dev only, no signing (docs/adr/0001-code-signing.md);
+  # a release for people has no endpoints built in and an installer per environment (release.yml). The hosted-runner
+  # end-to-end check (windows-e2e.yml) installs it from the pre-release, or a release with its installer.
   windows:
     name: Client (Windows amd64, Dev)
     if: needs.changes.outputs.client == 'true'
@@ -171,9 +237,10 @@ jobs:
           GOARCH: amd64
         run: |
           st=github.com/agentrouter-top/AgentDevice/client/internal/state
-          dev="-X $st.DefaultIssuer=https://identity-dev.agentrouter.page -X $st.DefaultComputeURL=https://compute-dev.agentrouter.page"
-          dev="$dev -X $st.DefaultZitadelURL=https://login-dev.agentrouter.page -X $st.DefaultZitadelProjectID=398174617035870308"
-          dev="$dev -X $st.DefaultZitadelClientID=398174617103044708"
+          env=../release/environments/dev.json
+          dev="-X $st.DefaultIssuer=$(jq -er .issuer $env) -X $st.DefaultComputeURL=$(jq -er .computeUrl $env)"
+          dev="$dev -X $st.DefaultZitadelURL=$(jq -er .zitadel.url $env) -X $st.DefaultZitadelProjectID=$(jq -er .zitadel.projectId $env)"
+          dev="$dev -X $st.DefaultZitadelClientID=$(jq -er .zitadel.clientId $env)"
           go build -trimpath -ldflags "-s -w -H windowsgui -X main.version=0.0.0-${GITHUB_SHA::7} $dev" -o dist/agentdevice-windows-amd64.exe ./cmd/agentdevice
           cd dist && sha256sum agentdevice-windows-amd64.exe > agentdevice-windows-amd64.exe.sha256 && cat ./*.sha256
       - uses: actions/upload-artifact@v7

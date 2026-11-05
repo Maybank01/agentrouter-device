@@ -1,0 +1,12 @@
+{
+  "environment": "dev",
+  "issuer": "https://identity-dev.agentrouter.page",
+  "computeUrl": "https://compute-dev.agentrouter.page",
+  "zitadel": {
+    "url": "https://login-dev.agentrouter.page",
+    "projectId": "398174617035870308",
+    "clientId": "398174617103044708"
+  },
+  "updateUrl": "https://api.github.com/repos/agentrouter-top/AgentDevice/releases/latest",
+  "downloadUrl": "https://github.com/agentrouter-top/AgentDevice/releases/latest/download/agentdevice-setup-dev.exe"
+}

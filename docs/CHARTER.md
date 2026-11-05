@@ -28,8 +28,8 @@ The abandoned DSH-plugin / Desktop-adapter client (R46).
 `aud: netbird`; NewAPI's device login until the issuer switch); AgentCompute `compute/v1` (`kind: device`, `name`, `facts`);
 NetBird by `go.mod` version; our NetBird management by URL only (contract copies: `client/testdata/contracts/`).
 
-**How it is pinned**: per-OS release binaries (`client-v0.0.0-<sha7>`) with `SHA256SUMS`; a consumer pins asset +
-`sha256` (AgentCompute's environment image pins the static Linux build).
+**How it is pinned**: per-OS binaries with `SHA256SUMS`, pre-releases `client-v0.0.0-<sha7>` and releases `client-vX.Y.Z`
+(release/README.md); a consumer pins asset + `sha256` (AgentCompute's environment image pins the static Linux build).
 **Dependencies** (C5): only those two contracts and NetBird; nothing upward (online / offline is what NetBird reports).
 **Checks on the PR path** (GitHub-hosted, R47): `check-docs.mjs`, `check-repo-imports.mjs` (C6), AV hygiene, gofmt,
 vet, tests and build on Linux, macOS and Windows (`ci.yml`).
