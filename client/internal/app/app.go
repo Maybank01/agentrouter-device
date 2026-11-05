@@ -266,6 +266,14 @@ func (a *App) Run(parent context.Context, join *compute.Join, ui UI) error {
 	}
 	if errors.Is(err, identity.ErrDeviceRemoved) {
 		a.Log.Error("device removed or login revoked; forgetting the enrolment", "error", err.Error())
+		if !a.Headless {
+			// The login is of no use without the computer: end it at ZITADEL too (already refused when that was the cause).
+			rctx, cancel := context.WithTimeout(context.WithoutCancel(parent), 10*time.Second)
+			if rerr := a.session().Revoke(rctx); rerr != nil {
+				a.Log.Info("the device login could not be ended at ZITADEL (it may be refused already)", "error", rerr.Error())
+			}
+			cancel()
+		}
 		if ferr := a.Dir.Forget(); ferr != nil {
 			a.Log.Warn("could not forget the enrolment", "error", ferr.Error())
 		}
@@ -361,7 +369,7 @@ func (a *App) run(ctx context.Context, stop context.CancelCauseFunc, join *compu
 	if !a.Headless {
 		wg.Go(func() { a.reportFacts(ctx, stop, dev) })
 	}
-	wg.Go(func() { a.watch(ctx, nw, ui) })
+	wg.Go(func() { a.watch(ctx, stop, nw, dev, ui) })
 	<-ctx.Done()
 	_ = srv.Close()
 	wg.Wait()
@@ -432,17 +440,29 @@ func (a *App) reportFacts(ctx context.Context, stop context.CancelCauseFunc, dev
 	}
 }
 
+// putFacts reports the facts. compute/v1 answering that this computer does not exist means it was removed: that is
+// identity.ErrDeviceRemoved, the one way the device ends (as a refused login does).
 func (a *App) putFacts(ctx context.Context, dev *state.Device, f facts.Facts) error {
 	tok, err := a.token(ctx, identity.AudienceCompute)
 	if err != nil {
 		return err
 	}
-	return a.computeClient().ReportFacts(ctx, tok, dev.ComputerID, f)
+	err = a.computeClient().ReportFacts(ctx, tok, dev.ComputerID, f)
+	if compute.IsComputerGone(err) {
+		return errors.Join(identity.ErrDeviceRemoved, fmt.Errorf("compute/v1 no longer has %s (%s): it was removed from the account: %w", dev.ComputerID, dev.Name, err))
+	}
+	return err
 }
 
-// watch shows the network state in the tray.
-func (a *App) watch(ctx context.Context, nw *network.Network, ui UI) {
+// stillThereEvery is how often a device whose network is down asks compute/v1 whether it still exists.
+const stillThereEvery = time.Minute
+
+// watch shows the network state in the tray. When the network drops it asks compute/v1 at once, then every minute
+// while it stays down, whether this computer still exists: removing a device (我的设备, DELETE /v1/devices) deletes
+// its NetBird peer, which is what drops the network, while its login may go on working (AgentDevice#231).
+func (a *App) watch(ctx context.Context, stop context.CancelCauseFunc, nw *network.Network, dev *state.Device, ui UI) {
 	last := ""
+	var asked time.Time
 	for {
 		st := nw.Status()
 		text, s := "在线", tray.Online
@@ -453,6 +473,18 @@ func (a *App) watch(ctx context.Context, nw *network.Network, ui UI) {
 			ui.Status(s, text)
 			a.Log.Info("state", "connected", st.Connected, "ip", st.IP, "error", st.Error)
 			last = text
+			asked = time.Time{}
+		}
+		if !st.Connected && !a.Headless && time.Since(asked) >= stillThereEvery {
+			asked = time.Now()
+			if err := a.putFacts(ctx, dev, facts.Collect(ctx)); errors.Is(err, identity.ErrDeviceRemoved) {
+				stop(err)
+				return
+			} else if err != nil {
+				a.Log.Warn("network down and compute/v1 not reachable either; retrying", "in", stillThereEvery.String(), "error", err.Error())
+			} else {
+				a.Log.Info("network down; compute/v1 still has this computer, reconnecting", "computer", dev.ComputerID)
+			}
 		}
 		select {
 		case <-ctx.Done():

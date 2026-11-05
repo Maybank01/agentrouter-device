@@ -192,3 +192,30 @@ func TestProblemsKeepTheirDetail(t *testing.T) {
 		}
 	}
 }
+
+// A removed computer answers COMPUTE_COMPUTER_NOT_FOUND to its own facts report: that, and only that, is "gone"
+// (AgentDevice#231: the device then ends as removed). A network failure or another problem is not.
+func TestIsComputerGone(t *testing.T) {
+	answer := func(status int, body string) *Client {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/problem+json")
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(body))
+		}))
+		t.Cleanup(srv.Close)
+		return &Client{BaseURL: srv.URL}
+	}
+	gone := answer(404, `{"type":"urn:agentcompute:error:COMPUTE_COMPUTER_NOT_FOUND","status":404,"code":"COMPUTE_COMPUTER_NOT_FOUND","component":"compute-api","operation":"reportFacts","target":"cmp_x","retryable":false}`)
+	if err := gone.ReportFacts(context.Background(), "t", "cmp_x", facts.Facts{}); !IsComputerGone(err) {
+		t.Fatalf("404 COMPUTE_COMPUTER_NOT_FOUND: IsComputerGone false (%v)", err)
+	}
+	for name, c := range map[string]*Client{
+		"403 scope":   answer(403, `{"status":403,"code":"COMPUTE_SCOPE_MISSING","retryable":false}`),
+		"503 network": answer(503, `{"status":503,"code":"COMPUTE_NETWORK_UNAVAILABLE","retryable":true}`),
+		"unreachable": {BaseURL: "http://127.0.0.1:1"},
+	} {
+		if err := c.ReportFacts(context.Background(), "t", "cmp_x", facts.Facts{}); err == nil || IsComputerGone(err) {
+			t.Errorf("%s: IsComputerGone true or no error (%v)", name, err)
+		}
+	}
+}

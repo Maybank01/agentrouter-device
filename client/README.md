@@ -31,7 +31,10 @@ revokes at ZITADEL); without it NewAPI's `/v1/identity/device/*` (legacy, delete
 
 **Sandboxes**: `agentdevice sandbox [--join <file>]` (compute/v1 §7.1): no login, enrolment call, facts or tray.
 Linux pre-releases `client-v0.0.0-<sha7>` (static amd64/arm64, `SHA256SUMS`) feed AgentCompute's environment image.
-**Removed device**: a refused refresh shows 「此设备已被移除，请重新登录」, forgets the enrolment and stops.
+**Removed device**: a refused refresh, or compute/v1 answering `COMPUTE_COMPUTER_NOT_FOUND` for this computer (asked
+when the network drops, then every minute while it is down: removing a device in 我的设备 deletes its NetBird peer
+while its login may still work, #231), shows 「此设备已被移除，请重新登录」, closes its SSH sessions, ends the login at
+ZITADEL, forgets the enrolment and stops.
 
 **Known gaps** (2026-11-04): Dev ran a Linux device and a sandbox (#223) on the NewAPI login only; the ZITADEL login is
 tested against fakes (the flow itself verified by AgentIdentity `deploy/dev/verify.py`), live with the issuer switch;

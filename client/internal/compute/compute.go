@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -104,6 +105,17 @@ func (p *Problem) Error() string {
 		b.WriteString(" [trace " + p.TraceID + "]")
 	}
 	return b.String()
+}
+
+// IsComputerGone reports whether compute/v1 answered that the computer the call named does not exist (any more):
+// COMPUTE_COMPUTER_NOT_FOUND, 404. For a device's own computer that means it was removed (unbound in 我的设备, or by
+// an operator), which compute/v1 decides; the device's login may still work.
+func IsComputerGone(err error) bool {
+	var p *Problem
+	if !errors.As(err, &p) {
+		return false
+	}
+	return p.Code == "COMPUTE_COMPUTER_NOT_FOUND" || (p.Code == "" && p.HTTPStatus == http.StatusNotFound)
 }
 
 // Client calls compute/v1 at BaseURL.
