@@ -2,10 +2,9 @@
 # Fails the build when the source drifts from docs/development/AV-HYGIENE.md. Run from the repository root.
 set -u
 fail=0
-src=(crates app/src-tauri .github Cargo.toml client)
-# fixtures: registry lockfiles copied from Cloud (their base64 checksums can spell anything, e.g. "UPX").
+src=(client .github)
 # client/testdata and go.sum: vendored contract vectors and module hashes (base64 can spell anything).
-exclude=(--exclude-dir=target --exclude-dir=gen --exclude-dir=fixtures --exclude-dir=testdata --exclude=go.sum --exclude=av-hygiene.sh)
+exclude=(--exclude-dir=testdata --exclude=go.sum --exclude=av-hygiene.sh)
 
 check() { # <description> <extended regex> [extra grep args]
   local what=$1 pattern=$2; shift 2
@@ -20,20 +19,15 @@ check "no encoded PowerShell" '-[Ee]ncoded[Cc]ommand|-[Ee][Nn][Cc] |FromBase64St
 check "no execution-policy changes" 'ExecutionPolicy|Bypass'
 check "no hidden shells" 'CREATE_NO_WINDOW|WindowStyle +Hidden|SW_HIDE'
 check "no suspend/resume or injection primitives" 'CREATE_SUSPENDED|ResumeThread|SuspendThread|WriteProcessMemory|VirtualAllocEx|CreateRemoteThread'
-check "no autostart (Run key, startup folder, autostart plugins)" 'CurrentVersion.{1,2}Run|Start Menu.{1,4}Programs.{1,4}Startup|plugin-autostart|auto-launch|RegSetValueEx' 
+check "no autostart (Run key, startup folder, autostart plugins)" 'CurrentVersion.{1,2}Run|Start Menu.{1,4}Programs.{1,4}Startup|plugin-autostart|auto-launch|RegSetValueEx'
 check "no UAC elevation" 'requireAdministrator|highestAvailable'
 check "no packers" '\bupx\b|UPX'
-# The Go client keeps one visible console window that its commands attach to (AV-HYGIENE.md "Go 客户端"): no
-# creation flag that hides, detaches or adds a console.
-hits=$(grep -rnIE "${exclude[@]}" -e 'CREATE_NEW_CONSOLE|DETACHED_PROCESS|CREATE_NO_WINDOW' client 2>/dev/null)
-if [ -n "$hits" ]; then echo "AV hygiene: the Go client starts children without console flags (one visible window)"; echo "$hits"; echo; fail=1; fi
+# One visible console window that the client's commands attach to (AV-HYGIENE.md): no creation flag that hides,
+# detaches or adds a console.
+check "the client starts children without console flags (one visible window)" 'CREATE_NEW_CONSOLE|DETACHED_PROCESS|CREATE_NO_WINDOW'
 grep -q 'Resident("AgentRouter 设备")' client/cmd/agentdevice/main.go || { echo "AV hygiene: agentdevice run must keep its visible console window"; fail=1; }
-check "nothing runs from the temp folder" 'std::env::temp_dir|%TEMP%' --include=*.rs --exclude-dir=tests
-
-# The release profile strips symbols normally and is not obfuscated or packed.
-grep -q '^strip = true' Cargo.toml || { echo "AV hygiene: release profile must keep strip = true"; fail=1; }
-# The command-line manifest runs as the invoking user.
-grep -q 'level="asInvoker"' crates/connector-cli/res/app.manifest || { echo "AV hygiene: manifest must be asInvoker"; fail=1; }
+# Release builds strip symbols normally (-s -w) and are not packed.
+grep -q -- '-trimpath -ldflags "-s -w' .github/workflows/ci.yml || { echo "AV hygiene: client builds must use go build -trimpath -ldflags \"-s -w …\""; fail=1; }
 
 [ $fail -eq 0 ] && echo "AV hygiene: ok"
 exit $fail

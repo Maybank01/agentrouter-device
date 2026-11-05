@@ -8,25 +8,22 @@ Please report vulnerabilities privately through GitHub's "Report a vulnerability
 
 ## 设计要点
 
-设计全文见 [docs/HOSTD-MCP.md](docs/HOSTD-MCP.md)（§3.3 签名、§6 沙箱、§7 审计和撤销）。
+客户端 `agentdevice`（[client/README.md](client/README.md)；为什么自己做 SSH 服务：[ADR 0002](docs/adr/0002-own-ssh-server.md)）。
 
-- **只有出站连接**：`agentrouter link` 主动连网关（WebSocket over TLS），本机不开任何监听端口。只接受 https 网关域名；127.0.0.1/localhost 只用于本地测试。
-- **每个调用都要控制面签名**：Ed25519，放在 MCP 的 `params._meta` 里（签名 v3）；校验链接、会话、参数摘要、过期时间（60 秒 + 5 秒时钟偏差）和随机数防重放，全部通过才执行。控制面公钥在配对时固定下来；只执行设备主人账号发起的会话。
-- **文件夹边界由操作系统保证**：每个本机工具（MCP 服务，包括 `host`）都在系统沙箱里运行（Anthropic `sandbox-runtime`，固定版本；Linux bubblewrap、macOS Seatbelt、Windows 独立的沙箱账户）：只能写链接的文件夹，读不到 `~/.ssh` 等密钥文件夹，网络只放行包镜像和目录里登记的域名。沙箱不可用时一个工具也不启动，不会退回到沙箱外运行。「完全访问」（`--full`）是本人在本机的选择，工具用本人账户的权限。
-- **同意只在本机**：运行 `link` 就是对这些文件夹的同意；唯一会问的是装一个不在目录里的本机工具（终端 y/N，默认不同意）。云端改不了访问级别。
-- **审计**：每个请求和回答（连参数，密钥类的值替换掉）写入带哈希链的只追加日志，链头随心跳发给云端；`agentrouter audit verify` 校验。
-- **撤销**：Agent 改文件前把文件夹快照进文件夹外的影子 git 仓库（不碰本人的 `.git`），`agentrouter undo` 撤销最近一轮。
-- **进程管理**：命令放进 Job Object（Windows）或进程组（Linux/macOS），断开或超时时整棵进程树一起结束。
-- **密钥**：设备私钥在 Windows 上用 DPAPI 加密保存（其他系统是仅本人可读的文件）；解除链接时覆盖删除。
-- **不签名**：现阶段发布的 exe 没有代码签名，见 [docs/adr/0001-code-signing.md](docs/adr/0001-code-signing.md)；降低误报的构建要求见 [docs/development/AV-HYGIENE.md](docs/development/AV-HYGIENE.md)（CI 检查）。
+- **只在自己的私有网络里可达**：客户端内嵌 NetBird（用户态网络，不要管理员权限、不装驱动），加入本人自己的 NetBird 网络；SSH 只在 NetBird 的虚拟地址上监听，电脑自己的网络上不开任何端口。
+- **每次连接都要短时令牌**：SSH 的密码是 identity/v1 令牌（ES256，按 JWKS 校验）：`aud` 为 `netbird`，`scp` 覆盖 `computer:<本机 id>:ssh`，`own` 等于这台设备的主人，签发不超过 600 秒。AgentCompute 的 SSH 网关先查一遍，设备作为最后一跳再查一遍。
+- **只执行**：没有 MCP，没有自己的文件、命令或屏幕工具；SSH 会话以运行客户端的账户身份在整台电脑上执行（R58），不切换用户、不提权。端口转发只到本机回环地址，不做远程转发和代理转发。
+- **命令文字不进命令行**：写进只有本人能打开的文件，由固定的明文运行器读完即删（工作区规则 R21）；整棵进程树放进 Job Object（Windows）或进程组，断开时一起结束。
+- **一个可见窗口**：Windows 上常驻一个「AgentRouter 设备」窗口，每件 Agent 做的事一行；关掉窗口就断开。
+- **登录和移除**：设备码登录本人账号；在「我的设备」里移除后，客户端关掉 SSH 会话、结束登录并忘掉注册。
+- **不签名**：现阶段的构建没有代码签名，见 [docs/adr/0001-code-signing.md](docs/adr/0001-code-signing.md)；降低误报的构建要求见 [docs/development/AV-HYGIENE.md](docs/development/AV-HYGIENE.md)（CI 检查）。
 
 ## Design summary
 
-Outbound-only connection to an https gateway; every call carries the control plane's Ed25519 signature (v3, in MCP
-`params._meta`: link, session, argument digest, expiry, replay nonce) and runs only for sessions of the device owner's
-account; every local tool, `host` included, runs in an OS sandbox (Anthropic `sandbox-runtime`, pinned) that can write
-only the linked folders, cannot read key folders and reaches only allow-listed domains, and nothing runs when the
-sandbox is unavailable; 完全访问 is a local choice; consent is local only (starting `link`; installing an off-catalog
-server asks y/N); a hash-chained, argument-level audit log whose head the cloud keeps; shadow-git checkpoints outside
-the folder for `agentrouter undo`; process trees in a Job Object or process group; the device key is DPAPI-protected on
-Windows. Builds are currently unsigned (docs/HOSTD-MCP.md §3.3, §6, §7).
+The client joins its owner's private, self-hosted NetBird network in userspace (no administrator rights, no driver)
+and serves SSH only on its NetBird address: no port on the computer's own network. Every SSH session authenticates
+with a short identity/v1 token (ES256 against the JWKS; `aud: netbird`, scope `computer:<id>:ssh`, the device's
+owner, at most 600 s old), checked by AgentCompute's SSH gateway and again on the device. The device only executes:
+no MCP, no tools of its own; a session runs as the client's account on the whole computer (R58); forwarding reaches
+loopback only. Command text travels through owner-only files read by a fixed runner (R21); process trees end with the
+session. Builds are currently unsigned (ADR 0001).
