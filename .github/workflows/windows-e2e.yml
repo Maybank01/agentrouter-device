@@ -173,6 +173,8 @@ jobs:
           $cmp = ((Get-Content $env:E2E_LOG | Select-String 'msg=enrolled' | Select-Object -Last 1).Line | Select-String 'computer=(\S+)').Matches[0].Groups[1].Value
           "E2E_COMPUTER=$cmp" >> $env:GITHUB_ENV
           "- computer ``$cmp`` online; run ``python3 scripts/windows-e2e/agent.py --name $env:E2E_NAME`` from the workstation" >> $env:GITHUB_STEP_SUMMARY
+          # The person closes the browser the client opened for the login (it would cover the client's window).
+          Get-Process msedge, chrome -IncludeUserName -ErrorAction SilentlyContinue | Where-Object UserName -like "*\$env:E2E_USER" | Stop-Process -Force -ErrorAction SilentlyContinue
           & "$env:GITHUB_WORKSPACE\scripts\windows-e2e\screenshot.ps1" "$env:E2E_OUT\online.png"
 
       - name: Wait for the Agent side to remove the device; the client must notice it
