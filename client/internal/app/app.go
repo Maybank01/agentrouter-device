@@ -93,7 +93,12 @@ func (a *App) Login(ctx context.Context, name string, ui UI) (*compute.Join, err
 		return nil, err
 	}
 	ui.Status(tray.Connecting, "等待登录")
-	g, err := a.session().Login(ctx, name, ui.Prompt)
+	g, err := a.session().Login(ctx, name, func(p identity.Prompt) {
+		// The log names the confirmation address too (support, and the hosted-runner end-to-end check, #231): the code
+		// is what the window shows anyway, valid only for minutes and only for this login.
+		a.Log.Info("device login: waiting for the confirmation in a browser", "url", p.VerificationURIComplete, "code", p.UserCode, "until", p.Expiry.UTC().Format(time.RFC3339))
+		ui.Prompt(p)
+	})
 	if err != nil {
 		return nil, err
 	}

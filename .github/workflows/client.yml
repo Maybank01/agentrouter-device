@@ -99,9 +99,47 @@ jobs:
           path: client/dist/agentdevice-linux-*
           retention-days: 14
 
+  # The Windows build for Dev devices (#231): the person's computer, with Dev's endpoints built in (state.Default*:
+  # AgentIdentity's STS and ZITADEL, compute/v1), so installing it and starting it is all a person does. Dev only:
+  # no signing, no release for people (docs/adr/0001-code-signing.md). The hosted-runner end-to-end check
+  # (windows-e2e.yml) installs it from the pre-release.
+  windows:
+    name: Client (Windows amd64, Dev)
+    if: github.event_name != 'pull_request'
+    needs: client
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: client
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: client/go.mod
+          cache-dependency-path: client/go.sum
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+          GOOS: windows
+          GOARCH: amd64
+        run: |
+          st=github.com/agentrouter-top/AgentDevice/client/internal/state
+          dev="-X $st.DefaultIssuer=https://identity-dev.agentrouter.page -X $st.DefaultComputeURL=https://compute-dev.agentrouter.page"
+          dev="$dev -X $st.DefaultZitadelURL=https://login-dev.agentrouter.page -X $st.DefaultZitadelProjectID=398174617035870308"
+          dev="$dev -X $st.DefaultZitadelClientID=398174617103044708"
+          go build -trimpath -ldflags "-s -w -H windowsgui -X main.version=0.0.0-${GITHUB_SHA::7} $dev" -o dist/agentdevice-windows-amd64.exe ./cmd/agentdevice
+          cd dist && sha256sum agentdevice-windows-amd64.exe > agentdevice-windows-amd64.exe.sha256 && cat ./*.sha256
+      - uses: actions/upload-artifact@v7
+        with:
+          name: client-windows-amd64
+          path: client/dist/agentdevice-windows-amd64*
+          retention-days: 14
+
   publish:
     name: Publish client pre-release
-    needs: linux
+    needs: [linux, windows]
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -111,7 +149,7 @@ jobs:
       - uses: actions/download-artifact@v7
         with:
           path: artifacts
-          pattern: client-linux-*
+          pattern: client-*
           merge-multiple: true
       - name: Release client-v0.0.0-<sha7>
         env:
@@ -119,16 +157,18 @@ jobs:
         run: |
           cd artifacts
           tag="client-v0.0.0-${GITHUB_SHA::7}"
-          cat agentdevice-linux-*.sha256 > SHA256SUMS
+          cat agentdevice-*.sha256 > SHA256SUMS
           cat SHA256SUMS
+          assets=(agentdevice-linux-amd64 agentdevice-linux-arm64 agentdevice-windows-amd64.exe SHA256SUMS)
           notes=$(printf '%s\n' \
-            "Static Linux builds of the Go client (agentdevice) for compute/v1 sandboxes, commit ${GITHUB_SHA}." \
-            "A sandbox runs \`agentdevice sandbox --join /etc/agentcompute/network.json\` (compute/v1 README §7.1). Pin by tag + SHA256SUMS." \
+            "Go client (agentdevice), commit ${GITHUB_SHA}. Not a release for people (no signing)." \
+            "- Static Linux builds for compute/v1 sandboxes: a sandbox runs \`agentdevice sandbox --join /etc/agentcompute/network.json\` (compute/v1 README §7.1). Pin by tag + SHA256SUMS." \
+            "- \`agentdevice-windows-amd64.exe\`: a Windows device on **Dev** (Dev's login and compute/v1 built in); start it, confirm the login in the browser." \
             "" '```' "$(cat SHA256SUMS)" '```')
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$tag" agentdevice-linux-amd64 agentdevice-linux-arm64 SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY"
+            gh release upload "$tag" "${assets[@]}" --clobber --repo "$GITHUB_REPOSITORY"
           else
-            gh release create "$tag" agentdevice-linux-amd64 agentdevice-linux-arm64 SHA256SUMS \
+            gh release create "$tag" "${assets[@]}" \
               --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false \
-              --title "client ${GITHUB_SHA::7} (Linux, sandboxes)" --notes "$notes"
+              --title "client ${GITHUB_SHA::7} (Linux sandboxes, Windows Dev)" --notes "$notes"
           fi
