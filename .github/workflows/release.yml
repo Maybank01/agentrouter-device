@@ -148,7 +148,7 @@ jobs:
         run: |
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { throw "Inno Setup 6 is not on this runner image ($iscc); release/README.md names the fallback" }
-          "Inno Setup: $((Get-Item $iscc).VersionInfo.ProductVersion)"
+          "Inno Setup: $((Get-Item $iscc).VersionInfo.FileVersion)"
           Move-Item payload\agentdevice-windows-amd64.exe payload\agentdevice.exe
           Copy-Item "release\environments\$env:ENV_NAME.json" payload\environment.json
           # Production's installer is the plain name; another environment's carries its name.
