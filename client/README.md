@@ -20,7 +20,7 @@ revokes at ZITADEL); without it NewAPI's `/v1/identity/device/*` (legacy, delete
 | `internal/egress` | relays NetBird's TLS by SNI through an HTTP CONNECT proxy ([ADR 0003](../docs/adr/0003-sandbox-egress-relay.md)) |
 | `internal/network` | embed v0.82.0, NetBird's SSH server off; skips NetBird's slow static-info probes (Windows 20 s) |
 | `internal/sshd` | exec, terminal (ConPTY / PTY), SFTP, loopback-only forwarding; token auth; command text via files (R21) |
-| `internal/identity` | ES256 verifier (contract vectors), JWKS cache; device login: keeps only the newest refresh token (stored before use, one refresh at a time), ZITADEL's access token in memory only, short tokens per audience (exchanged at the STS; an `invalid_grant` there refreshes once and exchanges again; a refused refresh = removed device) |
+| `internal/identity` | ES256 verifier (contract vectors; account ids are the contract's one pattern, identity/v1 1.1.0 `acc_[0-9A-Za-z_-]{1,64}`, tested against the vendored schema), JWKS cache; device login: keeps only the newest refresh token (stored before use, one refresh at a time), ZITADEL's access token in memory only, short tokens per audience (exchanged at the STS; an `invalid_grant` there refreshes once and exchanges again; a refused refresh = removed device) |
 | `internal/compute` | compute/v1 client; RFC 9457 problems kept whole |
 | `internal/facts` | os, arch, shell, cpu, memory, gpu, software; no WMI, no admin |
 | `internal/autostart` | systemd user unit, LaunchAgent, Task Scheduler at least privilege; off by default |

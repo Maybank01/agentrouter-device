@@ -162,9 +162,14 @@ func decodeSegment(seg string, into any) error {
 	return json.Unmarshal(raw, into)
 }
 
+// accountID is the id part of an account (acc_<id>): identity/v1 1.1.0 claims.schema.json $defs/account, 1 to 64 of
+// 0-9 A-Z a-z _ - (the custom ZITADEL ids of the September migration, ar3-legacy-user-<n>, contain '-';
+// AgentIdentity#42). One pattern: TestAccountPatternIsTheContracts checks it against the vendored schema.
+const accountID = `[0-9A-Za-z_-]{1,64}`
+
 var (
-	subPattern     = regexp.MustCompile(`^(acc_[0-9A-Za-z]{1,64}|svc_[a-z][a-z0-9-]{1,31})$`)
-	accountPattern = regexp.MustCompile(`^acc_[0-9A-Za-z]{1,64}$`)
+	subPattern     = regexp.MustCompile(`^(acc_` + accountID + `|svc_[a-z][a-z0-9-]{1,31})$`)
+	accountPattern = regexp.MustCompile(`^acc_` + accountID + `$`)
 	scopePattern   = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}:(\*|[0-9A-Za-z][0-9A-Za-z_.-]{0,127}):[a-z][a-z0-9-]{0,31}$`)
 	runPattern     = regexp.MustCompile(`^cnv_[0-9A-Za-z_-]{1,64}$`)
 	uuidPattern    = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)

@@ -1,6 +1,6 @@
 {
-  "about": "Byte copies of the identity/v1 files the client's token verifier is tested with (agentteam-deployments docs/development/CONTRACTS.md C4: one sha256 per file, SHA256SUMS here). Provider: agentrouter-top/AgentIdentity contracts/identity/v1 (moved there from agentrouter-newapi, AgentIdentity#2; the tokens and TEST-ONLY keys are byte-identical to the NewAPI copy). The TEST-ONLY keys are the provider's published test keys; never configure them anywhere. Refresh: copy the files at the new commit, rewrite SHA256SUMS (sha256sum over contracts/, sorted), update commit, in the same PR as the code change.",
+  "about": "Byte copies of the identity/v1 files the client's token verifier is tested with (agentteam-deployments docs/development/CONTRACTS.md C4: one sha256 per file, SHA256SUMS here). Provider: agentrouter-top/AgentIdentity contracts/identity/v1 (moved there from agentrouter-newapi, AgentIdentity#2; the tokens and TEST-ONLY keys are byte-identical to the NewAPI copy). Commit: identity/v1 1.1.0, account ids acc_[0-9A-Za-z_-]{1,64} (AgentIdentity#42, #44). The TEST-ONLY keys are the provider's published test keys; never configure them anywhere. Refresh: copy the files at the new commit, rewrite SHA256SUMS (sha256sum over contracts/, sorted), update commit, in the same PR as the code change.",
   "repo": "agentrouter-top/AgentIdentity",
   "ref": "main",
-  "commit": "3652248cbcb52f4c0d9501ec794736adb0aee29e"
+  "commit": "82946aecdf435e1c0f98e72a2e5a9c2849a2762d"
 }
