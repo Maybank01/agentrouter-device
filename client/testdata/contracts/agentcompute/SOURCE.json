@@ -1,6 +1,6 @@
 {
-  "about": "Byte copies of the compute/v1 schemas the client's enrolment, facts and sandbox join file follow (agentteam-deployments docs/development/CONTRACTS.md C4: one sha256 per file, SHA256SUMS here). Provider: agentrouter-top/AgentCompute contracts/compute/v1. The commit is the additive change of AgentCompute#27 (sandbox-join.schema.json); the other files are unchanged since AgentCompute#18. Move ref to main once it merges. Refresh: copy the files at the new commit, rewrite SHA256SUMS (sha256sum over contracts/, sorted), update commit, in the same PR as the code change.",
+  "about": "Byte copies of the compute/v1 schemas the client's enrolment, facts and sandbox join file follow (agentteam-deployments docs/development/CONTRACTS.md C4: one sha256 per file, SHA256SUMS here). Provider: agentrouter-top/AgentCompute contracts/compute/v1. The commit is AgentCompute#60 on main (identity/v1 1.1.0 account ids in computer.own, AgentIdentity#42). Refresh: copy the files at the new commit, rewrite SHA256SUMS (sha256sum over contracts/, sorted), update commit, in the same PR as the code change.",
   "repo": "agentrouter-top/AgentCompute",
-  "ref": "task/27-sandboxes-join-their-owner-s-network-hea (AgentCompute#27)",
-  "commit": "bbad0b3201d93865bb0f9895453d45a8f6b4a5eb"
+  "ref": "main",
+  "commit": "5ae63de2485abe800f57737775478c3d3ef0124b"
 }

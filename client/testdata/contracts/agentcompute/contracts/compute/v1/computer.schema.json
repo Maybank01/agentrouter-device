@@ -16,7 +16,7 @@
     },
     "own": {
       "type": "string",
-      "pattern": "^acc_[0-9A-Za-z]{1,64}$",
+      "pattern": "^acc_[0-9A-Za-z_-]{1,64}$",
       "description": "The owner (identity/v1 `own`): the computer is in this owner's network and only tokens with this `own` reach it."
     },
     "state": {
@@ -127,9 +127,9 @@
         "holds": {
           "type": "array",
           "items": { "$ref": "sandbox.schema.json#/$defs/hold" },
-          "description": "Live holds. A temporary sandbox without one is reclaimed at `reclaimAt`."
+          "description": "Live holds (a lapsed hold is dropped). A sandbox without one is reclaimed at `reclaimAt`, except a long one never held."
         },
-        "reclaimAt": { "type": "string", "format": "date-time", "description": "Present for a temporary sandbox that has no live hold: when it is removed (30 minutes after the last hold ended)." }
+        "reclaimAt": { "type": "string", "format": "date-time", "description": "Present when nothing keeps the sandbox: when it is removed (its last hold ended + 30 minutes for temporary or a failed sandbox, + 6 hours for long)." }
       },
       "additionalProperties": false
     }
