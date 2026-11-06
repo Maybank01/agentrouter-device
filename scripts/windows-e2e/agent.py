@@ -30,7 +30,9 @@ COMPUTE = "https://compute-dev.agentrouter.page"
 OWN = "acc_398219269629808740"  # Dev ZITADEL test person device-e2e (product organisation)
 KEYS = os.path.expanduser("~/AgentTeam/.secrets/agentidentity-dev/service-keys")
 HOST = "agentrouter-prod"  # the shared Dev host (operators reach the in-network gateway through it)
-GATEWAY_CONTAINER = "agentcompute-ssh-gateway-dev"
+# The gateway's stable in-network name (a network alias on `coolify`); its containers are named <alias>-<YYYYMMDDTHHMMSS>
+# since its deploys are rolling (AgentCompute#125), and two of them run for a few minutes during a deploy.
+GATEWAY_ALIAS = "agentcompute-ssh-gateway-dev"
 
 T0 = time.time()
 evidence = []
@@ -91,12 +93,19 @@ class Tunnel:
     """ssh -L to the gateway's in-network address on the Dev host; stopped by PID."""
 
     def __init__(self):
-        # ssh hands the remote side one shell string: quote each word.
-        remote = shlex.join(["docker", "inspect", GATEWAY_CONTAINER, "--format", '{{(index .NetworkSettings.Networks "coolify").IPAddress}}'])
-        out = subprocess.run(["ssh", HOST, remote], capture_output=True, text=True, timeout=60)
-        ip = out.stdout.strip()
+        # The newest healthy container of the gateway (healthy = serving logins; one draining for a deploy is not), by
+        # its generated name. ssh hands the remote side one shell string: quote each word.
+        ps = shlex.join(["docker", "ps", "--quiet", "--filter", f"name=^/?{GATEWAY_ALIAS}-[0-9]{{8}}T[0-9]{{6}}$", "--filter", "health=healthy"])
+        out = subprocess.run(["ssh", HOST, ps], capture_output=True, text=True, timeout=60)
+        cids = out.stdout.split()
+        if out.returncode != 0 or not cids:
+            fail("gateway container on the Dev host", alias=GATEWAY_ALIAS, stderr=out.stderr.strip()[:300],
+                 next="no healthy gateway container runs: check the Coolify Application agentcompute-ssh-gateway-dev")
+        inspect = shlex.join(["docker", "inspect", cids[0], "--format", '{{.Name}} {{(index .NetworkSettings.Networks "coolify").IPAddress}}'])
+        out = subprocess.run(["ssh", HOST, inspect], capture_output=True, text=True, timeout=60)
+        name, _, ip = out.stdout.strip().partition(" ")
         if out.returncode != 0 or not ip:
-            fail("gateway address on the Dev host", stderr=out.stderr.strip()[:300])
+            fail("gateway address on the Dev host", container=cids[0], stderr=out.stderr.strip()[:300])
         s = socket.socket(); s.bind(("127.0.0.1", 0)); self.port = s.getsockname()[1]; s.close()
         self.proc = subprocess.Popen(["ssh", "-N", "-o", "ExitOnForwardFailure=yes", "-L", f"127.0.0.1:{self.port}:{ip}:2222", HOST])
         for _ in range(60):
@@ -107,7 +116,7 @@ class Tunnel:
                 time.sleep(0.5)
         else:
             fail("tunnel to the gateway")
-        log("tunnel to the SSH gateway", local=f"127.0.0.1:{self.port}", gateway=f"{GATEWAY_CONTAINER} ({ip}):2222")
+        log("tunnel to the SSH gateway", local=f"127.0.0.1:{self.port}", gateway=f"{name.lstrip('/')} ({ip}):2222")
 
     def stop(self):
         self.proc.send_signal(signal.SIGTERM)
