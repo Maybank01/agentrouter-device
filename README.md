@@ -35,7 +35,7 @@ Charter (what belongs here, contracts consumed, how it is pinned): [docs/CHARTER
 | --- | --- |
 | [`client/`](client/README.md) | the Go program `agentdevice`: NetBird `client/embed` (userspace), our own SSH server ([ADR 0002](docs/adr/0002-own-ssh-server.md)), device-code login, enrolment and facts (AgentCompute `compute/v1`), tray, autostart |
 | [`release/`](release/README.md) | releases for people: `release.yml`, the environments (`environment.json` beside the program), the per-user Windows installer (Inno Setup), SmartScreen, the update notice |
-| `scripts/` | repository checks (`check-docs.mjs`, `check-repo-imports.mjs`, `av-hygiene.sh`), the main-red guard (`main-red.mjs`), the Windows end-to-end harness (`windows-e2e/`) |
+| `scripts/` | repository checks (`check-docs.mjs`, `check-repo-imports.mjs`, `check-node-version.mjs`, `av-hygiene.sh`), the main-red guard (`main-red.mjs`), the Windows end-to-end harness (`windows-e2e/`) |
 | `.github/workflows/` | `ci.yml` (checks, client tests, client pre-release), `release.yml` (releases for people), `merge-on-green.yml`, `main-red.yml`, `windows-e2e.yml` |
 | `skills/agentrouter-client/` | the coding-agent skill for this repository |
 

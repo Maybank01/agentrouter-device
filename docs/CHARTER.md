@@ -30,9 +30,9 @@ NetBird by `go.mod` version; our NetBird management by URL only (contract copies
 
 **How it is pinned**: per-OS binaries with `SHA256SUMS`, pre-releases `client-v0.0.0-<sha7>` and releases `client-vX.Y.Z`
 (release/README.md); a consumer pins asset + `sha256` (AgentCompute's environment image pins the static Linux build).
-**Dependencies** (C5): only those two contracts and NetBird; nothing upward (online / offline is what NetBird reports).
+**Independence** (C5, its dependencies): only those two contracts and NetBird; nothing upward (online / offline is what NetBird reports).
 **Checks on the PR path** (GitHub-hosted, R47): `check-docs.mjs`, `check-repo-imports.mjs` (C6), AV hygiene, gofmt,
-vet, tests and build on Linux, macOS and Windows (`ci.yml`).
+vet, tests and build on Linux, macOS and Windows (`ci.yml`); one Node (`.node-version`, `check-node-version.mjs`).
 
 **Owner rules** (`workspace/RULES.md`): R45 R53 (the client), R58 (no access levels), R46 R54 (DSH plugin
 client abandoned), R47 (tests on GitHub-hosted runners only), R48, R14 (own release flow), R17, R21, R38.
